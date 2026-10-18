@@ -6,6 +6,8 @@
 
 Старая система (`/opt/uchet-app`, `cfo-avmv.ru`, контейнеры `uchet_backend`, `uchet_postgres`,
 порт 8000) этими инструкциями **не затрагивается**.
+Отдельная инструкция для старой системы — [OLD_SYSTEM_JWT_FIX.md](OLD_SYSTEM_JWT_FIX.md)
+(закрыть дыру с `JWT_SECRET`).
 
 | Что | Новая система |
 |---|---|
