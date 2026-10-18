@@ -1,6 +1,7 @@
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 
 from app.db.base import Base
@@ -26,7 +27,8 @@ def test_downgrade_and_upgrade_again():
     command.downgrade(cfg, "base")
     command.upgrade(cfg, "head")
     with get_engine().connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0001"
+        current = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    assert current == ScriptDirectory.from_config(cfg).get_current_head()
 
 
 def test_postgres_version_17():

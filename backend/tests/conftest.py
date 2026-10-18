@@ -58,7 +58,7 @@ def database():
 def _clean_tables():
     yield
     with get_engine().begin() as conn:
-        conn.execute(text("TRUNCATE users RESTART IDENTITY CASCADE"))
+        conn.execute(text("TRUNCATE users, organizations RESTART IDENTITY CASCADE"))
 
 
 @pytest.fixture
@@ -82,5 +82,32 @@ def make_user(db):
         db.add(user)
         db.commit()
         return user
+
+    return _make
+
+
+@pytest.fixture
+def headers_for():
+    """Заголовок Authorization для пользователя (токен выдаётся напрямую, без /login)."""
+    from app.core.security import create_token
+
+    def _headers(user: User) -> dict[str, str]:
+        return {"Authorization": f"Bearer {create_token(user.id, user.token_version, 'access')}"}
+
+    return _headers
+
+
+@pytest.fixture
+def make_org(db):
+    from app.models import Membership, Organization
+
+    def _make(name="Группа А", kind="group", members=()) -> Organization:
+        org = Organization(name=name, kind=kind)
+        db.add(org)
+        db.flush()
+        for user, role in members:
+            db.add(Membership(user_id=user.id, organization_id=org.id, role=role))
+        db.commit()
+        return org
 
     return _make
