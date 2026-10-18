@@ -36,7 +36,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(7)
+    expect(page.locator("#nav a")).to_have_count(8)
 
     # организация
     page.click("text=Добавить организацию")
@@ -81,6 +81,25 @@ with sync_playwright() as p:
     expect(sub).to_contain_text("Контрагент, Договор, ЦФО")
     page.screenshot(path=f"{OUT}/6_accounts.png", full_page=True)
 
+    # статьи: стартовый набор, фильтр ДДС/ОПиУ, новая статья с шаблоном
+    page.click("#nav a[data-page=articles]")
+    row = page.locator(".tabulator-row", has_text="Оплата поставщикам")
+    expect(row).to_contain_text("Операционная · Выплата")
+    expect(row).to_contain_text("Дт 60.01 — Кт 51")
+    page.click("button.tab:has-text('ОПиУ')")
+    expect(page.locator(".tabulator-row", has_text="Оплата поставщикам")).to_have_count(0)
+    expect(page.locator(".tabulator-row", has_text="Выручка от продаж")).to_be_visible()
+    page.click("text=Добавить статью")
+    d = dialog_fill(page, {"name": "Охрана"})
+    d.locator("[name=cash_flow_activity]").select_option(label="Операционная")
+    d.locator("[name=cash_flow_direction]").select_option(label="Выплата")
+    d.locator("[name=debit_account_id]").select_option(label="60.01 Расчёты с поставщиками и подрядчиками")
+    d.locator("[name=credit_account_id]").select_option(label="51 Расчётные счета")
+    d.locator("button[type=submit]").click()
+    page.click("button.tab:has-text('ДДС')")
+    expect(page.locator(".tabulator-row", has_text="Охрана")).to_contain_text("Дт 60.01 — Кт 51")
+    page.screenshot(path=f"{OUT}/9_articles.png", full_page=True)
+
     # валюта и курс (с запятой, как привычно)
     page.click("#nav a[data-page=currencies]")
     expect(page.locator(".tabulator-row", has_text="Российский рубль")).to_be_visible()
@@ -97,7 +116,10 @@ with sync_playwright() as p:
     page.click("#nav a[data-page=organizations]")
 
     # банк (общий справочник) и справочники организации
-    page.click("#nav a[data-page=banks]")
+    page.click("#nav a[data-page=common]")
+    page.click("button.tab:has-text('Единицы измерения')")
+    expect(page.locator(".tabulator-row", has_text="Штука")).to_be_visible()
+    page.click("button.tab:has-text('Банки')")
     page.click("text=Добавить банк")
     d = dialog_fill(page, {"bic": "044525225", "name": "ПАО Сбербанк", "corr_account": "30101810400000000225"})
     d.locator("button[type=submit]").click()
@@ -156,6 +178,21 @@ with sync_playwright() as p:
     expect(row.locator(".tabulator-cell[tabulator-field=_add]")).to_have_text("+ магазин")
     page.screenshot(path=f"{OUT}/8_cfos.png", full_page=True)
 
+    page.click("button.tab:has-text('Склады')")
+    page.click("text=Добавить склад")
+    d = dialog_fill(page, {"name": "Склад Юг"})
+    d.locator("[name=cfo_id]").select_option(label="АВМВ / Торговля / Филиал Юг")
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="Склад Юг")).to_contain_text("Филиал Юг")
+
+    page.click("button.tab:has-text('Номенклатура')")
+    page.click("text=Добавить номенклатуру")
+    d = dialog_fill(page, {"name": "Кофе зерновой", "article": "CF-001"})
+    expect(d.locator("[name=unit_id] option:checked")).to_have_text("шт — Штука")  # по умолчанию
+    d.locator("[name=unit_id]").select_option(label="кг — Килограмм")
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="Кофе зерновой")).to_contain_text("кг")
+
     page.click("button.tab:has-text('Сотрудники')")
     page.click("text=Добавить сотрудника")
     d = dialog_fill(page, {"full_name": "Иванов Иван", "personnel_number": "0001", "position": "Продавец",
@@ -178,7 +215,7 @@ with sync_playwright() as p:
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(6)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(7)  # нет «Пользователи»
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою
     expect(page.locator("h2", has_text="Юрлица: Группа АВМВ")).to_be_visible()  # выбрана автоматически

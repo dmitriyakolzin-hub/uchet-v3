@@ -47,6 +47,8 @@ def _recreate_test_database() -> None:
 
 
 SEED_ACCOUNT_IDS: set[int] = set()
+SEED_UNIT_IDS: set[int] = set()
+SEED_ARTICLE_IDS: set[int] = set()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -55,6 +57,8 @@ def database():
     command.upgrade(alembic_config(), "head")
     with get_engine().connect() as conn:
         SEED_ACCOUNT_IDS.update(conn.execute(text("SELECT id FROM accounts")).scalars())
+        SEED_UNIT_IDS.update(conn.execute(text("SELECT id FROM units")).scalars())
+        SEED_ARTICLE_IDS.update(conn.execute(text("SELECT id FROM articles")).scalars())
     yield
     get_engine().dispose()
 
@@ -65,12 +69,14 @@ def _clean_tables():
     with get_engine().begin() as conn:
         conn.execute(text("TRUNCATE users, organizations, exchange_rates, banks RESTART IDENTITY CASCADE"))
         conn.execute(text("DELETE FROM currencies WHERE code <> 'RUB'"))  # рубль заводит миграция
+        conn.execute(text("DELETE FROM articles WHERE NOT (id = ANY(:ids))"), {"ids": list(SEED_ARTICLE_IDS)})
         # план счетов заводит миграция: удаляем только счета, созданные тестами (сначала субсчета)
         conn.execute(
             text("DELETE FROM accounts WHERE NOT (id = ANY(:ids)) AND parent_id IS NOT NULL"),
             {"ids": list(SEED_ACCOUNT_IDS)},
         )
         conn.execute(text("DELETE FROM accounts WHERE NOT (id = ANY(:ids))"), {"ids": list(SEED_ACCOUNT_IDS)})
+        conn.execute(text("DELETE FROM units WHERE NOT (id = ANY(:ids))"), {"ids": list(SEED_UNIT_IDS)})
 
 
 @pytest.fixture

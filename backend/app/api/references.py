@@ -16,7 +16,10 @@ from app.models import (
     Currency,
     Employee,
     LegalEntity,
+    Nomenclature,
     SalaryProject,
+    Unit,
+    Warehouse,
 )
 from app.models.cfo import CFO_LEVELS
 from app.schemas import reference as s
@@ -54,6 +57,38 @@ def update_bank(bank_id: int, body: s.BankUpdate, _: AdminUser, db: DbSession) -
             setattr(bank, name, value)
     db.commit()
     return bank
+
+
+# --- Единицы измерения: общий справочник, изменяет администратор ---
+
+
+@router.get("/units", response_model=list[s.UnitOut])
+def list_units(_: CurrentUser, db: DbSession) -> list[Unit]:
+    return list(db.scalars(select(Unit).order_by(Unit.name)))
+
+
+@router.post("/units", response_model=s.UnitOut, status_code=201)
+def create_unit(body: s.UnitCreate, _: AdminUser, db: DbSession) -> Unit:
+    unit = Unit(**body.model_dump())
+    db.add(unit)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Единица с таким кодом ОКЕИ уже есть") from None
+    return unit
+
+
+@router.patch("/units/{unit_id}", response_model=s.UnitOut)
+def update_unit(unit_id: int, body: s.UnitUpdate, _: AdminUser, db: DbSession) -> Unit:
+    unit = db.get(Unit, unit_id)
+    if unit is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Единица измерения не найдена")
+    for name, value in body.model_dump(exclude_unset=True).items():
+        if value is not None:
+            setattr(unit, name, value)
+    db.commit()
+    return unit
 
 
 # --- Справочники организации ---
@@ -159,6 +194,21 @@ for resource in (
         order_by=lambda m: [m.full_name],
         refs={"cfo_id": Ref(Cfo, "ЦФО")},
         nullable_fields={"inn", "cfo_id", "hired_on", "fired_on"}, check=_check_employee,
+    ),
+    OrgResource(
+        path="nomenclature", model=Nomenclature, title="Номенклатура",
+        create_schema=s.NomenclatureCreate, update_schema=s.NomenclatureUpdate,
+        out_schema=s.NomenclatureOut, conflict_message="Номенклатура с таким артикулом уже есть",
+        order_by=lambda m: [m.name],
+        refs={"unit_id": Ref(Unit, "Единица измерения", org_scoped=False)},
+    ),
+    OrgResource(
+        path="warehouses", model=Warehouse, title="Склад",
+        create_schema=s.WarehouseCreate, update_schema=s.WarehouseUpdate, out_schema=s.WarehouseOut,
+        conflict_message="Такой склад уже есть",
+        order_by=lambda m: [m.name],
+        refs={"cfo_id": Ref(Cfo, "ЦФО")},
+        nullable_fields={"cfo_id"},
     ),
 ):
     register(router, resource)
