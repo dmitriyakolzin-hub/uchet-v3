@@ -188,3 +188,70 @@ class ContractOut(_Out):
 
 # Поля, которые можно очистить (передать null) при изменении
 NULLABLE_FIELDS = {"corr_account", "inn", "kpp", "contract_date"}
+
+
+# --- ЦФО ---
+
+
+class CfoCreate(BaseModel):
+    name: Name
+    parent_id: int | None = None  # без родителя — ЦФО уровня «Компания»
+    legal_entity_id: int | None = None
+
+
+class CfoUpdate(BaseModel):
+    name: Name | None = None
+    parent_id: int | None = None
+    legal_entity_id: int | None = None
+    is_active: bool | None = None
+
+
+class CfoOut(_Out):
+    id: int
+    organization_id: int
+    name: str
+    level: int
+    parent_id: int | None
+    path: str
+    legal_entity_id: int | None
+    is_active: bool
+
+
+# --- Сотрудники ---
+
+EmployeeInn = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d{12}$")]
+ShortText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=255)]
+
+
+class EmployeeCreate(BaseModel):
+    full_name: Name
+    personnel_number: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] = ""
+    inn: EmployeeInn | None = None
+    position: ShortText = ""
+    cfo_id: int | None = None
+    hired_on: dt.date | None = None
+    fired_on: dt.date | None = None
+
+
+class EmployeeUpdate(BaseModel):
+    full_name: Name | None = None
+    personnel_number: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] | None = None
+    inn: EmployeeInn | None = None
+    position: ShortText | None = None
+    cfo_id: int | None = None
+    hired_on: dt.date | None = None
+    fired_on: dt.date | None = None
+    is_active: bool | None = None
+
+
+class EmployeeOut(_Out):
+    id: int
+    organization_id: int
+    full_name: str
+    personnel_number: str
+    inn: str | None
+    position: str
+    cfo_id: int | None
+    hired_on: dt.date | None
+    fired_on: dt.date | None
+    is_active: bool

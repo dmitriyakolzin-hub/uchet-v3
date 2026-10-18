@@ -1,4 +1,5 @@
 from app.models.account import Account, AccountAnalytic
+from app.models.cfo import Cfo, Employee
 from app.models.currency import Currency, ExchangeRate
 from app.models.membership import Membership
 from app.models.organization import LegalEntity, Organization
@@ -10,9 +11,11 @@ __all__ = [
     "AccountAnalytic",
     "Bank",
     "BankAccount",
+    "Cfo",
     "Contract",
     "Counterparty",
     "Currency",
+    "Employee",
     "ExchangeRate",
     "LegalEntity",
     "Membership",

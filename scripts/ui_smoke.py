@@ -138,6 +138,32 @@ with sync_playwright() as p:
     expect(row).to_contain_text("15.01.2026")
     page.screenshot(path=f"{OUT}/7_contracts.png", full_page=True)
 
+    # дерево ЦФО: компания → направление → филиал, затем сотрудник в филиале
+    page.click("button.tab:has-text('ЦФО')")
+    page.click("text=Добавить ЦФО уровня «Компания»")
+    d = dialog_fill(page, {"name": "АВМВ"})
+    d.locator("[name=legal_entity_id]").select_option(label="Ромашка")
+    d.locator("button[type=submit]").click()
+    page.locator(".tabulator-row", has_text="АВМВ").locator(".tabulator-cell[tabulator-field=_add]").click()
+    d = dialog_fill(page, {"name": "Торговля"})
+    expect(d.locator("[name=parent_id] option:checked")).to_have_text("АВМВ")  # родитель подставлен
+    d.locator("button[type=submit]").click()
+    page.locator(".tabulator-row", has_text="Торговля").locator(".tabulator-cell[tabulator-field=_add]").click()
+    d = dialog_fill(page, {"name": "Филиал Юг"})
+    d.locator("button[type=submit]").click()
+    row = page.locator(".tabulator-row", has_text="Филиал Юг")
+    expect(row).to_contain_text("Филиал")
+    expect(row.locator(".tabulator-cell[tabulator-field=_add]")).to_have_text("+ магазин")
+    page.screenshot(path=f"{OUT}/8_cfos.png", full_page=True)
+
+    page.click("button.tab:has-text('Сотрудники')")
+    page.click("text=Добавить сотрудника")
+    d = dialog_fill(page, {"full_name": "Иванов Иван", "personnel_number": "0001", "position": "Продавец",
+                           "hired_on": "2026-01-10"})
+    d.locator("[name=cfo_id]").select_option(label="АВМВ / Торговля / Филиал Юг")
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="Иванов Иван")).to_contain_text("АВМВ / Торговля / Филиал Юг")
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")

@@ -106,7 +106,8 @@ button:disabled { opacity: .6; cursor: default; }
 
 .tabulator { font-size: 14px; border-radius: 6px; }
 .tabulator .tabulator-row.tabulator-selected { background: var(--accent-soft); }
-.tabulator-cell[tabulator-field="_edit"] { cursor: pointer; color: var(--accent); }
+.tabulator-cell[tabulator-field="_edit"],
+.tabulator-cell[tabulator-field="_add"] { cursor: pointer; color: var(--accent); }
 .tabulator .tabulator-row.row-archived { color: var(--muted); }
 
 .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 20px; border-bottom: 1px solid var(--border); }

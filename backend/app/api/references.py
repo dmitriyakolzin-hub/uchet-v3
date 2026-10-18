@@ -1,12 +1,24 @@
 """Справочники части 1.3б: банки (общие) и справочники организации."""
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.api.deps import AdminUser, CurrentUser, DbSession
 from app.api.org_resources import OrgResource, Ref, register
-from app.models import Bank, BankAccount, Contract, Counterparty, Currency, LegalEntity, SalaryProject
+from app.models import (
+    Bank,
+    BankAccount,
+    Cfo,
+    Contract,
+    Counterparty,
+    Currency,
+    Employee,
+    LegalEntity,
+    SalaryProject,
+)
+from app.models.cfo import CFO_LEVELS
 from app.schemas import reference as s
 
 router = APIRouter(prefix="/api", tags=["Справочники"])
@@ -51,8 +63,55 @@ BANK = Ref(Bank, "Банк", org_scoped=False)
 CURRENCY = Ref(Currency, "Валюта", org_scoped=False)
 
 
-def _check_counterparty(obj: Counterparty) -> None:
+def _check_counterparty(_db, obj: Counterparty, _creating: bool) -> None:
     s.check_inn_for_kind(obj.kind, obj.inn)
+
+
+def _check_cfo(db: Session, cfo: Cfo, creating: bool) -> None:
+    """Уровни строго по порядку: Компания → Направление → Филиал → Магазин → Подразделение учёта."""
+    parent = db.get(Cfo, cfo.parent_id) if cfo.parent_id else None
+    if creating:
+        cfo.level = parent.level + 1 if parent else 1
+        if cfo.level > 5:
+            raise ValueError(f"Ниже уровня «{CFO_LEVELS[5]}» уровней нет")
+    elif cfo.level == 1 and parent is not None:
+        raise ValueError("ЦФО уровня «Компания» не может входить в другой ЦФО")
+    elif cfo.level > 1 and parent is None:
+        raise ValueError(f"У ЦФО уровня «{CFO_LEVELS[cfo.level]}» должен быть вышестоящий ЦФО")
+    elif parent is not None and parent.level != cfo.level - 1:
+        raise ValueError(
+            f"ЦФО уровня «{CFO_LEVELS[cfo.level]}» может входить только в ЦФО уровня "
+            f"«{CFO_LEVELS[cfo.level - 1]}»"
+        )
+    if cfo.legal_entity_id is not None and cfo.level != 1:
+        raise ValueError("Юрлицо указывается только у ЦФО уровня «Компания»")
+    if not cfo.is_active and not creating:
+        active_children = db.scalar(
+            select(Cfo.id).where(Cfo.parent_id == cfo.id, Cfo.is_active).limit(1)
+        )
+        if active_children:
+            raise ValueError("Сначала переведите в архив подчинённые ЦФО")
+
+    if creating:
+        # id нужен заранее: из него строится путь в дереве
+        cfo.id = db.scalar(text("SELECT nextval(pg_get_serial_sequence('cfos', 'id'))"))
+    new_path = f"{parent.path}.{cfo.id}" if parent else str(cfo.id)
+    old_path = cfo.path
+    cfo.path = new_path
+    if not creating and old_path != new_path:
+        # ЦФО перенесён в другую ветку — переносим и всех подчинённых
+        db.execute(
+            text(
+                "UPDATE cfos SET path = CAST(:new AS ltree) || subpath(path, nlevel(CAST(:old AS ltree))) "
+                "WHERE path <@ CAST(:old AS ltree) AND id <> :id"
+            ),
+            {"new": new_path, "old": old_path, "id": cfo.id},
+        )
+
+
+def _check_employee(_db, employee: Employee, _creating: bool) -> None:
+    if employee.hired_on and employee.fired_on and employee.fired_on < employee.hired_on:
+        raise ValueError("Дата увольнения раньше даты приёма")
 
 
 for resource in (
@@ -84,6 +143,22 @@ for resource in (
         refs={"counterparty_id": Ref(Counterparty, "Контрагент"), "legal_entity_id": LEGAL_ENTITY,
               "currency_id": CURRENCY},
         nullable_fields={"contract_date"},
+    ),
+    OrgResource(
+        path="cfos", model=Cfo, title="ЦФО",
+        create_schema=s.CfoCreate, update_schema=s.CfoUpdate, out_schema=s.CfoOut,
+        conflict_message="Такой ЦФО уже есть",
+        order_by=lambda m: [m.path],
+        refs={"parent_id": Ref(Cfo, "Вышестоящий ЦФО"), "legal_entity_id": LEGAL_ENTITY},
+        nullable_fields={"parent_id", "legal_entity_id"}, check=_check_cfo,
+    ),
+    OrgResource(
+        path="employees", model=Employee, title="Сотрудник",
+        create_schema=s.EmployeeCreate, update_schema=s.EmployeeUpdate, out_schema=s.EmployeeOut,
+        conflict_message="Сотрудник с таким табельным номером уже есть",
+        order_by=lambda m: [m.full_name],
+        refs={"cfo_id": Ref(Cfo, "ЦФО")},
+        nullable_fields={"inn", "cfo_id", "hired_on", "fired_on"}, check=_check_employee,
     ),
 ):
     register(router, resource)
