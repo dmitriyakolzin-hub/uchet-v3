@@ -19,6 +19,7 @@ from pwdlib import PasswordHash
 from app.core.config import get_settings
 
 JWT_ALGORITHM = "HS256"
+MIN_PASSWORD_LENGTH = 10
 TokenType = Literal["access", "refresh"]
 
 _password_hash = PasswordHash.recommended()

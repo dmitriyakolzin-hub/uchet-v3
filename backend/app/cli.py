@@ -10,11 +10,9 @@ import sys
 
 from sqlalchemy import select
 
-from app.core.security import hash_password
+from app.core.security import MIN_PASSWORD_LENGTH, hash_password
 from app.db.session import get_sessionmaker
 from app.models import User
-
-MIN_PASSWORD_LENGTH = 10
 
 
 def _ask_password() -> str:
