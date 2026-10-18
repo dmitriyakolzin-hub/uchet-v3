@@ -1,0 +1,19 @@
+# Секреты — никогда не в git
+.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Бэкапы базы
+*.dump
+backups/
+
+# Редакторы
+.idea/
+.vscode/
+.DS_Store

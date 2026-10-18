@@ -1,0 +1,86 @@
+"""Тесты идут на настоящем PostgreSQL 17.
+
+Адрес сервера берётся из POSTGRES_HOST/POSTGRES_PORT/POSTGRES_USER/POSTGRES_PASSWORD
+(по умолчанию — тестовый контейнер из scripts/run_tests.sh на 127.0.0.1:55432).
+Для тестов создаётся отдельная база uchet3_test, она пересоздаётся при каждом запуске.
+"""
+
+import os
+
+os.environ.setdefault("POSTGRES_HOST", "127.0.0.1")
+os.environ.setdefault("POSTGRES_PORT", "55432")
+os.environ.setdefault("POSTGRES_USER", "postgres")
+os.environ.setdefault("POSTGRES_PASSWORD", "postgres")
+os.environ["POSTGRES_DB"] = "uchet3_test"
+os.environ["JWT_SECRET"] = "test-secret-" + "x" * 40
+
+from pathlib import Path  # noqa: E402
+
+import pytest  # noqa: E402
+from alembic import command  # noqa: E402
+from alembic.config import Config  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine, text  # noqa: E402
+
+from app.core.config import get_settings  # noqa: E402
+from app.core.security import hash_password  # noqa: E402
+from app.db.session import get_engine, get_sessionmaker  # noqa: E402
+from app.models import User  # noqa: E402
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+TEST_PASSWORD = "correct-horse-battery"
+
+
+def alembic_config() -> Config:
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.attributes["database_url"] = get_settings().database_url
+    return cfg
+
+
+def _recreate_test_database() -> None:
+    url = get_settings().database_url
+    admin_engine = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    with admin_engine.connect() as conn:
+        conn.execute(text(f'DROP DATABASE IF EXISTS "{url.database}" WITH (FORCE)'))
+        conn.execute(text(f'CREATE DATABASE "{url.database}"'))
+    admin_engine.dispose()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def database():
+    _recreate_test_database()
+    command.upgrade(alembic_config(), "head")
+    yield
+    get_engine().dispose()
+
+
+@pytest.fixture(autouse=True)
+def _clean_tables():
+    yield
+    with get_engine().begin() as conn:
+        conn.execute(text("TRUNCATE users RESTART IDENTITY CASCADE"))
+
+
+@pytest.fixture
+def db():
+    with get_sessionmaker()() as session:
+        yield session
+
+
+@pytest.fixture
+def client():
+    from app.main import app
+
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def make_user(db):
+    def _make(login="ivanov", password=TEST_PASSWORD, **fields) -> User:
+        user = User(login=login, password_hash=hash_password(password), **fields)
+        db.add(user)
+        db.commit()
+        return user
+
+    return _make
