@@ -58,7 +58,8 @@ def database():
 def _clean_tables():
     yield
     with get_engine().begin() as conn:
-        conn.execute(text("TRUNCATE users, organizations RESTART IDENTITY CASCADE"))
+        conn.execute(text("TRUNCATE users, organizations, exchange_rates RESTART IDENTITY CASCADE"))
+        conn.execute(text("DELETE FROM currencies WHERE code <> 'RUB'"))  # рубль заводит миграция
 
 
 @pytest.fixture
