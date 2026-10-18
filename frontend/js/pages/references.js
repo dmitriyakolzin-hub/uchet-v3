@@ -16,6 +16,25 @@ const CONTRACT_KINDS = [
   ["customer", "С покупателем"],
   ["other", "Прочий"],
 ];
+const CFO_LEVELS = { 1: "Компания", 2: "Направление", 3: "Филиал", 4: "Магазин", 5: "Подразделение учёта" };
+
+// «АВМВ / Торговля / Филиал Юг» — полный путь ЦФО по названиям
+function cfoPathLabels(cfos) {
+  const names = new Map(cfos.map((c) => [String(c.id), c.name]));
+  return new Map(cfos.map((c) => [c.id, c.path.split(".").map((id) => names.get(id)).join(" / ")]));
+}
+
+function cfoTree(cfos) {
+  const byId = new Map(cfos.map((c) => [c.id, { ...c }]));
+  const roots = [];
+  for (const node of byId.values()) {
+    const parent = node.parent_id ? byId.get(node.parent_id) : null;
+    if (parent) (parent._children ??= []).push(node);
+    else roots.push(node);
+  }
+  return roots;
+}
+
 const titleOf = (pairs) => {
   const map = Object.fromEntries(pairs);
   return (cell) => map[cell.getValue()] ?? "";
@@ -129,6 +148,72 @@ const TABS = [
       { name: "name", label: "Название (необязательно)", placeholder: "Аренда склада" },
     ],
   },
+  {
+    key: "cfos",
+    title: "ЦФО",
+    addText: "Добавить ЦФО уровня «Компания»",
+    tree: true,
+    columns: (d, tab) => [
+      { title: "Наименование", field: "name", widthGrow: 3, headerSort: false },
+      { title: "Уровень", field: "level", width: 190, headerSort: false, formatter: (c) => CFO_LEVELS[c.getValue()] },
+      { title: "Юрлицо", field: "legal_entity_id", headerSort: false, formatter: lookup(d.entities, (e) => e.short_name) },
+      ...(tab.canEdit
+        ? [{
+            title: "", field: "_add", width: 150, headerSort: false,
+            formatter: (c) => (c.getRow().getData().level < 5 ? `+ ${CFO_LEVELS[c.getRow().getData().level + 1].toLowerCase()}` : ""),
+            cellClick: (_e, c) => {
+              const row = c.getRow().getData();
+              if (row.level < 5) tab.ref.create({ parent_id: String(row.id) });
+            },
+          }]
+        : []),
+    ],
+    fields: (d, row, preset) => {
+      const labels = cfoPathLabels(d.cfos);
+      const level = row ? row.level : preset.parent_id ? d.cfos.find((c) => String(c.id) === preset.parent_id).level + 1 : 1;
+      const parentOptions = d.cfos
+        .filter((c) => c.level === level - 1 && c.id !== row?.id)
+        .map((c) => [String(c.id), labels.get(c.id)]);
+      return [
+        { name: "name", label: `Наименование (${CFO_LEVELS[level]})`, required: true },
+        ...(level > 1
+          ? [{ name: "parent_id", label: `Входит в (${CFO_LEVELS[level - 1]})`, type: "select", required: true, numeric: true, options: parentOptions }]
+          : [{ name: "legal_entity_id", label: "Юрлицо (необязательно)", type: "select", numeric: true,
+               options: optionsOf(d.entities, (e) => e.short_name, { empty: "— не указано —" }) }]),
+      ];
+    },
+    prepare: cfoTree,
+  },
+  {
+    key: "employees",
+    title: "Сотрудники",
+    addText: "Добавить сотрудника",
+    columns: (d) => {
+      const labels = cfoPathLabels(d.cfos);
+      const date = (c) => (c.getValue() ? c.getValue().split("-").reverse().join(".") : "");
+      return [
+        { title: "ФИО", field: "full_name", widthGrow: 2, headerFilter: "input", headerFilterPlaceholder: "поиск" },
+        { title: "Таб. №", field: "personnel_number", width: 100 },
+        { title: "Должность", field: "position", widthGrow: 2 },
+        { title: "ЦФО", field: "cfo_id", widthGrow: 3, formatter: (c) => labels.get(c.getValue()) ?? "", tooltip: (_e, c) => labels.get(c.getValue()) ?? "" },
+        { title: "Принят", field: "hired_on", width: 110, formatter: date },
+        { title: "Уволен", field: "fired_on", width: 110, formatter: date },
+      ];
+    },
+    fields: (d) => {
+      const labels = cfoPathLabels(d.cfos);
+      return [
+        { name: "full_name", label: "ФИО", required: true },
+        { name: "personnel_number", label: "Табельный номер" },
+        { name: "inn", label: "ИНН", nullable: true, hint: "12 цифр" },
+        { name: "position", label: "Должность" },
+        { name: "cfo_id", label: "ЦФО", type: "select", numeric: true,
+          options: [["", "— не указан —"], ...d.cfos.map((c) => [String(c.id), labels.get(c.id) + (c.is_active ? "" : " (архив)")])] },
+        { name: "hired_on", label: "Дата приёма", type: "date", nullable: true },
+        { name: "fired_on", label: "Дата увольнения", type: "date", nullable: true },
+      ];
+    },
+  },
 ];
 
 export async function renderReferences(view) {
@@ -169,15 +254,26 @@ export async function renderReferences(view) {
       api.get("/api/currencies"),
       tab.key === "contracts" ? api.get(`/api/organizations/${org.id}/counterparties`) : [],
     ]);
-    const d = { entities, banks, currencies, counterparties, rub: currencies.find((c) => c.is_base) };
-    await referenceTab(tabBox, {
+    const d = { entities, banks, currencies, counterparties, cfos: [], rub: currencies.find((c) => c.is_base) };
+    const loadCfos = async () => {
+      d.cfos = ["cfos", "employees"].includes(tab.key) ? await api.get(`/api/organizations/${org.id}/cfos`) : [];
+    };
+    await loadCfos();
+    const state = { canEdit: org.permissions.includes("edit_reference"), ref: null };
+    state.ref = await referenceTab(tabBox, {
       title: tab.title,
       addText: tab.addText,
       listUrl: `/api/organizations/${org.id}/${tab.key}`,
       itemUrl: (id) => `/api/${tab.key}/${id}`,
-      canEdit: org.permissions.includes("edit_reference"),
-      columns: tab.columns(d),
-      fields: () => tab.fields(d),
+      canEdit: state.canEdit,
+      tree: tab.tree,
+      // дерево ЦФО нужно и формам — обновляем его вместе с таблицей
+      prepare: (list) => {
+        if (tab.key === "cfos") d.cfos = list;
+        return tab.prepare ? tab.prepare(list) : list;
+      },
+      columns: tab.columns(d, state),
+      fields: (row, preset) => tab.fields(d, row, preset ?? {}),
     });
   }
 

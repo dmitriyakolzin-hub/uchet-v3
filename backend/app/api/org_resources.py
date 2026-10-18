@@ -43,8 +43,9 @@ class OrgResource:
     order_by: Callable[[type], list]
     refs: dict[str, Ref] = field(default_factory=dict)
     nullable_fields: set[str] = field(default_factory=set)
-    # дополнительная проверка записи после применения изменений (ValueError → 422)
-    check: Callable[[object], None] | None = None
+    # дополнительная проверка и подготовка записи после применения изменений:
+    # check(db, obj, creating); ValueError → 422 с текстом ошибки
+    check: Callable[[Session, object, bool], None] | None = None
 
 
 def _check_refs(db: Session, organization_id: int, data: dict, refs: dict[str, Ref]) -> None:
@@ -60,10 +61,12 @@ def _check_refs(db: Session, organization_id: int, data: dict, refs: dict[str, R
             )
 
 
-def _save(db: Session, resource: OrgResource, obj) -> None:
+def _save(db: Session, resource: OrgResource, obj, creating: bool) -> None:
     if resource.check is not None:
         try:
-            resource.check(obj)
+            # без автозаписи: новая запись не должна уйти в базу раньше, чем проверка её заполнит
+            with db.no_autoflush:
+                resource.check(db, obj, creating)
         except ValueError as exc:
             db.rollback()
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
@@ -111,7 +114,7 @@ def register(router: APIRouter, resource: OrgResource) -> None:
         _check_refs(db, organization_id, data, resource.refs)
         obj = Model(organization_id=organization_id, **data)
         db.add(obj)
-        _save(db, resource, obj)
+        _save(db, resource, obj, creating=True)
         return obj
 
     def update_item(item_id: int, body: Update, user: CurrentUser, db: DbSession):  # type: ignore[valid-type]
@@ -121,7 +124,7 @@ def register(router: APIRouter, resource: OrgResource) -> None:
         for name, value in data.items():
             if value is not None or name in resource.nullable_fields:
                 setattr(obj, name, value)
-        _save(db, resource, obj)
+        _save(db, resource, obj, creating=False)
         return obj
 
     collection = f"/organizations/{{organization_id}}/{resource.path}"
