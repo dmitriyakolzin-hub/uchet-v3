@@ -109,6 +109,19 @@ button:disabled { opacity: .6; cursor: default; }
 .tabulator-cell[tabulator-field="_edit"] { cursor: pointer; color: var(--accent); }
 .tabulator .tabulator-row.row-archived { color: var(--muted); }
 
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 20px; border-bottom: 1px solid var(--border); }
+.tab {
+  padding: 8px 14px;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+label.inline { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.inline-select { width: auto; min-width: 220px; margin: 0; }
+
 /* --- Формы --- */
 
 .form label { display: block; margin-top: 12px; color: var(--muted); }
