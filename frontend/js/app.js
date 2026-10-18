@@ -3,6 +3,7 @@ import { renderAccounts } from "./pages/accounts.js";
 import { renderArticles } from "./pages/articles.js";
 import { renderCommon } from "./pages/common.js";
 import { renderCurrencies } from "./pages/currencies.js";
+import { renderJournal } from "./pages/journal.js";
 import { renderOrganizations } from "./pages/organizations.js";
 import { renderPassword } from "./pages/password.js";
 import { renderReferences } from "./pages/references.js";
@@ -10,6 +11,7 @@ import { renderUsers } from "./pages/users.js";
 import { el } from "./ui.js";
 
 const PAGES = {
+  journal: { title: "Журнал операций", render: renderJournal },
   organizations: { title: "Организации", render: renderOrganizations },
   references: { title: "Справочники", render: renderReferences },
   accounts: { title: "План счетов", render: renderAccounts },
@@ -19,7 +21,7 @@ const PAGES = {
   users: { title: "Пользователи", render: renderUsers, adminOnly: true },
   password: { title: "Сменить пароль", render: renderPassword },
 };
-const DEFAULT_PAGE = "organizations";
+const DEFAULT_PAGE = "journal";
 
 const loginView = document.getElementById("login-view");
 const appView = document.getElementById("app-view");
@@ -53,11 +55,14 @@ async function route() {
     link.classList.toggle("active", link.dataset.page === key);
   }
   document.title = `${PAGES[key].title} — Учёт v3`;
-  view.replaceChildren(el("p", { class: "muted" }, "Загрузка…"));
+  // Каждый переход рисует в свой контейнер: если пользователь ушёл со страницы, пока она грузилась,
+  // запоздавшая отрисовка попадёт в отсоединённый контейнер и не затрёт новую страницу
+  const container = el("div", {}, el("p", { class: "muted" }, "Загрузка…"));
+  view.replaceChildren(container);
   try {
-    await PAGES[key].render(view, { me });
+    await PAGES[key].render(container, { me });
   } catch (err) {
-    if (err.status !== 401) view.replaceChildren(el("p", { class: "error" }, err.message));
+    if (err.status !== 401) container.replaceChildren(el("p", { class: "error" }, err.message));
   }
 }
 
