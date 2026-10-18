@@ -36,7 +36,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(5)
+    expect(page.locator("#nav a")).to_have_count(7)
 
     # организация
     page.click("text=Добавить организацию")
@@ -96,6 +96,48 @@ with sync_playwright() as p:
     page.screenshot(path=f"{OUT}/5_currencies.png", full_page=True)
     page.click("#nav a[data-page=organizations]")
 
+    # банк (общий справочник) и справочники организации
+    page.click("#nav a[data-page=banks]")
+    page.click("text=Добавить банк")
+    d = dialog_fill(page, {"bic": "044525225", "name": "ПАО Сбербанк", "corr_account": "30101810400000000225"})
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="ПАО Сбербанк")).to_be_visible()
+
+    page.click("#nav a[data-page=references]")
+    page.locator(".inline-select").select_option(label="Группа АВМВ")
+    page.click("button.tab:has-text('Расчётные счета')")
+    page.click("text=Добавить расчётный счёт")
+    d = page.locator("dialog[open]")
+    d.locator("[name=legal_entity_id]").select_option(label="Ромашка")
+    d.locator("[name=bank_id]").select_option(label="ПАО Сбербанк (044525225)")
+    dialog_fill(page, {"name": "Сбер, основной", "number": "40702810900000012345"})
+    d.locator("button[type=submit]").click()
+    row = page.locator(".tabulator-row", has_text="Сбер, основной")
+    expect(row).to_contain_text("ПАО Сбербанк")
+    expect(row).to_contain_text("RUB")  # валюта по умолчанию — рубль
+
+    page.click("button.tab:has-text('Контрагенты')")
+    page.click("text=Добавить контрагента")
+    d = dialog_fill(page, {"name": "Поставщик Плюс", "inn": "770111111"})  # 9 цифр — ошибка
+    d.locator("label.check", has_text="Поставщик").locator("input").check()
+    d.locator("button[type=submit]").click()
+    expect(d.locator(".error")).not_to_be_empty()
+    dialog_fill(page, {"inn": "7701111111"})
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="Поставщик Плюс")).to_contain_text("7701111111")
+
+    page.click("button.tab:has-text('Договоры')")
+    page.click("text=Добавить договор")
+    d = page.locator("dialog[open]")
+    d.locator("[name=counterparty_id]").select_option(label="Поставщик Плюс (ИНН 7701111111)")
+    d.locator("[name=legal_entity_id]").select_option(label="Ромашка")
+    dialog_fill(page, {"number": "15/2026", "contract_date": "2026-01-15"})
+    d.locator("button[type=submit]").click()
+    row = page.locator(".tabulator-row", has_text="15/2026")
+    expect(row).to_contain_text("Поставщик Плюс")
+    expect(row).to_contain_text("15.01.2026")
+    page.screenshot(path=f"{OUT}/7_contracts.png", full_page=True)
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")
@@ -110,7 +152,7 @@ with sync_playwright() as p:
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(4)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(6)  # нет «Пользователи»
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою
     expect(page.locator("h2", has_text="Юрлица: Группа АВМВ")).to_be_visible()  # выбрана автоматически
@@ -121,6 +163,13 @@ with sync_playwright() as p:
     expect(page.locator(".tabulator-row", has_text="Ромашка")).to_be_visible()
     expect(page.locator(".tabulator-cell[tabulator-field=_edit]", has_text="✎")).to_have_count(0)
     page.screenshot(path=f"{OUT}/4_ceo.png", full_page=True)
+
+    # CEO видит справочники организации без кнопок изменения
+    page.click("#nav a[data-page=references]")
+    page.click("button.tab:has-text('Контрагенты')")
+    expect(page.locator(".tabulator-row", has_text="Поставщик Плюс")).to_be_visible()
+    expect(page.locator("text=Добавить контрагента")).to_have_count(0)
+    expect(page.locator(".tabulator-cell[tabulator-field=_edit]")).to_have_count(0)
 
     # CEO видит план счетов, но не может его менять
     page.click("#nav a[data-page=accounts]")

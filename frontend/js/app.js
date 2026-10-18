@@ -1,15 +1,19 @@
 import { api, clearSession, hasSession, login } from "./api.js";
 import { renderAccounts } from "./pages/accounts.js";
+import { renderBanks } from "./pages/banks.js";
 import { renderCurrencies } from "./pages/currencies.js";
 import { renderOrganizations } from "./pages/organizations.js";
 import { renderPassword } from "./pages/password.js";
+import { renderReferences } from "./pages/references.js";
 import { renderUsers } from "./pages/users.js";
 import { el } from "./ui.js";
 
 const PAGES = {
   organizations: { title: "Организации", render: renderOrganizations },
+  references: { title: "Справочники", render: renderReferences },
   accounts: { title: "План счетов", render: renderAccounts },
   currencies: { title: "Валюты", render: renderCurrencies },
+  banks: { title: "Банки", render: renderBanks },
   users: { title: "Пользователи", render: renderUsers, adminOnly: true },
   password: { title: "Сменить пароль", render: renderPassword },
 };

@@ -63,7 +63,7 @@ def database():
 def _clean_tables():
     yield
     with get_engine().begin() as conn:
-        conn.execute(text("TRUNCATE users, organizations, exchange_rates RESTART IDENTITY CASCADE"))
+        conn.execute(text("TRUNCATE users, organizations, exchange_rates, banks RESTART IDENTITY CASCADE"))
         conn.execute(text("DELETE FROM currencies WHERE code <> 'RUB'"))  # рубль заводит миграция
         # план счетов заводит миграция: удаляем только счета, созданные тестами (сначала субсчета)
         conn.execute(
