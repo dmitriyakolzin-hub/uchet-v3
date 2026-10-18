@@ -36,7 +36,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(4)
+    expect(page.locator("#nav a")).to_have_count(5)
 
     # организация
     page.click("text=Добавить организацию")
@@ -59,6 +59,27 @@ with sync_playwright() as p:
     d.locator("button[type=submit]").click()
     expect(page.locator(".tabulator-row", has_text="Ромашка")).to_be_visible()
     page.screenshot(path=f"{OUT}/1_organizations.png", full_page=True)
+
+    # план счетов: дерево, добавление субсчёта, смена аналитики
+    page.click("#nav a[data-page=accounts]")
+    row60 = page.locator(".tabulator-row", has_text="Расчёты с поставщиками и подрядчиками").first
+    expect(row60).to_contain_text("Контрагент, Договор")
+    expect(page.locator(".tabulator-row", has_text="Авансы выданные")).to_have_count(0)  # свёрнуто
+    row60.locator(".tabulator-data-tree-control").click()
+    expect(page.locator(".tabulator-row", has_text="Авансы выданные")).to_be_visible()
+    page.click("text=Добавить счёт или субсчёт")
+    d = dialog_fill(page, {"code": "76.05", "name": "Расчёты с арендодателями"})
+    d.locator("button[type=submit]").click()
+    row76 = page.locator(".tabulator-row", has_text="Расчёты с разными дебиторами").first
+    row76.locator(".tabulator-data-tree-control").click()
+    sub = page.locator(".tabulator-row", has_text="Расчёты с арендодателями")
+    expect(sub).to_contain_text("Контрагент, Договор")  # унаследовал от 76
+    sub.locator(".tabulator-cell[tabulator-field=_edit]").click()
+    d = page.locator("dialog[open]")
+    d.locator("label.check", has_text="ЦФО").locator("input").check()
+    d.locator("button[type=submit]").click()
+    expect(sub).to_contain_text("Контрагент, Договор, ЦФО")
+    page.screenshot(path=f"{OUT}/6_accounts.png", full_page=True)
 
     # валюта и курс (с запятой, как привычно)
     page.click("#nav a[data-page=currencies]")
@@ -89,7 +110,7 @@ with sync_playwright() as p:
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(3)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(4)  # нет «Пользователи»
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою
     expect(page.locator("h2", has_text="Юрлица: Группа АВМВ")).to_be_visible()  # выбрана автоматически
@@ -100,6 +121,12 @@ with sync_playwright() as p:
     expect(page.locator(".tabulator-row", has_text="Ромашка")).to_be_visible()
     expect(page.locator(".tabulator-cell[tabulator-field=_edit]", has_text="✎")).to_have_count(0)
     page.screenshot(path=f"{OUT}/4_ceo.png", full_page=True)
+
+    # CEO видит план счетов, но не может его менять
+    page.click("#nav a[data-page=accounts]")
+    expect(page.locator(".tabulator-row", has_text="Касса")).to_be_visible()
+    expect(page.locator("text=Добавить счёт или субсчёт")).to_have_count(0)
+    expect(page.locator(".tabulator-cell[tabulator-field=_edit]")).to_have_count(0)
 
     # CEO видит валюты и курсы, но не может их менять
     page.click("#nav a[data-page=currencies]")

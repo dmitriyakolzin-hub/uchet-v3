@@ -107,6 +107,7 @@ button:disabled { opacity: .6; cursor: default; }
 .tabulator { font-size: 14px; border-radius: 6px; }
 .tabulator .tabulator-row.tabulator-selected { background: var(--accent-soft); }
 .tabulator-cell[tabulator-field="_edit"] { cursor: pointer; color: var(--accent); }
+.tabulator .tabulator-row.row-archived { color: var(--muted); }
 
 /* --- Формы --- */
 

@@ -46,10 +46,15 @@ def _recreate_test_database() -> None:
     admin_engine.dispose()
 
 
+SEED_ACCOUNT_IDS: set[int] = set()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def database():
     _recreate_test_database()
     command.upgrade(alembic_config(), "head")
+    with get_engine().connect() as conn:
+        SEED_ACCOUNT_IDS.update(conn.execute(text("SELECT id FROM accounts")).scalars())
     yield
     get_engine().dispose()
 
@@ -60,6 +65,12 @@ def _clean_tables():
     with get_engine().begin() as conn:
         conn.execute(text("TRUNCATE users, organizations, exchange_rates RESTART IDENTITY CASCADE"))
         conn.execute(text("DELETE FROM currencies WHERE code <> 'RUB'"))  # рубль заводит миграция
+        # план счетов заводит миграция: удаляем только счета, созданные тестами (сначала субсчета)
+        conn.execute(
+            text("DELETE FROM accounts WHERE NOT (id = ANY(:ids)) AND parent_id IS NOT NULL"),
+            {"ids": list(SEED_ACCOUNT_IDS)},
+        )
+        conn.execute(text("DELETE FROM accounts WHERE NOT (id = ANY(:ids))"), {"ids": list(SEED_ACCOUNT_IDS)})
 
 
 @pytest.fixture
