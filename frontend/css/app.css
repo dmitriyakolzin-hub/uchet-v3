@@ -4,8 +4,12 @@
   --text: #1f2328;
   --muted: #6b7280;
   --accent: #2557a7;
+  --accent-soft: #e8eef8;
   --error: #b42318;
+  --ok: #067647;
   --border: #d0d5dd;
+  --sidebar: #1c2b42;
+  --sidebar-text: #d6deeb;
 }
 
 * { box-sizing: border-box; }
@@ -13,41 +17,32 @@
 body {
   margin: 0;
   min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 16px;
   background: var(--bg);
   color: var(--text);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-.card {
-  width: 100%;
-  max-width: 360px;
-  padding: 28px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
+[hidden] { display: none !important; }
 
-h1 { margin: 0 0 20px; font-size: 22px; }
+h1 { margin: 0 0 16px; font-size: 22px; }
+h2 { margin: 0 0 12px; font-size: 18px; }
 
-label { display: block; margin-bottom: 14px; color: var(--muted); }
-
-input {
+input, select, textarea {
   display: block;
   width: 100%;
   margin-top: 4px;
-  padding: 9px 10px;
+  padding: 8px 10px;
   font: inherit;
   color: var(--text);
+  background: #fff;
   border: 1px solid var(--border);
   border-radius: 6px;
 }
 
+input[type="checkbox"] { display: inline; width: auto; margin: 0 6px 0 0; }
+
 button {
-  width: 100%;
-  padding: 10px;
+  padding: 8px 16px;
   font: inherit;
   color: #fff;
   background: var(--accent);
@@ -56,7 +51,99 @@ button {
   cursor: pointer;
 }
 
+button.secondary { color: var(--text); background: #fff; border: 1px solid var(--border); }
 button:disabled { opacity: .6; cursor: default; }
 
 .error { min-height: 1.5em; margin: 0 0 8px; color: var(--error); }
 .muted { color: var(--muted); }
+
+/* --- Вход --- */
+
+.login {
+  max-width: 360px;
+  margin: 12vh auto 0;
+  padding: 28px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.login label { display: block; margin-bottom: 14px; color: var(--muted); }
+.login button { width: 100%; }
+
+/* --- Основная раскладка --- */
+
+.layout { display: flex; min-height: 100vh; }
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 230px;
+  flex-shrink: 0;
+  padding: 20px 12px;
+  background: var(--sidebar);
+  color: var(--sidebar-text);
+}
+.brand { margin: 0 8px 24px; font-size: 19px; font-weight: 700; color: #fff; }
+.sidebar nav a {
+  display: block;
+  padding: 9px 12px;
+  margin-bottom: 4px;
+  color: var(--sidebar-text);
+  text-decoration: none;
+  border-radius: 6px;
+}
+.sidebar nav a:hover { background: rgba(255, 255, 255, .08); }
+.sidebar nav a.active { color: #fff; background: var(--accent); }
+.sidebar-foot { margin-top: auto; padding: 0 8px; }
+.sidebar-foot span { display: block; margin-bottom: 8px; }
+.sidebar-foot button { width: 100%; }
+
+.content { flex: 1; min-width: 0; padding: 24px 28px; }
+
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.page-head h1, .page-head h2 { margin: 0; }
+.section { margin-top: 32px; }
+
+.tabulator { font-size: 14px; border-radius: 6px; }
+.tabulator .tabulator-row.tabulator-selected { background: var(--accent-soft); }
+.tabulator-cell[tabulator-field="_edit"] { cursor: pointer; color: var(--accent); }
+
+/* --- Формы --- */
+
+.form label { display: block; margin-top: 12px; color: var(--muted); }
+.form label.check { color: var(--text); }
+.form small { display: block; margin-top: 2px; }
+.form.narrow { max-width: 380px; }
+.form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+.dialog {
+  width: min(560px, calc(100vw - 32px));
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.dialog::backdrop { background: rgba(16, 24, 40, .45); }
+
+.roles { margin-top: 16px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; }
+.roles table { width: 100%; border-collapse: collapse; }
+.roles td { padding: 4px 0; }
+.roles td:first-child { padding-right: 12px; }
+
+.toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 1000;
+  padding: 10px 16px;
+  color: #fff;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .15);
+}
+.toast-ok { background: var(--ok); }
+.toast-error { background: var(--error); }
+
+@media (max-width: 720px) {
+  .layout { flex-direction: column; }
+  .sidebar { width: auto; }
+  .content { padding: 16px; }
+}

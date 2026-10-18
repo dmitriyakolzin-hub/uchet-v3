@@ -1,65 +1,92 @@
 // Обращение к серверу: подставляет токен, при истечении один раз обновляет его.
-const Api = (() => {
-  const ACCESS = "uchet3_access";
-  const REFRESH = "uchet3_refresh";
+const ACCESS = "uchet3_access";
+const REFRESH = "uchet3_refresh";
 
-  function store(tokens) {
-    localStorage.setItem(ACCESS, tokens.access_token);
-    localStorage.setItem(REFRESH, tokens.refresh_token);
+export class ApiError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
   }
+}
 
-  function clear() {
-    localStorage.removeItem(ACCESS);
-    localStorage.removeItem(REFRESH);
+function store(tokens) {
+  localStorage.setItem(ACCESS, tokens.access_token);
+  localStorage.setItem(REFRESH, tokens.refresh_token);
+}
+
+export function clearSession() {
+  localStorage.removeItem(ACCESS);
+  localStorage.removeItem(REFRESH);
+}
+
+export function hasSession() {
+  return Boolean(localStorage.getItem(REFRESH));
+}
+
+// Текст ошибки из ответа сервера: строка detail или список ошибок проверки полей.
+async function errorMessage(resp) {
+  const body = await resp.json().catch(() => ({}));
+  if (typeof body.detail === "string") return body.detail;
+  if (Array.isArray(body.detail)) {
+    return body.detail
+      .map((e) => `${(e.loc || []).filter((p) => p !== "body").join(".")}: ${e.msg}`)
+      .join("; ");
   }
+  return `Ошибка сервера (${resp.status})`;
+}
 
-  function hasSession() {
-    return Boolean(localStorage.getItem(REFRESH));
+export async function login(loginName, password) {
+  const resp = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ login: loginName, password }),
+  });
+  if (!resp.ok) throw new ApiError(resp.status, await errorMessage(resp));
+  store(await resp.json());
+}
+
+async function refresh() {
+  const token = localStorage.getItem(REFRESH);
+  if (!token) return false;
+  const resp = await fetch("/api/auth/refresh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: token }),
+  });
+  if (!resp.ok) {
+    clearSession();
+    return false;
   }
+  store(await resp.json());
+  return true;
+}
 
-  async function login(login, password) {
-    const resp = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ login, password }),
+async function request(method, path, body) {
+  const send = () =>
+    fetch(path, {
+      method,
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem(ACCESS) || ""}`,
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    if (!resp.ok) {
-      const body = await resp.json().catch(() => ({}));
-      throw new Error(typeof body.detail === "string" ? body.detail : "Не удалось войти");
-    }
-    store(await resp.json());
+  let resp = await send();
+  if (resp.status === 401 && (await refresh())) resp = await send();
+  if (resp.status === 401) {
+    clearSession();
+    window.dispatchEvent(new Event("session-expired"));
+    throw new ApiError(401, "Требуется вход в систему");
   }
+  if (!resp.ok) throw new ApiError(resp.status, await errorMessage(resp));
+  if (resp.status === 204) return null;
+  return resp.json();
+}
 
-  async function refresh() {
-    const token = localStorage.getItem(REFRESH);
-    if (!token) return false;
-    const resp = await fetch("/api/auth/refresh", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: token }),
-    });
-    if (!resp.ok) {
-      clear();
-      return false;
-    }
-    store(await resp.json());
-    return true;
-  }
-
-  async function request(path, options = {}) {
-    const send = () =>
-      fetch(path, {
-        ...options,
-        headers: {
-          ...(options.headers || {}),
-          Authorization: `Bearer ${localStorage.getItem(ACCESS) || ""}`,
-        },
-      });
-    let resp = await send();
-    if (resp.status === 401 && (await refresh())) resp = await send();
-    if (resp.status === 401) throw new Error("unauthorized");
-    return resp;
-  }
-
-  return { login, request, clear, hasSession };
-})();
+export const api = {
+  get: (path) => request("GET", path),
+  post: (path, body) => request("POST", path, body ?? {}),
+  patch: (path, body) => request("PATCH", path, body),
+  put: (path, body) => request("PUT", path, body),
+  storeTokens: store,
+};
