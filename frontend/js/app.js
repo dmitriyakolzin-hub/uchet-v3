@@ -1,4 +1,5 @@
 import { api, clearSession, hasSession, login } from "./api.js";
+import { renderAccounts } from "./pages/accounts.js";
 import { renderCurrencies } from "./pages/currencies.js";
 import { renderOrganizations } from "./pages/organizations.js";
 import { renderPassword } from "./pages/password.js";
@@ -7,6 +8,7 @@ import { el } from "./ui.js";
 
 const PAGES = {
   organizations: { title: "Организации", render: renderOrganizations },
+  accounts: { title: "План счетов", render: renderAccounts },
   currencies: { title: "Валюты", render: renderCurrencies },
   users: { title: "Пользователи", render: renderUsers, adminOnly: true },
   password: { title: "Сменить пароль", render: renderPassword },

@@ -16,6 +16,7 @@ export function el(tag, attrs = {}, ...children) {
 }
 
 export function toast(message, kind = "ok") {
+  document.querySelectorAll(".toast").forEach((t) => t.remove()); // новое уведомление заменяет старое
   const box = el("div", { class: `toast toast-${kind}`, role: "status" }, message);
   document.body.append(box);
   setTimeout(() => box.remove(), kind === "error" ? 6000 : 3000);

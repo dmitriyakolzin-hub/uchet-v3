@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from app.api import auth, currencies, health, organizations, users
+from app.api import accounts, auth, currencies, health, organizations, users
 from app.core.config import SettingsError, get_settings
 
 # В контейнере фронтенд лежит в /app/frontend, в репозитории — рядом с backend/.
@@ -29,6 +29,7 @@ def create_app() -> FastAPI:
     app.include_router(organizations.router)
     app.include_router(users.router)
     app.include_router(currencies.router)
+    app.include_router(accounts.router)
 
     frontend = next((p for p in _FRONTEND_CANDIDATES if p.is_dir()), None)
     if frontend is not None:

@@ -40,6 +40,6 @@ def test_every_protected_route_rejects_anonymous(client):
         if (method, route.path) in PUBLIC:
             continue
         path = route.path.replace("{organization_id}", "1").replace("{entity_id}", "1")
-        path = path.replace("{user_id}", "1").replace("{currency_id}", "1").replace("{rate_id}", "1")
+        path = path.replace("{user_id}", "1").replace("{currency_id}", "1").replace("{rate_id}", "1").replace("{account_id}", "1")
         resp = client.request(method, path, json={})
         assert resp.status_code == 401, f"{method} {path} -> {resp.status_code}"
