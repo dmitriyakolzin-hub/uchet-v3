@@ -20,7 +20,7 @@
 
 ```bash
 cd /opt/uchet-app
-ls compose.override.yaml compose.override.yml docker-compose.override.yml 2>/dev/null && echo "СТОП: override-файл уже есть, пришлите вывод в сессию" || echo "override-файла нет, можно продолжать"
+[ -e compose.override.yaml ] || [ -e compose.override.yml ] || [ -e docker-compose.override.yml ] && echo "СТОП: override-файл уже есть, пришлите вывод в сессию" || echo "override-файла нет, можно продолжать"
 cp -p .env .env.bak-$(date +%F) && cp -p compose.yaml compose.yaml.bak-$(date +%F) && echo "копии сделаны"
 docker exec uchet_backend sh -c '[ -n "$JWT_SECRET" ] && echo "JWT_SECRET: ЗАДАН" || echo "JWT_SECRET: НЕ ЗАДАН"'
 ```
