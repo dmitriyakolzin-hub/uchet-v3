@@ -2,6 +2,7 @@ from app.models.account import Account, AccountAnalytic
 from app.models.article import Article
 from app.models.cfo import Cfo, Employee
 from app.models.currency import Currency, ExchangeRate
+from app.models.journal import Operation, OperationEvent, Posting
 from app.models.membership import Membership
 from app.models.organization import LegalEntity, Organization
 from app.models.reference import (
@@ -31,7 +32,10 @@ __all__ = [
     "LegalEntity",
     "Membership",
     "Nomenclature",
+    "Operation",
+    "OperationEvent",
     "Organization",
+    "Posting",
     "SalaryProject",
     "Unit",
     "User",
