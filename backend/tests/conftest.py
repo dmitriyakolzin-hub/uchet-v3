@@ -47,6 +47,7 @@ def _recreate_test_database() -> None:
 
 
 SEED_ACCOUNT_IDS: set[int] = set()
+SEED_UNIT_IDS: set[int] = set()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -55,6 +56,7 @@ def database():
     command.upgrade(alembic_config(), "head")
     with get_engine().connect() as conn:
         SEED_ACCOUNT_IDS.update(conn.execute(text("SELECT id FROM accounts")).scalars())
+        SEED_UNIT_IDS.update(conn.execute(text("SELECT id FROM units")).scalars())
     yield
     get_engine().dispose()
 
@@ -71,6 +73,7 @@ def _clean_tables():
             {"ids": list(SEED_ACCOUNT_IDS)},
         )
         conn.execute(text("DELETE FROM accounts WHERE NOT (id = ANY(:ids))"), {"ids": list(SEED_ACCOUNT_IDS)})
+        conn.execute(text("DELETE FROM units WHERE NOT (id = ANY(:ids))"), {"ids": list(SEED_UNIT_IDS)})
 
 
 @pytest.fixture

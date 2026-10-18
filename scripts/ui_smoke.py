@@ -97,7 +97,10 @@ with sync_playwright() as p:
     page.click("#nav a[data-page=organizations]")
 
     # банк (общий справочник) и справочники организации
-    page.click("#nav a[data-page=banks]")
+    page.click("#nav a[data-page=common]")
+    page.click("button.tab:has-text('Единицы измерения')")
+    expect(page.locator(".tabulator-row", has_text="Штука")).to_be_visible()
+    page.click("button.tab:has-text('Банки')")
     page.click("text=Добавить банк")
     d = dialog_fill(page, {"bic": "044525225", "name": "ПАО Сбербанк", "corr_account": "30101810400000000225"})
     d.locator("button[type=submit]").click()
@@ -155,6 +158,21 @@ with sync_playwright() as p:
     expect(row).to_contain_text("Филиал")
     expect(row.locator(".tabulator-cell[tabulator-field=_add]")).to_have_text("+ магазин")
     page.screenshot(path=f"{OUT}/8_cfos.png", full_page=True)
+
+    page.click("button.tab:has-text('Склады')")
+    page.click("text=Добавить склад")
+    d = dialog_fill(page, {"name": "Склад Юг"})
+    d.locator("[name=cfo_id]").select_option(label="АВМВ / Торговля / Филиал Юг")
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="Склад Юг")).to_contain_text("Филиал Юг")
+
+    page.click("button.tab:has-text('Номенклатура')")
+    page.click("text=Добавить номенклатуру")
+    d = dialog_fill(page, {"name": "Кофе зерновой", "article": "CF-001"})
+    expect(d.locator("[name=unit_id] option:checked")).to_have_text("шт — Штука")  # по умолчанию
+    d.locator("[name=unit_id]").select_option(label="кг — Килограмм")
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="Кофе зерновой")).to_contain_text("кг")
 
     page.click("button.tab:has-text('Сотрудники')")
     page.click("text=Добавить сотрудника")

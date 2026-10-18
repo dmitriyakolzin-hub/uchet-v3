@@ -128,3 +128,46 @@ class Contract(OrgScoped, Base):
     number: Mapped[str] = mapped_column(String(100))
     contract_date: Mapped[date | None] = mapped_column(Date)
     name: Mapped[str] = mapped_column(String(255), default="", server_default="")
+
+
+class Unit(Base):
+    """Единица измерения (по ОКЕИ). Общий справочник, изменяет администратор."""
+
+    __tablename__ = "units"
+    __table_args__ = (CheckConstraint("okei ~ '^[0-9]{3,4}$'", name="okei"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    okei: Mapped[str] = mapped_column(String(4), unique=True)
+    short_name: Mapped[str] = mapped_column(String(20))
+    name: Mapped[str] = mapped_column(String(100))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+
+
+class Nomenclature(OrgScoped, Base):
+    """Номенклатура организации: товар, материал, продукция или услуга."""
+
+    __tablename__ = "nomenclature"
+    __table_args__ = (
+        CheckConstraint("kind IN ('goods', 'material', 'product', 'service')", name="kind"),
+        Index(
+            "uq_nomenclature_organization_article",
+            "organization_id",
+            "article",
+            unique=True,
+            postgresql_where=text("article <> ''"),
+        ),
+    )
+
+    name: Mapped[str] = mapped_column(String(255))
+    article: Mapped[str] = mapped_column(String(100), default="", server_default="")
+    unit_id: Mapped[int] = mapped_column(ForeignKey("units.id", ondelete="RESTRICT"))
+    kind: Mapped[str] = mapped_column(String(20))
+
+
+class Warehouse(OrgScoped, Base):
+    """Склад организации."""
+
+    __tablename__ = "warehouses"
+
+    name: Mapped[str] = mapped_column(String(255))
+    cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"))

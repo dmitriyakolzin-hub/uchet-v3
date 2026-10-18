@@ -11,6 +11,12 @@ const COUNTERPARTY_KINDS = [
   ["entrepreneur", "ИП"],
   ["person", "Физлицо"],
 ];
+const NOMENCLATURE_KINDS = [
+  ["goods", "Товар"],
+  ["material", "Материал"],
+  ["product", "Продукция"],
+  ["service", "Услуга"],
+];
 const CONTRACT_KINDS = [
   ["supplier", "С поставщиком"],
   ["customer", "С покупателем"],
@@ -214,6 +220,45 @@ const TABS = [
       ];
     },
   },
+  {
+    key: "nomenclature",
+    title: "Номенклатура",
+    addText: "Добавить номенклатуру",
+    columns: (d) => [
+      { title: "Наименование", field: "name", widthGrow: 3, headerFilter: "input", headerFilterPlaceholder: "поиск" },
+      { title: "Артикул", field: "article", width: 140, headerFilter: "input", headerFilterPlaceholder: "поиск" },
+      { title: "Вид", field: "kind", width: 130, formatter: titleOf(NOMENCLATURE_KINDS) },
+      { title: "Ед. изм.", field: "unit_id", width: 100, formatter: lookup(d.units, (u) => u.short_name) },
+    ],
+    fields: (d) => [
+      { name: "name", label: "Наименование", required: true },
+      { name: "article", label: "Артикул", hint: "Если указан — не повторяется" },
+      { name: "kind", label: "Вид", type: "select", options: NOMENCLATURE_KINDS, default: "goods" },
+      { name: "unit_id", label: "Единица измерения", type: "select", required: true, numeric: true,
+        options: optionsOf(d.units, (u) => `${u.short_name} — ${u.name}`),
+        default: String(d.units.find((u) => u.okei === "796")?.id ?? "") },
+    ],
+  },
+  {
+    key: "warehouses",
+    title: "Склады",
+    addText: "Добавить склад",
+    columns: (d) => {
+      const labels = cfoPathLabels(d.cfos);
+      return [
+        { title: "Наименование", field: "name", widthGrow: 2 },
+        { title: "ЦФО", field: "cfo_id", widthGrow: 3, formatter: (c) => labels.get(c.getValue()) ?? "" },
+      ];
+    },
+    fields: (d) => {
+      const labels = cfoPathLabels(d.cfos);
+      return [
+        { name: "name", label: "Наименование", required: true, placeholder: "Склад магазина на Ленина" },
+        { name: "cfo_id", label: "ЦФО", type: "select", numeric: true,
+          options: [["", "— не указан —"], ...d.cfos.map((c) => [String(c.id), labels.get(c.id) + (c.is_active ? "" : " (архив)")])] },
+      ];
+    },
+  },
 ];
 
 export async function renderReferences(view) {
@@ -248,17 +293,17 @@ export async function renderReferences(view) {
     );
     tabBox.replaceChildren(el("p", { class: "muted" }, "Загрузка…"));
     const tab = TABS.find((t) => t.key === tabKey);
-    const [entities, banks, currencies, counterparties] = await Promise.all([
+    // заранее загружаем только то, что нужно этой вкладке
+    const need = (keys, load) => (keys.includes(tab.key) ? load() : []);
+    const [entities, banks, currencies, counterparties, cfos, units] = await Promise.all([
       api.get(`/api/organizations/${org.id}/legal-entities`),
-      api.get("/api/banks"),
-      api.get("/api/currencies"),
-      tab.key === "contracts" ? api.get(`/api/organizations/${org.id}/counterparties`) : [],
+      need(["bank-accounts", "salary-projects"], () => api.get("/api/banks")),
+      need(["bank-accounts", "contracts"], () => api.get("/api/currencies")),
+      need(["contracts"], () => api.get(`/api/organizations/${org.id}/counterparties`)),
+      need(["cfos", "employees", "warehouses"], () => api.get(`/api/organizations/${org.id}/cfos`)),
+      need(["nomenclature"], () => api.get("/api/units")),
     ]);
-    const d = { entities, banks, currencies, counterparties, cfos: [], rub: currencies.find((c) => c.is_base) };
-    const loadCfos = async () => {
-      d.cfos = ["cfos", "employees"].includes(tab.key) ? await api.get(`/api/organizations/${org.id}/cfos`) : [];
-    };
-    await loadCfos();
+    const d = { entities, banks, currencies, counterparties, cfos, units, rub: currencies.find((c) => c.is_base) };
     const state = { canEdit: org.permissions.includes("edit_reference"), ref: null };
     state.ref = await referenceTab(tabBox, {
       title: tab.title,

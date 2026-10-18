@@ -255,3 +255,80 @@ class EmployeeOut(_Out):
     hired_on: dt.date | None
     fired_on: dt.date | None
     is_active: bool
+
+
+# --- Единицы измерения (общий справочник) ---
+
+Okei = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d{3,4}$")]
+ShortName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20)]
+UnitName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+
+
+class UnitCreate(BaseModel):
+    okei: Okei
+    short_name: ShortName
+    name: UnitName
+
+
+class UnitUpdate(BaseModel):
+    short_name: ShortName | None = None
+    name: UnitName | None = None
+    is_active: bool | None = None
+
+
+class UnitOut(_Out):
+    id: int
+    okei: str
+    short_name: str
+    name: str
+    is_active: bool
+
+
+# --- Номенклатура и склады ---
+
+NomenclatureKind = Literal["goods", "material", "product", "service"]
+Article = Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]
+
+
+class NomenclatureCreate(BaseModel):
+    name: Name
+    article: Article = ""
+    unit_id: int
+    kind: NomenclatureKind
+
+
+class NomenclatureUpdate(BaseModel):
+    name: Name | None = None
+    article: Article | None = None
+    unit_id: int | None = None
+    kind: NomenclatureKind | None = None
+    is_active: bool | None = None
+
+
+class NomenclatureOut(_Out):
+    id: int
+    organization_id: int
+    name: str
+    article: str
+    unit_id: int
+    kind: NomenclatureKind
+    is_active: bool
+
+
+class WarehouseCreate(BaseModel):
+    name: Name
+    cfo_id: int | None = None
+
+
+class WarehouseUpdate(BaseModel):
+    name: Name | None = None
+    cfo_id: int | None = None
+    is_active: bool | None = None
+
+
+class WarehouseOut(_Out):
+    id: int
+    organization_id: int
+    name: str
+    cfo_id: int | None
+    is_active: bool
