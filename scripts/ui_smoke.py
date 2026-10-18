@@ -36,7 +36,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(3)
+    expect(page.locator("#nav a")).to_have_count(4)
 
     # организация
     page.click("text=Добавить организацию")
@@ -60,6 +60,21 @@ with sync_playwright() as p:
     expect(page.locator(".tabulator-row", has_text="Ромашка")).to_be_visible()
     page.screenshot(path=f"{OUT}/1_organizations.png", full_page=True)
 
+    # валюта и курс (с запятой, как привычно)
+    page.click("#nav a[data-page=currencies]")
+    expect(page.locator(".tabulator-row", has_text="Российский рубль")).to_be_visible()
+    page.click("text=Добавить валюту")
+    d = dialog_fill(page, {"code": "usd", "numeric_code": "840", "name": "Доллар США"})
+    d.locator("button[type=submit]").click()
+    expect(page.locator("h2", has_text="Курсы: USD")).to_be_visible()
+    page.click("text=Добавить курс")
+    d = dialog_fill(page, {"rate_date": "2026-10-01", "rate": "81,5432"})
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="81,5432")).to_be_visible()
+    expect(page.locator(".tabulator-row", has_text="01.10.2026")).to_be_visible()
+    page.screenshot(path=f"{OUT}/5_currencies.png", full_page=True)
+    page.click("#nav a[data-page=organizations]")
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")
@@ -74,7 +89,7 @@ with sync_playwright() as p:
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(2)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(3)  # нет «Пользователи»
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою
     expect(page.locator("h2", has_text="Юрлица: Группа АВМВ")).to_be_visible()  # выбрана автоматически
@@ -85,6 +100,14 @@ with sync_playwright() as p:
     expect(page.locator(".tabulator-row", has_text="Ромашка")).to_be_visible()
     expect(page.locator(".tabulator-cell[tabulator-field=_edit]", has_text="✎")).to_have_count(0)
     page.screenshot(path=f"{OUT}/4_ceo.png", full_page=True)
+
+    # CEO видит валюты и курсы, но не может их менять
+    page.click("#nav a[data-page=currencies]")
+    page.locator(".tabulator-row", has_text="Доллар США").locator(".tabulator-cell").first.click()
+    expect(page.locator(".tabulator-row", has_text="81,5432")).to_be_visible()
+    expect(page.locator("text=Добавить валюту")).to_have_count(0)
+    expect(page.locator("text=Добавить курс")).to_be_hidden()
+    expect(page.locator(".tabulator-cell[tabulator-field=_delete]")).to_have_count(0)
 
     # смена пароля
     page.click("#nav a[data-page=password]")
