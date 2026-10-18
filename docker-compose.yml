@@ -1,0 +1,49 @@
+# Новая система uchet-v3. Имена контейнеров, тома и порт не пересекаются
+# со старой системой (uchet_backend, uchet_postgres, порт 8000).
+# Все секреты — в файле .env рядом с этим файлом.
+name: uchet-v3
+
+services:
+  db:
+    image: postgres:17
+    container_name: uchet3-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?задайте POSTGRES_DB в .env}
+      POSTGRES_USER: ${POSTGRES_USER:?задайте POSTGRES_USER в .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}
+    volumes:
+      - uchet3_pgdata:/var/lib/postgresql/data
+    # Порт базы наружу не открыт: к ней обращается только приложение.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: uchet3-app:latest
+    container_name: uchet3-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:?задайте JWT_SECRET в .env}
+      ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-15}
+      REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-7}
+    # Только локально: снаружи доступ через nginx (new.cfo-avmv.ru).
+    ports:
+      - "127.0.0.1:${APP_PORT:-8001}:8000"
+
+volumes:
+  uchet3_pgdata:
+    name: uchet3_pgdata

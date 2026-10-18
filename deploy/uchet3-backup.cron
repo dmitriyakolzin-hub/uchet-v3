@@ -1,0 +1,9 @@
+# Расписание бэкапов новой системы uchet-v3 (время сервера).
+# Устанавливается командой из deploy/README.md в /etc/cron.d/uchet3-backup
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Каждый день в 03:15 — бэкап
+15 3 * * * root /opt/uchet-v3/deploy/backup.sh >> /var/log/uchet3-backup.log 2>&1
+# Каждое воскресенье в 04:15 — проверка, что последний бэкап восстанавливается
+15 4 * * 0 root /opt/uchet-v3/deploy/backup_check.sh >> /var/log/uchet3-backup.log 2>&1

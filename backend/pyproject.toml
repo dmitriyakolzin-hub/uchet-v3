@@ -1,0 +1,30 @@
+[project]
+name = "uchet-v3"
+version = "0.1.0"
+description = "Система управленческого учёта и бюджетирования"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi==0.145.0",
+    "uvicorn[standard]==0.54.0",
+    "sqlalchemy==2.1.5",
+    "psycopg[binary]==3.3.6",
+    "alembic==1.20.0",
+    "pydantic==2.14.1",
+    "pydantic-settings==2.16.0",
+    "pyjwt==2.15.1",
+    "pwdlib[argon2]==0.3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "httpx==0.28.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = [
+    # тесты намеренно подписывают поддельные токены короткими ключами
+    "ignore::jwt.warnings.InsecureKeyLengthWarning",
+]
