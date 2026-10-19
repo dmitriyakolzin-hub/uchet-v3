@@ -4,6 +4,7 @@
     .venv/bin/python scripts/ui_smoke.py <папка для скриншотов>
 Нужен пакет playwright и Chromium (в облачной среде: /opt/pw-browsers/chromium).
 """
+import datetime as dt
 import os
 import sys
 from playwright.sync_api import sync_playwright, expect
@@ -565,6 +566,14 @@ with sync_playwright() as p:
     page.once("dialog", lambda dlg: dlg.accept())
     page.locator("tr", has_text="Ноябрь 2026").locator("button", has_text="Отменить").click()
     expect(page.locator("text=Начислений пока нет.")).to_be_visible()
+    # списание и его отмена
+    page.locator("tr", has_text="Ноутбук").first.locator("button", has_text="Продать / списать").click()
+    page.locator("dialog[open] button[type=submit]").click()
+    expect(page.locator(".toast")).to_have_text("Списание проведено")
+    expect(page.locator("tr", has_text="Ноутбук").first).to_contain_text(f"списано {dt.date.today():%d.%m.%Y}")
+    page.once("dialog", lambda dlg: dlg.accept())
+    page.locator("tr", has_text="Ноутбук").first.locator("button", has_text="Отменить выбытие").click()
+    expect(page.locator("tr", has_text="Ноутбук").first.locator("button", has_text="Продать / списать")).to_be_visible()
 
     # регламентная операция из операции журнала; закрытие и открытие месяца
     page.click("#nav a[data-page=journal]")

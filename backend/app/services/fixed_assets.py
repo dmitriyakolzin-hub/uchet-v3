@@ -13,7 +13,7 @@ import datetime as dt
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.money import round_money
@@ -80,7 +80,7 @@ def balances(db: Session, organization_id: int, on_date: dt.date | None = None,
         if asset_ids is not None:
             query = query.where(lines.c.fixed_asset.in_(asset_ids))
         for asset_id, total in db.execute(query.group_by(lines.c.fixed_asset)):
-            setattr(result.setdefault(asset_id, Balance()), field, sign * total)
+            setattr(result.setdefault(asset_id, Balance()), field, sign * total + ZERO)  # + ZERO: −0 → 0
     return result
 
 
@@ -144,6 +144,8 @@ def uncommission(db: Session, asset: FixedAsset) -> None:
     """Отменить ввод в эксплуатацию — пока по ОС нет начисленной амортизации."""
     if asset.commissioned_on is None:
         raise AssetError("Основное средство не введено в эксплуатацию")
+    if asset.disposed_on is not None:
+        raise AssetError("Основное средство выбыло — сначала отмените выбытие")
     ids = _account_ids(db)
     lines = select_lines(asset.organization_id, statuses=("draft", "posted"), account_id=ids["02"],
                          analytics={"fixed_asset": asset.id}, opening=False).subquery()
@@ -165,11 +167,13 @@ class DepreciationLine:
 
 
 def _eligible(db: Session, organization_id: int, legal_entity_id: int, year: int, month: int) -> list[FixedAsset]:
-    """ОС, по которым амортизация в этом месяце начисляется: введены до начала месяца, не в архиве."""
-    start, _ = month_bounds(year, month)
+    """ОС, по которым амортизация в этом месяце начисляется: введены до начала месяца, не в архиве,
+    не выбыли до конца месяца (в месяце выбытия амортизация не начисляется)."""
+    start, end = month_bounds(year, month)
     return list(db.scalars(select(FixedAsset).where(
         FixedAsset.organization_id == organization_id, FixedAsset.legal_entity_id == legal_entity_id,
         FixedAsset.is_active.is_(True), FixedAsset.commissioned_on.is_not(None), FixedAsset.commissioned_on < start,
+        or_(FixedAsset.disposed_on.is_(None), FixedAsset.disposed_on > end),
     ).order_by(FixedAsset.name, FixedAsset.id)))
 
 
@@ -278,4 +282,88 @@ def run_total(db: Session, run: DepreciationRun) -> Decimal:
         return ZERO
     return db.scalar(select(func.coalesce(func.sum(Posting.amount_rub), 0)).where(
         Posting.operation_id == run.operation_id)) or ZERO
+
+
+# --- Выбытие: продажа и списание ---
+
+SALE_ARTICLE = "Доход от продажи основных средств"
+WRITEOFF_ARTICLE = "Списание основных средств"
+DISPOSAL_KINDS = {"sale": "Продажа", "writeoff": "Списание"}
+
+
+def vat_included(price: Decimal, rate: int) -> Decimal:
+    """НДС в цене: цена × ставка / (100 + ставка), до копеек."""
+    return round_money(price * rate / (100 + rate)) if rate else ZERO
+
+
+def dispose(db: Session, asset: FixedAsset, on_date: dt.date, kind: str, user: User, *,
+            counterparty_id: int | None = None, contract_id: int | None = None,
+            price: Decimal = ZERO, vat_rate: int = 0) -> Operation:
+    """Продажа или списание: 02 → 01, остаточная стоимость → 91.02; при продаже — выручка на 91.01 и НДС."""
+    if asset.commissioned_on is None:
+        raise AssetError("Основное средство не введено в эксплуатацию")
+    if asset.disposed_on is not None:
+        raise AssetError("Основное средство уже выбыло")
+    if on_date < asset.commissioned_on:
+        raise AssetError("Дата выбытия раньше даты ввода в эксплуатацию")
+    if kind == "sale" and (counterparty_id is None or price <= 0):
+        raise AssetError("Для продажи укажите покупателя и цену")
+    ids = _account_ids(db)
+    later = select_lines(asset.organization_id, statuses=("draft", "posted"), account_id=ids["02"],
+                         analytics={"fixed_asset": asset.id}, opening=False, date_from=on_date).subquery()
+    if db.scalar(select(func.count()).select_from(later)):
+        raise AssetError("После даты выбытия по ОС начислена амортизация — сначала отмените эти начисления")
+    # амортизация по месяц перед выбытием должна быть начислена
+    start = on_date.replace(day=1)
+    prev_end = start - dt.timedelta(days=1)
+    opening = db.get(Organization, asset.organization_id).opening_balance_date
+    if asset.commissioned_on < prev_end.replace(day=1) and (opening is None or prev_end > opening) and not db.scalar(
+            select(DepreciationRun.id).where(DepreciationRun.legal_entity_id == asset.legal_entity_id,
+                                             DepreciationRun.year == prev_end.year,
+                                             DepreciationRun.month == prev_end.month)):
+        raise AssetError(f"Сначала начислите амортизацию за {MONTHS_GENITIVE[prev_end.month - 1]} {prev_end.year}")
+    if asset.cfo_id is None:
+        raise AssetError("В карточке не указан ЦФО — выбытие не на что отнести")
+    articles = {a.name: a for a in db.scalars(select(Article).where(Article.name.in_((SALE_ARTICLE, WRITEOFF_ARTICLE))))}
+    if len(articles) < 2:
+        raise AssetError(f"Нет статей «{SALE_ARTICLE}» и «{WRITEOFF_ARTICLE}» — восстановите их в справочнике статей")
+
+    b = balances(db, asset.organization_id, on_date, [asset.id]).get(asset.id, Balance())
+    an = AnalyticsIn(fixed_asset=asset.id)
+    codes = {a.code: a.id for a in db.scalars(select(Account).where(Account.code.in_(("62.01", "68.02", "91.01", "91.02"))))}
+    postings = []
+    if b.depreciation > 0:
+        postings.append(PostingIn(debit_account_id=ids["02"], credit_account_id=ids["01"], amount=b.depreciation,
+                                  debit=an, credit=an))
+    if b.residual > 0:
+        postings.append(PostingIn(debit_account_id=codes["91.02"], credit_account_id=ids["01"], amount=b.residual,
+                                  debit=AnalyticsIn(cfo=asset.cfo_id, pl_item=articles[WRITEOFF_ARTICLE].id), credit=an))
+    if kind == "sale":
+        income = AnalyticsIn(cfo=asset.cfo_id, pl_item=articles[SALE_ARTICLE].id)
+        postings.append(PostingIn(debit_account_id=codes["62.01"], credit_account_id=codes["91.01"], amount=price,
+                                  debit=AnalyticsIn(counterparty=counterparty_id, contract=contract_id), credit=income))
+        vat = vat_included(price, vat_rate)
+        if vat > 0:
+            postings.append(PostingIn(debit_account_id=codes["91.02"], credit_account_id=codes["68.02"], amount=vat,
+                                      debit=income))
+    if not postings:
+        raise AssetError("Стоимость ОС на дату выбытия — ноль, проводить нечего")
+    body = OperationIn(legal_entity_id=asset.legal_entity_id, op_date=on_date,
+                       article_id=articles[SALE_ARTICLE if kind == "sale" else WRITEOFF_ARTICLE].id,
+                       description=f"{DISPOSAL_KINDS[kind]} основного средства: {asset.name}", postings=postings)
+    op = _posted_operation(db, asset.organization_id, user, body)
+    asset.disposed_on, asset.disposal_kind, asset.disposal_operation_id = on_date, kind, op.id
+    db.flush()
+    return op
+
+
+def undo_disposal(db: Session, asset: FixedAsset) -> None:
+    if asset.disposed_on is None:
+        raise AssetError("Основное средство не выбывало")
+    if asset.disposal_operation_id:
+        op = db.get(Operation, asset.disposal_operation_id)
+        if op is not None:
+            db.delete(op)
+    asset.disposed_on, asset.disposal_kind, asset.disposal_operation_id = None, None, None
+    db.flush()
 

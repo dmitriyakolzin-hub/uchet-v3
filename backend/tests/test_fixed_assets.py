@@ -235,3 +235,65 @@ def test_excel_import_with_fixed_asset(client, env):
     assert resp.status_code == 200 and resp.json()["incomplete"] == [], resp.text
     [created] = client.get(f"{env['o']}/operations", headers=env["h"]).json()["items"]
     assert created["postings"][0]["debit"] == {"fixed_asset": asset["id"]}
+
+
+def sale_setup(client, env):
+    asset = card(env, cost="120000", life=12)
+    operation(client, env, [purchase(env, asset, "120000")])
+    commission(client, env, asset)  # январь
+    for month in (2, 3):
+        assert depreciate(client, env, month).status_code == 201  # по 10 000
+    return asset
+
+
+def dispose(client, env, asset, **body):
+    return client.post(f"/api/fixed-assets/{asset['id']}/dispose", headers=env["h"], json=body)
+
+
+def test_sale(client, env):
+    asset = sale_setup(client, env)
+    # амортизация за март начислена — продать в феврале нельзя
+    resp = dispose(client, env, asset, disposed_on="2026-02-20", kind="writeoff")
+    assert resp.status_code == 422 and "отмените" in resp.json()["detail"]
+    # за апрель не начислено — в мае нельзя
+    resp = dispose(client, env, asset, disposed_on="2026-05-10", kind="writeoff")
+    assert resp.status_code == 422 and "апрель" in resp.json()["detail"]
+    assert dispose(client, env, asset, disposed_on="2026-04-10", kind="sale").status_code == 422  # нет покупателя
+
+    resp = dispose(client, env, asset, disposed_on="2026-04-10", kind="sale", counterparty_id=env["cp"]["id"],
+                   contract_id=env["contract"]["id"], price="120000", vat_rate=20)
+    assert resp.status_code == 200, resp.text
+    asset = resp.json()
+    assert (asset["disposed_on"], asset["disposal_kind"]) == ("2026-04-10", "sale")
+    op = client.get(f"/api/operations/{asset['disposal_operation_id']}", headers=env["h"]).json()
+    acc = env["acc"]
+    moves = [(p["debit_account_id"], p["credit_account_id"], p["amount"]) for p in op["postings"]]
+    assert moves == [(acc["02"], acc["01"], "20000.00"), (acc["91.02"], acc["01"], "100000.00"),
+                     (acc["62.01"], acc["91.01"], "120000.00"), (acc["91.02"], acc["68.02"], "20000.00")]
+    row = register(client, env)[asset["id"]]
+    assert (row["cost"], row["depreciation"]) == ("0.00", "0.00")
+
+    # в месяце выбытия и позже амортизации нет
+    resp = depreciate(client, env, 4)
+    assert resp.status_code == 422 and "Начислять нечего" in resp.json()["detail"]
+    # ОПиУ: доход без НДС 100 000, списание остаточной стоимости −100 000
+    pl = client.get(f"{env['o']}/reports/pl", headers=env["h"],
+                    params={"date_from": "2026-04-01", "date_to": "2026-04-30"}).json()
+    rows = {r["key"]: r["values"]["total"] for r in pl["rows"]}
+    assert rows[f"art:{env['art']['Доход от продажи основных средств']}"] == "100000.00"
+    assert rows[f"art:{env['art']['Списание основных средств']}"] == "-100000.00"
+
+    assert client.post(f"/api/fixed-assets/{asset['id']}/uncommission", headers=env["h"]).status_code == 422
+    resp = client.post(f"/api/fixed-assets/{asset['id']}/undispose", headers=env["h"])
+    assert resp.status_code == 200 and resp.json()["disposed_on"] is None
+    assert register(client, env)[asset["id"]]["residual"] == "100000.00"
+
+
+def test_writeoff(client, env):
+    asset = sale_setup(client, env)
+    resp = dispose(client, env, asset, disposed_on="2026-04-01", kind="writeoff")
+    assert resp.status_code == 200, resp.text
+    op = client.get(f"/api/operations/{resp.json()['disposal_operation_id']}", headers=env["h"]).json()
+    assert [p["amount"] for p in op["postings"]] == ["20000.00", "100000.00"]
+    assert client.post(f"/api/fixed-assets/{asset['id']}/dispose", headers=env["ceo"],
+                       json={"disposed_on": "2026-04-01", "kind": "writeoff"}).status_code == 403

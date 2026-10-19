@@ -120,6 +120,38 @@ export async function renderFixedAssets(view) {
     });
   }
 
+  function dispose(asset) {
+    const contracts = ref.contracts.filter((c) => c.legal_entity_id === asset.legal_entity_id);
+    openForm({
+      title: `Продажа или списание: ${asset.name}`,
+      fields: [
+        { name: "kind", label: "Вид выбытия", type: "select", options: [["writeoff", "Списание"], ["sale", "Продажа"]] },
+        { name: "disposed_on", label: "Дата выбытия", type: "date", required: true,
+          hint: "Амортизация за предыдущие месяцы должна быть начислена; в месяце выбытия она не начисляется" },
+        { name: "counterparty_id", label: "Покупатель (для продажи)", type: "select",
+          options: [["", "—"], ...ref.counterparties.map((c) => [String(c.id), c.inn ? `${c.name} (${c.inn})` : c.name])] },
+        { name: "contract_id", label: "Договор (для продажи)", type: "select",
+          options: [["", "—"], ...contracts.map((c) => [String(c.id), `№ ${c.number} — ${ref.counterpartyName.get(c.counterparty_id) ?? ""}`])] },
+        { name: "price", label: "Цена с НДС, ₽ (для продажи)" },
+        { name: "vat_rate", label: "НДС в цене", type: "select",
+          options: [["20", "20%"], ["22", "22%"], ["10", "10%"], ["7", "7%"], ["5", "5%"], ["0", "без НДС"]] },
+      ],
+      values: { kind: "writeoff", disposed_on: isoDate(new Date()), vat_rate: "20" },
+      submitText: "Провести",
+      onSubmit: async (v) => {
+        const sale = v.kind === "sale";
+        await api.post(`/api/fixed-assets/${asset.id}/dispose`, {
+          kind: v.kind, disposed_on: v.disposed_on,
+          counterparty_id: sale && v.counterparty_id ? Number(v.counterparty_id) : null,
+          contract_id: sale && v.contract_id ? Number(v.contract_id) : null,
+          price: sale ? parseNumber(v.price) ?? "0" : "0", vat_rate: sale ? Number(v.vat_rate) : 0,
+        });
+        toast(sale ? "Продажа проведена" : "Списание проведено");
+        await load();
+      },
+    });
+  }
+
   function cardsTable(assets, balances) {
     if (!assets.length) return el("p", { class: "muted" }, "Основных средств пока нет.");
     const entityName = new Map(ref.entities.map((e) => [e.id, e.short_name]));
@@ -129,7 +161,18 @@ export async function renderFixedAssets(view) {
       const actions = [];
       if (can("edit_reference")) actions.push(link("Изменить", () => editAsset(a)));
       if (can("post") && !a.commissioned_on) actions.push(link("Ввести в эксплуатацию", () => commission(a)));
-      if (can("post") && a.commissioned_on) {
+      if (can("post") && a.commissioned_on && !a.disposed_on) {
+        actions.push(link("Продать / списать", () => dispose(a)));
+      }
+      if (can("post") && a.disposed_on) {
+        actions.push(link("Отменить выбытие", () => {
+          if (confirm(`Отменить выбытие «${a.name}»? Операция выбытия будет удалена.`)) {
+            act(api.post(`/api/fixed-assets/${a.id}/undispose`), "Выбытие отменено");
+          }
+        }, "remove"));
+      }
+      if (a.disposal_operation_id) actions.push(link("Операция выбытия", () => showOperation(a.disposal_operation_id)));
+      if (can("post") && a.commissioned_on && !a.disposed_on) {
         actions.push(link("Отменить ввод", () => {
           if (confirm(`Отменить ввод в эксплуатацию «${a.name}»?`)) {
             act(api.post(`/api/fixed-assets/${a.id}/uncommission`), "Ввод отменён");
@@ -143,7 +186,8 @@ export async function renderFixedAssets(view) {
         el("td", {}, entityName.get(a.legal_entity_id) ?? ""),
         el("td", {}, a.cfo_id ? ref.cfoLabel.get(a.cfo_id) ?? "" : ""),
         el("td", { class: "num" }, String(a.useful_life_months)),
-        el("td", {}, a.commissioned_on ? ruDate(a.commissioned_on) : el("span", { class: "status status-draft" }, "не введено")),
+        el("td", {}, a.commissioned_on ? ruDate(a.commissioned_on) : el("span", { class: "status status-draft" }, "не введено"),
+          a.disposed_on ? el("div", { class: "muted" }, `${a.disposal_kind === "sale" ? "продано" : "списано"} ${ruDate(a.disposed_on)}`) : null),
         el("td", { class: "num" }, money(b.cost ?? 0)),
         el("td", { class: "num" }, money(b.depreciation ?? 0)),
         el("td", { class: "num strong" }, money(b.residual ?? 0)),
