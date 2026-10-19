@@ -20,8 +20,10 @@ from app.models import (
     Employee,
     Executor,
     FixedAsset,
+    InvestmentProject,
     Nomenclature,
     Operation,
+    Posting,
     Unit,
     Warehouse,
 )
@@ -222,7 +224,8 @@ class DrillResult:
 
 def drill(db: Session, f: ReportFilter, period: str, *, account_ids: list[int] | None = None,
           side: str | None = None, analytics: dict[str, int | None] | None = None,
-          exclude_corr_account_ids: list[int] | None = None, opening: bool | None = None) -> DrillResult:
+          exclude_corr_account_ids: list[int] | None = None, opening: bool | None = None,
+          analytics_in: dict[str, list[int]] | None = None) -> DrillResult:
     """period: opening — до начала периода, turnover — за период, closing — по конец периода."""
     bounds = {
         "opening": (None, f.date_from - dt.timedelta(days=1)),
@@ -231,7 +234,7 @@ def drill(db: Session, f: ReportFilter, period: str, *, account_ids: list[int] |
     }[period]
     lines = f.lines(date_from=bounds[0], date_to=bounds[1], account_ids=account_ids or None, side=side,
                     analytics=analytics, exclude_corr_account_ids=exclude_corr_account_ids,
-                    opening=opening).subquery()
+                    opening=opening, analytics_in=analytics_in).subquery()
     count, debit, credit = db.execute(select(
         func.count(),
         func.coalesce(func.sum(case((lines.c.side == "debit", lines.c.amount_rub))), 0),
@@ -924,4 +927,66 @@ def stock(db: Session, f: ReportFilter, account_id: int | None = None,
         rows.append(parent)
         rows += sorted((c for c in children if c.parent == pkey), key=lambda c: (c.title.lower(), c.account))
     return rows, total_values
+
+
+# --- Инвестиции: план/факт по инвестпроектам ---
+
+INVESTMENT_FIELDS = ("limit", "plan", "fact", "fact_total", "paid", "left")
+
+
+def project_analytics(db: Session, project_id: int, part: str) -> dict[str, list[int]]:
+    """Факт проекта: вложения — его ОС (дебет 08), оплаты — его договоры (дебет 60)."""
+    if part == "paid":
+        return {"contract": list(db.scalars(select(Contract.id).where(Contract.project_id == project_id)))}
+    return {"fixed_asset": list(db.scalars(select(FixedAsset.id).where(FixedAsset.project_id == project_id)))}
+
+
+@dataclass
+class InvestmentResult:
+    plan_versions: dict[str, int]
+    rows: list[dict]
+    total: dict[str, Decimal]
+
+
+def investments(db: Session, f: ReportFilter, version_id: int | None = None) -> InvestmentResult:
+    """По каждому проекту: лимит, план за период (версия по месяцам, как в план/факте), факт вложений за период
+    и с начала проекта, оплачено за период, остаток лимита = лимит − факт с начала."""
+    months = [c.key for c in month_columns(f.date_from, f.date_to)[:-1]]
+    versions = (version_plan_months(db, version_id, months) if version_id
+                else actual_plan_versions(db, f.organization_id, months, "inv"))
+    query = select(InvestmentProject).where(InvestmentProject.organization_id == f.organization_id)
+    if f.cfo_id is not None:
+        root = select(Cfo.path).where(Cfo.id == f.cfo_id).scalar_subquery()
+        query = query.where(InvestmentProject.cfo_id.in_(select(Cfo.id).where(Cfo.path.op("<@")(root))))
+    projects = list(db.scalars(query.order_by(InvestmentProject.name)))
+
+    plan: dict[int, Decimal] = {}
+    if versions:
+        month = func.to_char(Operation.op_date, "YYYY-MM")
+        cond = or_(false(), *(and_(Operation.budget_version_id == v, month == m) for m, v in versions.items()))
+        for project_id, total in db.execute(
+                select(Operation.plan_project_id, func.sum(Posting.amount_rub)).join(Posting, Posting.operation_id == Operation.id)
+                .where(Operation.plan_kind == "inv", cond).group_by(Operation.plan_project_id)):
+            plan[project_id] = Decimal(total)
+
+    accounts = {a.code: a.id for a in db.scalars(select(Account).where(Account.code.in_(("08", "60"))))}
+
+    def turnover(project_id: int, part: str, date_from: dt.date | None) -> Decimal:
+        account = accounts["60" if part == "paid" else "08"]
+        lines = f.lines(date_from=date_from, date_to=f.date_to, account_ids=[account], side="debit",
+                        analytics_in=project_analytics(db, project_id, part)).subquery()
+        return Decimal(db.scalar(select(func.coalesce(func.sum(lines.c.amount_rub), 0)))) + ZERO
+
+    rows, total = [], {k: ZERO for k in INVESTMENT_FIELDS}
+    for p in projects:
+        fact_total = turnover(p.id, "fact", None)
+        values = {"limit": p.limit_amount + ZERO, "plan": plan.get(p.id, ZERO) + ZERO,
+                  "fact": turnover(p.id, "fact", f.date_from), "fact_total": fact_total,
+                  "paid": turnover(p.id, "paid", f.date_from), "left": p.limit_amount - fact_total}
+        if not p.is_active and not any(v for k, v in values.items() if k != "limit"):
+            continue
+        rows.append({"project_id": p.id, "name": p.name, "cfo_id": p.cfo_id, "status": p.status, **values})
+        for k in INVESTMENT_FIELDS:
+            total[k] += values[k]
+    return InvestmentResult(plan_versions=versions, rows=rows, total=total)
 

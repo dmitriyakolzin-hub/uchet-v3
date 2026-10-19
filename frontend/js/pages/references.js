@@ -75,6 +75,7 @@ async function openSalaries(employee) {
   await load();
 }
 
+const PROJECT_STATUSES = [["planned", "План"], ["active", "В работе"], ["done", "Завершён"]];
 const CFO_LEVELS = { 1: "Компания", 2: "Направление", 3: "Филиал", 4: "Магазин", 5: "Подразделение учёта" };
 
 // «АВМВ / Торговля / Филиал Юг» — полный путь ЦФО по названиям
@@ -192,6 +193,7 @@ const TABS = [
       { title: "Наше юрлицо", field: "legal_entity_id", minWidth: 140, formatter: lookup(d.entities, (e) => e.short_name) },
       { title: "Валюта", field: "currency_id", width: 90, formatter: lookup(d.currencies, (c) => c.code) },
       { title: "Название", field: "name", widthGrow: 2 },
+      { title: "Инвестпроект", field: "project_id", widthGrow: 1, formatter: lookup(d.projects, (x) => x.name) },
     ],
     fields: (d) => [
       { name: "counterparty_id", label: "Контрагент", type: "select", required: true, numeric: true,
@@ -205,7 +207,44 @@ const TABS = [
       { name: "currency_id", label: "Валюта", type: "select", required: true, numeric: true,
         options: optionsOf(d.currencies, (c) => `${c.code} — ${c.name}`), default: String(d.rub?.id ?? "") },
       { name: "name", label: "Название (необязательно)", placeholder: "Аренда склада" },
+      { name: "project_id", label: "Инвестпроект (необязательно)", type: "select", numeric: true, nullable: true,
+        options: [["", "— нет —"], ...d.projects.map((x) => [String(x.id), x.name])],
+        hint: "Оплаты по договору инвестпроекта попадут в отчёт «Инвестиции»" },
     ],
+  },
+  {
+    key: "investment-projects",
+    title: "Инвестпроекты",
+    addText: "Добавить инвестпроект",
+    columns: (d) => {
+      const labels = cfoPathLabels(d.cfos);
+      return [
+        { title: "Проект", field: "name", widthGrow: 2 },
+        { title: "ЦФО", field: "cfo_id", widthGrow: 2, formatter: (c) => labels.get(c.getValue()) ?? "" },
+        { title: "Ответственный (ЦФУ)", field: "executor_id", widthGrow: 1, formatter: lookup(d.executors, (e) => e.name) },
+        { title: "Начало", field: "start_on", width: 105, formatter: (c) => (c.getValue() ? c.getValue().split("-").reverse().join(".") : "") },
+        { title: "Окончание", field: "finish_on", width: 105, formatter: (c) => (c.getValue() ? c.getValue().split("-").reverse().join(".") : "") },
+        { title: "Лимит", field: "limit_amount", width: 140, hozAlign: "right", formatter: (c) => money(c.getValue()) },
+        { title: "Статус", field: "status", width: 110, formatter: titleOf(PROJECT_STATUSES) },
+        { title: "Сдвиг оплаты, мес.", field: "payment_lag_months", width: 110, hozAlign: "right" },
+      ];
+    },
+    fields: (d) => {
+      const labels = cfoPathLabels(d.cfos);
+      return [
+        { name: "name", label: "Название", required: true, placeholder: "Открытие магазина на Ленина" },
+        { name: "cfo_id", label: "ЦФО (где объект)", type: "select", required: true, numeric: true,
+          options: [["", "— выберите —"], ...d.cfos.filter((c) => c.is_active).map((c) => [String(c.id), labels.get(c.id)])] },
+        { name: "executor_id", label: "Ответственный ЦФУ (необязательно)", type: "select", numeric: true, nullable: true,
+          options: [["", "— нет —"], ...d.executors.map((e) => [String(e.id), e.name])] },
+        { name: "start_on", label: "Начало", type: "date", nullable: true },
+        { name: "finish_on", label: "Окончание", type: "date", nullable: true },
+        { name: "limit_amount", label: "Лимит на весь срок, ₽", money: true, default: "0" },
+        { name: "status", label: "Статус", type: "select", options: PROJECT_STATUSES, default: "planned" },
+        { name: "payment_lag_months", label: "Сдвиг оплаты, месяцев", type: "number", numeric: true, default: "0",
+          hint: "0 — оплата в месяце вложения, 1 — в следующем; по нему строятся плановые оплаты в плане ДДС" },
+      ];
+    },
   },
   {
     key: "cfos",
@@ -389,18 +428,19 @@ export async function renderReferences(view) {
     const tab = TABS.find((t) => t.key === tabKey);
     // заранее загружаем только то, что нужно этой вкладке
     const need = (keys, load) => (keys.includes(tab.key) ? load() : []);
-    const [entities, banks, currencies, counterparties, cfos, units, articles, employees, executors] = await Promise.all([
+    const [entities, banks, currencies, counterparties, cfos, units, articles, employees, executors, projects] = await Promise.all([
       api.get(`/api/organizations/${org.id}/legal-entities`),
       need(["bank-accounts", "salary-projects"], () => api.get("/api/banks")),
       need(["bank-accounts", "contracts"], () => api.get("/api/currencies")),
       need(["contracts"], () => api.get(`/api/organizations/${org.id}/counterparties`)),
-      need(["cfos", "employees", "warehouses"], () => api.get(`/api/organizations/${org.id}/cfos`)),
+      need(["cfos", "employees", "warehouses", "investment-projects"], () => api.get(`/api/organizations/${org.id}/cfos`)),
       need(["nomenclature"], () => api.get("/api/units")),
       need(["employees"], () => api.get("/api/articles")),
       need(["executors"], () => api.get(`/api/organizations/${org.id}/employees`)),
-      need(["executors"], () => api.get(`/api/organizations/${org.id}/executors`)),
+      need(["executors", "investment-projects"], () => api.get(`/api/organizations/${org.id}/executors`)),
+      need(["contracts"], () => api.get(`/api/organizations/${org.id}/investment-projects`)),
     ]);
-    const d = { entities, banks, currencies, counterparties, cfos, units, articles, employees, executors,
+    const d = { entities, banks, currencies, counterparties, cfos, units, articles, employees, executors, projects,
       rub: currencies.find((c) => c.is_base) };
     const state = { canEdit: org.permissions.includes("edit_reference"), ref: null };
     state.ref = await referenceTab(tabBox, {

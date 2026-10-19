@@ -1,14 +1,17 @@
 """Бюджеты и их версии (docs/TZ.md, раздел 13). План — плановые операции версии (шаг 3.3)."""
 
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Identity,
     Index,
+    Numeric,
     SmallInteger,
     String,
     UniqueConstraint,
@@ -18,6 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.models.reference import OrgScoped
 
 MONTH_NAMES = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь",
                "октябрь", "ноябрь", "декабрь"]
@@ -85,3 +89,24 @@ class BudgetVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     approved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class InvestmentProject(OrgScoped, Base):
+    """Инвестпроект: объект вложений с лимитом на весь срок (docs/TZ.md, раздел 16, «Детали 6.3»)."""
+
+    __tablename__ = "investment_projects"
+    __table_args__ = (
+        CheckConstraint("status IN ('planned', 'active', 'done')", name="status"),
+        CheckConstraint("limit_amount >= 0", name="limit_amount"),
+        CheckConstraint("payment_lag_months BETWEEN 0 AND 24", name="payment_lag"),
+        CheckConstraint("finish_on IS NULL OR start_on IS NULL OR finish_on >= start_on", name="dates"),
+    )
+
+    name: Mapped[str] = mapped_column(String(255))
+    cfo_id: Mapped[int] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"))
+    executor_id: Mapped[int | None] = mapped_column(ForeignKey("executors.id", ondelete="RESTRICT"))
+    start_on: Mapped[date | None] = mapped_column(Date)
+    finish_on: Mapped[date | None] = mapped_column(Date)
+    limit_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0, server_default="0")
+    status: Mapped[str] = mapped_column(String(10), default="planned", server_default="planned")
+    payment_lag_months: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")

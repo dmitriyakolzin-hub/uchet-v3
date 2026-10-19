@@ -80,6 +80,9 @@ export async function renderFixedAssets(view) {
       { name: "pl_item_id", label: "Статья амортизации (ОПиУ)", type: "select",
         options: plItems.map((a) => [String(a.id), a.name]),
         hint: "Счёт затрат берётся из шаблона статьи: 26 — управленческие, 44 — коммерческие расходы" },
+      { name: "project_id", label: "Инвестпроект (необязательно)", type: "select",
+        options: [["", "— нет —"], ...ref.projects.filter((x) => x.is_active || x.id === asset?.project_id).map((x) => [String(x.id), x.name])],
+        hint: "Вложения в это ОС (Дт 08) попадут в отчёт «Инвестиции» по проекту" },
       ...(asset ? [{ name: "is_active", label: "Действует (снимите — в архив, амортизация не начисляется)", type: "checkbox" }] : []),
     ];
     const defaultItem = plItems.find((a) => a.name === "Амортизация основных средств");
@@ -88,13 +91,15 @@ export async function renderFixedAssets(view) {
       fields,
       values: asset
         ? { ...asset, legal_entity_id: String(asset.legal_entity_id), cost: money(asset.cost),
-          cfo_id: asset.cfo_id ? String(asset.cfo_id) : "", pl_item_id: asset.pl_item_id ? String(asset.pl_item_id) : "" }
+          cfo_id: asset.cfo_id ? String(asset.cfo_id) : "", pl_item_id: asset.pl_item_id ? String(asset.pl_item_id) : "",
+          project_id: asset.project_id ? String(asset.project_id) : "" }
         : { useful_life_months: 36, pl_item_id: defaultItem ? String(defaultItem.id) : "" },
       onSubmit: async (v) => {
         const body = {
           name: v.name, inventory_number: v.inventory_number, legal_entity_id: Number(v.legal_entity_id),
           cost: parseNumber(v.cost), useful_life_months: Number(v.useful_life_months),
           cfo_id: v.cfo_id ? Number(v.cfo_id) : null, pl_item_id: v.pl_item_id ? Number(v.pl_item_id) : null,
+          project_id: v.project_id ? Number(v.project_id) : null,
           ...(asset ? { is_active: v.is_active } : {}),
         };
         if (asset) await api.patch(`/api/fixed-assets/${asset.id}`, body);

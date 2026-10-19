@@ -17,7 +17,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.money import round_money
-from app.models import Account, Article, Budget, BudgetVersion, Cfo, Executor, LegalEntity, Operation, Posting, User
+from app.models import (
+    Account,
+    Article,
+    Budget,
+    BudgetVersion,
+    Cfo,
+    Executor,
+    InvestmentProject,
+    LegalEntity,
+    Operation,
+    Posting,
+    User,
+)
 from app.models.journal import ANALYTIC_COLUMNS, analytic_column
 from app.schemas.journal import AnalyticsIn, OperationIn, PostingIn
 from app.services import journal
@@ -33,6 +45,10 @@ PL_GROUPS = {"revenue": "Выручка", "cost": "Себестоимость п
 CF_GROUPS = {("operating", "inflow"): "Операционная: поступления", ("operating", "outflow"): "Операционная: выплаты",
              ("investing", "inflow"): "Инвестиционная: поступления", ("investing", "outflow"): "Инвестиционная: выплаты",
              ("financing", "inflow"): "Финансовая: поступления", ("financing", "outflow"): "Финансовая: выплаты"}
+
+
+PAYMENT_ARTICLE = "Покупка основных средств"  # плановая оплата вложений — по статье фактических оплат
+PROJECT_STATUSES = {"planned": "план", "active": "в работе", "done": "завершён"}
 
 
 class PlanError(ValueError):
@@ -53,6 +69,13 @@ def month_key(year: int, month: int) -> str:
 def plan_articles(db: Session, kind: str) -> list[tuple[Article, str]]:
     """Статьи сетки (с шаблоном проводки) и их группа, в порядке отчёта."""
     query = select(Article).where(Article.is_active, Article.debit_account_id.is_not(None))
+    if kind == "inv":
+        # статьи вложений: ДДС «инвестиционная, выплаты» с шаблоном Дт 08
+        investment = select(Account.id).where(Account.code.like("08%"))
+        items = db.scalars(query.where(Article.is_cash_flow, Article.cash_flow_activity == "investing",
+                                       Article.cash_flow_direction == "outflow",
+                                       Article.debit_account_id.in_(investment)))
+        return sorted(((a, "") for a in items), key=lambda x: x[0].name.lower())
     if kind == "pl":
         items = [(a, PL_GROUPS[a.pl_section]) for a in db.scalars(query.where(Article.is_pl))]
         order = {s: i for i, s in enumerate(PL_ORDER)}
@@ -97,17 +120,66 @@ def _posting(db: Session, kind: str, article: Article, cfo_id: int | None, amoun
 
 
 def _cell_op(db: Session, version_id: int, kind: str, cfo_id: int | None, article_id: int, op_date: dt.date,
-             executor_id: int | None = None):
+             executor_id: int | None = None, project_id: int | None = None):
     query = select(Operation).where(Operation.budget_version_id == version_id, Operation.plan_kind == kind,
-                                    Operation.article_id == article_id, Operation.op_date == op_date)
+                                    Operation.article_id == article_id, Operation.op_date == op_date,
+                                    _project_is(project_id))
     query = query.where(Operation.plan_cfo_id.is_(None) if cfo_id is None else Operation.plan_cfo_id == cfo_id)
     query = query.where(Operation.plan_executor_id.is_(None) if executor_id is None
                         else Operation.plan_executor_id == executor_id)
     return db.scalar(query)
 
 
+def _project_is(project_id: int | None):
+    return Operation.plan_project_id.is_(None) if project_id is None else Operation.plan_project_id == project_id
+
+
+def _shift(day: dt.date, months: int) -> dt.date:
+    index = day.year * 12 + day.month - 1 + months
+    return dt.date(index // 12, index % 12 + 1, 1)
+
+
+def rebuild_payments(db: Session, version: BudgetVersion, project: InvestmentProject, user: User) -> None:
+    """Плановые оплаты проекта в плане ДДС: сумма вложений месяца → оплата месяцем позже на сдвиг оплаты."""
+    for op in db.scalars(select(Operation).where(Operation.budget_version_id == version.id,
+                                                 Operation.plan_kind == "cf", Operation.plan_project_id == project.id)):
+        db.delete(op)
+    db.flush()
+    totals: dict[dt.date, Decimal] = {}
+    for op in db.scalars(select(Operation).where(Operation.budget_version_id == version.id,
+                                                 Operation.plan_kind == "inv", Operation.plan_project_id == project.id)):
+        day = _shift(op.op_date, project.payment_lag_months)
+        totals[day] = totals.get(day, Decimal("0.00")) + sum((p.amount or Decimal(0) for p in op.postings), Decimal(0))
+    if not totals:
+        return
+    article = db.scalar(select(Article).where(Article.name == PAYMENT_ARTICLE))
+    if article is None or article.debit_account_id is None:
+        raise PlanError(f"Нет статьи ДДС «{PAYMENT_ARTICLE}» с шаблоном — восстановите её в справочнике статей")
+    entity_id = _legal_entity(db, project.organization_id, db.get(Cfo, project.cfo_id))
+    for day, amount in sorted(totals.items()):
+        op = Operation(organization_id=project.organization_id, number=0, status="plan", created_by=user.id,
+                       budget_version_id=version.id, plan_kind="cf", plan_project_id=project.id)
+        body = OperationIn(legal_entity_id=entity_id, op_date=day, article_id=article.id,
+                           description=f"План оплаты: {project.name}", postings=[_posting(db, "cf", article, None, amount)])
+        journal.save_draft(db, op, body, user)
+        db.add(op)
+    db.flush()
+
+
+def refresh_project(db: Session, project: InvestmentProject) -> None:
+    """Изменились ЦФО, ЦФУ или сдвиг оплаты проекта — поправить план в черновиках версий."""
+    versions = set()
+    for op in db.scalars(select(Operation).join(BudgetVersion, BudgetVersion.id == Operation.budget_version_id).where(
+            Operation.plan_project_id == project.id, Operation.plan_kind == "inv", BudgetVersion.status == "draft")):
+        op.plan_cfo_id, op.plan_executor_id = project.cfo_id, project.executor_id
+        versions.add(op.budget_version_id)
+    for version_id in versions:
+        creator = db.get(User, db.scalar(select(Operation.created_by).where(Operation.budget_version_id == version_id).limit(1)))
+        rebuild_payments(db, db.get(BudgetVersion, version_id), project, creator)
+
+
 def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None, cells: list[Cell], user: User,
-              executor_id: int | None = None) -> int:
+              executor_id: int | None = None, project_id: int | None = None) -> int:
     """Записать ячейки сетки (строка: статья + ЦФУ, если указан); возвращает число изменённых ячеек.
     Версия — только черновик."""
     if version.status != "draft":
@@ -118,14 +190,22 @@ def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None
         cfo = db.get(Cfo, cfo_id)
         if cfo is None or cfo.organization_id != budget.organization_id:
             raise PlanError("ЦФО не найден в этой организации")
+    project = None
+    if kind == "inv":
+        project = db.get(InvestmentProject, project_id) if project_id is not None else None
+        if project is None or project.organization_id != budget.organization_id:
+            raise PlanError("Выберите инвестпроект этой организации")
+        cfo, cfo_id, executor_id = db.get(Cfo, project.cfo_id), project.cfo_id, project.executor_id
+    elif project_id is not None:
+        raise PlanError("Инвестпроект указывается только в плане инвестиций")
     if kind == "pl" and cfo is None:
         raise PlanError("План ОПиУ вводится по ЦФО — выберите ЦФО")
     if executor_id is not None:
         executor = db.get(Executor, executor_id)
         if executor is None or executor.organization_id != budget.organization_id:
             raise PlanError("ЦФУ не найден в этой организации")
-        if kind != "pl":
-            raise PlanError("ЦФУ указывается в плане ОПиУ")
+        if kind == "cf":
+            raise PlanError("ЦФУ не указывается в плане ДДС")
     allowed = {a.id: a for a, _ in plan_articles(db, kind)}
     entity_id = None
     changed = 0
@@ -139,7 +219,7 @@ def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None
         if amount is not None and amount < 0:
             raise PlanError(f"«{article.name}»: сумма плана не может быть отрицательной")
         op_date = dt.date(budget.year, cell.month, 1)
-        op = _cell_op(db, version.id, kind, cfo_id, article.id, op_date, executor_id)
+        op = _cell_op(db, version.id, kind, cfo_id, article.id, op_date, executor_id, project_id)
         if not amount:
             if op is not None:
                 db.delete(op)
@@ -150,14 +230,16 @@ def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None
         if op is None:
             op = Operation(organization_id=budget.organization_id, number=0, status="plan", created_by=user.id,
                            budget_version_id=version.id, plan_kind=kind, plan_cfo_id=cfo_id,
-                           plan_executor_id=executor_id)
+                           plan_executor_id=executor_id, plan_project_id=project_id)
         body = OperationIn(legal_entity_id=entity_id, op_date=op_date, article_id=article.id,
-                           description=f"План: {article.name}",
+                           description=f"План: {article.name}" + (f" — {project.name}" if project else ""),
                            postings=[_posting(db, kind, article, cfo_id, amount, executor_id)])
         journal.save_draft(db, op, body, user)
         db.add(op)
         changed += 1
     db.flush()
+    if project is not None:
+        rebuild_payments(db, version, project, user)
     return changed
 
 
@@ -176,7 +258,8 @@ def grid(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None) -> 
     """Ячейки ЦФО: по строке на статью и ещё по строке на каждый ЦФУ, у которого есть план по статье."""
     budget = db.get(Budget, version.budget_id)
     query = select(Operation).where(Operation.budget_version_id == version.id, Operation.plan_kind == kind)
-    query = query.where(Operation.plan_cfo_id.is_(None) if cfo_id is None else Operation.plan_cfo_id == cfo_id)
+    query = query.where(Operation.plan_cfo_id.is_(None) if cfo_id is None else Operation.plan_cfo_id == cfo_id,
+                        Operation.plan_project_id.is_(None))  # оплаты инвестпроектов — в плане инвестиций
     values: dict[tuple[int, int | None], dict[str, Decimal]] = {}
     for op in db.scalars(query):
         amount = sum((p.amount or Decimal(0) for p in op.postings), Decimal("0.00"))
@@ -190,6 +273,29 @@ def grid(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None) -> 
             if article_id == a.id and executor_id is not None:
                 rows.append({"article_id": a.id, "executor_id": executor_id, "executor_name": labels[executor_id],
                              "name": a.name, "group": group, "values": v})
+    return {"months": _months(budget), "rows": rows}
+
+
+def investment_grid(db: Session, version: BudgetVersion) -> dict:
+    """План инвестиций: по каждому проекту (действующему или с планом в версии) строки статей вложений."""
+    budget = db.get(Budget, version.budget_id)
+    values: dict[tuple[int, int], dict[str, Decimal]] = {}
+    for op in db.scalars(select(Operation).where(Operation.budget_version_id == version.id, Operation.plan_kind == "inv")):
+        amount = sum((p.amount or Decimal(0) for p in op.postings), Decimal("0.00"))
+        values.setdefault((op.plan_project_id, op.article_id), {})[month_key(op.op_date.year, op.op_date.month)] = amount
+    planned = {p for p, _ in values}
+    projects = db.scalars(select(InvestmentProject).where(
+        InvestmentProject.organization_id == budget.organization_id,
+        (InvestmentProject.is_active & (InvestmentProject.status != "done")) | InvestmentProject.id.in_(planned or {0}),
+    ).order_by(InvestmentProject.name))
+    articles = plan_articles(db, "inv")
+    rows = []
+    for project in projects:
+        limit = f"{project.limit_amount:,.2f}".replace(",", " ").replace(".", ",")
+        group = f"{project.name} — лимит {limit} ₽, {PROJECT_STATUSES[project.status]}"
+        for a, _ in articles:
+            rows.append({"project_id": project.id, "article_id": a.id, "name": a.name, "group": group,
+                         "values": values.get((project.id, a.id), {})})
     return {"months": _months(budget), "rows": rows}
 
 
@@ -269,7 +375,7 @@ def copy_plan(db: Session, source: BudgetVersion, target: BudgetVersion, user: U
             organization_id=op.organization_id, legal_entity_id=op.legal_entity_id, number=0, op_date=op.op_date,
             article_id=op.article_id, description=op.description, status="plan", created_by=user.id,
             budget_version_id=target.id, plan_kind=op.plan_kind, plan_cfo_id=op.plan_cfo_id,
-            plan_executor_id=op.plan_executor_id,
+            plan_executor_id=op.plan_executor_id, plan_project_id=op.plan_project_id,
         )
         columns = ["line_no", "debit_account_id", "credit_account_id", "amount", "currency_id", "amount_rub",
                    "amount_rub_manual", "quantity"]

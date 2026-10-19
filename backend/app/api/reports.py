@@ -11,11 +11,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.access import branch_ids, cfo_scope, get_organization_for
+from app.api.access import branch_ids, cfo_scope, forbid_scoped, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.analytics import ANALYTIC_TITLES, AnalyticKind
 from app.core.permissions import Perm
-from app.models import Account, Budget, BudgetVersion, Cfo, Executor, LegalEntity, Warehouse
+from app.models import Account, Budget, BudgetVersion, Cfo, Executor, InvestmentProject, LegalEntity, Warehouse
 from app.models.journal import ANALYTIC_COLUMNS
 from app.services import report_xlsx as xlsx
 from app.services import reports
@@ -183,6 +183,8 @@ def get_lines(
     exclude_corr_account_id: Annotated[list[int] | None, Query()] = None,
     opening: bool | None = None,
     plan_version_id: int | None = None,
+    project_id: int | None = None,
+    project_part: Literal["fact", "paid"] = "fact",
 ):
     """Расшифровка: проводки, из которых сложилась цифра отчёта (те же условия отбора).
     plan_version_id — плановые операции этой версии бюджета вместо факта."""
@@ -190,8 +192,15 @@ def get_lines(
         _check_version(db, f.organization_id, plan_version_id)
         months = [c.key for c in reports.month_columns(f.date_from, f.date_to)[:-1]]
         f = replace(f, plan_versions=tuple((m, plan_version_id) for m in months))
+    analytics_in = None
+    if project_id is not None:  # факт инвестпроекта: его ОС (вложения) или договоры (оплаты)
+        project = db.get(InvestmentProject, project_id)
+        if project is None or project.organization_id != f.organization_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Инвестпроект не найден")
+        analytics_in = reports.project_analytics(db, project_id, project_part)
     result = reports.drill(db, f, period, account_ids=account_id, side=side, analytics=_analytics_param(a or []),
-                           exclude_corr_account_ids=exclude_corr_account_id, opening=opening)
+                           exclude_corr_account_ids=exclude_corr_account_id, opening=opening,
+                           analytics_in=analytics_in)
     return DrillOut(rows=result.rows, count=result.count, limit=reports.DRILL_LIMIT,
                     debit=result.debit, credit=result.credit)
 
@@ -510,6 +519,50 @@ def get_stock_xlsx(f: Filter, db: DbSession, account_id: int | None = None, ware
         rows, ["Итого", "", ""] + [data.total[k] for k, _ in STOCK_XLSX],
     )
     return _xlsx(content, f"stock_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
+
+
+class InvestmentsOut(BaseModel):
+    plan_versions: dict[str, int]
+    version_titles: dict[int, str]
+    accounts: dict[str, int]  # 08 и 60 — для расшифровки факта
+    rows: list[dict]
+    total: dict[str, Decimal]
+
+
+def _investments(db: Session, user, f: ReportFilter, version_id: int | None) -> InvestmentsOut:
+    forbid_scoped(db, user, f.organization_id)
+    if version_id is not None:
+        _check_version(db, f.organization_id, version_id)
+    result = reports.investments(db, f, version_id)
+    titles = {}
+    for v_id in set(result.plan_versions.values()):
+        version = db.get(BudgetVersion, v_id)
+        titles[v_id] = f"{db.get(Budget, version.budget_id).title}: {version.name}"
+    accounts = {a.code: a.id for a in db.scalars(select(Account).where(Account.code.in_(("08", "60"))))}
+    return InvestmentsOut(plan_versions=result.plan_versions, version_titles=titles, accounts=accounts,
+                          rows=result.rows, total=result.total)
+
+
+@router.get("/investments", response_model=InvestmentsOut)
+def get_investments(f: Filter, user: CurrentUser, db: DbSession, version_id: int | None = None):
+    """Инвестиции: лимит, план, факт вложений (за период и с начала проекта), оплачено, остаток лимита."""
+    return _investments(db, user, f, version_id)
+
+
+INVESTMENT_XLSX = [("limit", "Лимит"), ("plan", "План за период"), ("fact", "Вложено за период"),
+                   ("fact_total", "Вложено с начала"), ("paid", "Оплачено за период"), ("left", "Остаток лимита")]
+
+
+@router.get("/investments.xlsx")
+def get_investments_xlsx(f: Filter, user: CurrentUser, db: DbSession, version_id: int | None = None):
+    data = _investments(db, user, f, version_id)
+    content = xlsx.build(
+        "Инвестиции: план и факт по проектам", _subtitle(db, f),
+        [xlsx.XlsxColumn("Инвестпроект", 40)] + [xlsx.XlsxColumn(t, 16, True) for _, t in INVESTMENT_XLSX],
+        [(0, [r["name"]] + [r[k] for k, _ in INVESTMENT_XLSX]) for r in data.rows],
+        ["Итого"] + [data.total[k] for k, _ in INVESTMENT_XLSX],
+    )
+    return _xlsx(content, f"investments_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
 
 
 @router.get("/plan-fact.xlsx")

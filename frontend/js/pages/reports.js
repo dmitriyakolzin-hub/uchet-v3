@@ -3,6 +3,7 @@ import { api } from "../api.js";
 import { balanceReport } from "../reports/balance.js";
 import { ddsReport } from "../reports/dds.js";
 import { debtsReport } from "../reports/debts.js";
+import { investmentsReport } from "../reports/investments.js";
 import { osvReport } from "../reports/osv.js";
 import { planFactReport } from "../reports/planfact.js";
 import { plReport } from "../reports/pl.js";
@@ -29,6 +30,7 @@ const REPORTS = {
   debts: { title: "Дебиторка и кредиторка", make: debtsReport },
   stock: { title: "Склад", make: stockReport },
   planfact: { title: "План/факт", make: planFactReport },
+  investments: { title: "Инвестиции", make: investmentsReport, hideRestricted: true },
 };
 
 export async function renderReports(view) {
@@ -39,7 +41,7 @@ export async function renderReports(view) {
   }
   let org = orgs.find((o) => String(o.id) === recall(ORG_KEY)) ?? orgs[0];
   let ref = await loadReferences(org.id);
-  let tab = REPORTS[recall(TAB_KEY)] ? recall(TAB_KEY) : "osv";
+  let tab = REPORTS[recall(TAB_KEY)] && !(REPORTS[recall(TAB_KEY)].hideRestricted && org.restricted) ? recall(TAB_KEY) : "osv";
   let report = null;
 
   const orgSelect = el("select", { class: "inline-select", "aria-label": "Организация" },
@@ -76,7 +78,7 @@ export async function renderReports(view) {
   async function open(key) {
     tab = key;
     remember(TAB_KEY, key);
-    tabs.replaceChildren(...Object.entries(REPORTS).map(([k, r]) =>
+    tabs.replaceChildren(...Object.entries(REPORTS).filter(([, r]) => !(r.hideRestricted && org.restricted)).map(([k, r]) =>
       el("button", { type: "button", class: `tab${k === key ? " active" : ""}`, onclick: () => open(k) }, r.title)));
     const reportBox = el("div");
     box.replaceChildren(reportBox);
