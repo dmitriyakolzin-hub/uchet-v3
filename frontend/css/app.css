@@ -179,6 +179,16 @@ table.recon tfoot td { text-align: left; color: var(--muted); border-bottom: 0; 
 .import-card h2 { margin-bottom: 4px; }
 .import-card .quick-actions { margin: 12px 0 0; }
 
+/* --- Отчёты --- */
+
+.tabulator-cell .drill { cursor: pointer; color: var(--accent); }
+.tabulator-cell .drill:hover { text-decoration: underline; }
+.link-like { cursor: pointer; color: var(--accent); }
+.link-like:hover { text-decoration: underline; }
+.check-inline { color: var(--text); }
+.filters input[type="checkbox"] { min-width: 0; margin: 0; }
+.push-right { margin-left: auto; }
+
 /* --- Формы --- */
 
 .form label { display: block; margin-top: 12px; color: var(--muted); }

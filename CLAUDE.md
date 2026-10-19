@@ -251,3 +251,15 @@
   API `app/api/imports.py` (`/api/organizations/{id}/import/...`), страница «Загрузка из Excel»
   (`js/pages/import.js`), `api.download`. Тестов 267, ui_smoke дополнен.
   Дальше: приёмка этапа 1 — месяц реальных операций загружен, проведён и сверен с выпиской.
+- 2026-10-19 — 1.7б влита (PR 15). Владелец принял этап 1 по виду; приёмка на реальном месяце
+  проводится вместе с приёмкой этапа 2 (тот же месяц). План этапа 2 согласован — `docs/TZ.md`, раздел 12.
+  Шаг 2.1 (ветка `etap-2-1-osv`): `select_lines(cfo_branch=..., analytics={kind: None})` — ветка ЦФО
+  через ltree `<@`, «аналитика не указана». `app/services/reports.py`: `ReportFilter` (общие фильтры,
+  статусы с черновиками), `_grouped_balances` (сальдо на начало + обороты по любой колонке строки),
+  ОСВ (свёртка на родителей по parent_id, итог по счетам верхнего уровня), разрез по аналитике,
+  `drill()` — расшифровка теми же условиями (period opening/turnover/closing, side, a=kind:id).
+  `app/services/report_xlsx.py` (Decimal пишется в файл без float). API `app/api/reports.py`
+  (`/reports/osv`, `/osv/details`, `/lines`, `/osv.xlsx`; юрлицо/ЦФО чужой организации → 404).
+  Интерфейс: страница «Отчёты» (вкладки), `js/reports/common.js` (фильтры, окно расшифровки),
+  `js/reports/osv.js`. Тестов 274, ui_smoke дополнен.
+  Дальше: шаг 2.2 — ДДС (вкладка в «Отчётах», колонки по месяцам).

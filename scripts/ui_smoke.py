@@ -36,7 +36,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(12)
+    expect(page.locator("#nav a")).to_have_count(13)
     expect(page.locator("#nav a.active")).to_have_text("Журнал операций")  # открывается первым
     page.click("#nav a[data-page=organizations]")
 
@@ -355,6 +355,26 @@ with sync_playwright() as p:
     d.locator("button", has_text="Открыть журнал").click()
     expect(page.locator(".tabulator-row", has_text="Реклама из Excel")).to_be_visible()
 
+    # отчёты: ОСВ, расшифровка цифры, разрез по аналитике, выгрузка в Excel
+    page.click("#nav a[data-page=reports]")
+    row51 = page.locator(".tabulator-row", has=page.locator(".tabulator-cell[tabulator-field=code]", has_text="51")).first
+    expect(row51).to_contain_text("10 000,00")
+    expect(row51).to_contain_text("8 499,50")
+    expect(page.locator(".tabulator-row.row-total")).to_be_visible()
+    row51.locator(".tabulator-cell[tabulator-field=credit] .drill").click()
+    d = page.locator("dialog[open]", has_text="Расшифровка")
+    expect(d).to_contain_text("кредит: 1 500,50")
+    expect(d.locator(".tabulator-row", has_text="Сбер, основной")).to_be_visible()
+    page.screenshot(path=f"{OUT}/17_drill.png", full_page=True)
+    d.locator("button", has_text="Закрыть").click()
+    row51.locator(".link-like").click()
+    expect(page.locator("h2", has_text="Счёт 51")).to_be_visible()
+    expect(page.locator(".tabulator-row", has_text="Сбер, основной")).to_contain_text("8 499,50")
+    page.screenshot(path=f"{OUT}/18_osv.png", full_page=True)
+    with page.expect_download() as dl:
+        page.click("button:has-text('Скачать в Excel')")
+    assert dl.value.suggested_filename.startswith("osv_")
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")
@@ -369,7 +389,7 @@ with sync_playwright() as p:
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(11)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(12)  # нет «Пользователи»
     page.click("#nav a[data-page=organizations]")
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою
@@ -389,6 +409,10 @@ with sync_playwright() as p:
     expect(page.locator("text=Новая операция")).to_be_hidden()
     page.locator(".tabulator-row", has_text="Оплата по счёту 15").locator("input[type=checkbox]").check()
     expect(page.locator(".bulk-bar")).to_be_hidden()
+
+    # CEO видит отчёты
+    page.click("#nav a[data-page=reports]")
+    expect(page.locator(".tabulator-row", has_text="Расчётные счета")).to_contain_text("8 499,50")
 
     # CEO видит деньги без кнопок ввода
     page.click("#nav a[data-page=money]")
