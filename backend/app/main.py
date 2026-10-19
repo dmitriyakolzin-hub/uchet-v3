@@ -10,6 +10,7 @@ from app.api import (
     auth,
     currencies,
     health,
+    imports,
     journal,
     money,
     organizations,
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
     app.include_router(references.router)
     app.include_router(journal.router)
     app.include_router(money.router)
+    app.include_router(imports.router)
 
     frontend = next((p for p in _FRONTEND_CANDIDATES if p.is_dir()), None)
     if frontend is not None:
