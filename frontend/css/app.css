@@ -169,6 +169,12 @@ button.danger { color: var(--error); }
 .check-box.ok { border-color: #a6f4c5; background: #ecfdf3; color: #05603a; }
 .check-box.bad { border-color: #fecdca; background: #fef3f2; color: var(--error); }
 
+table.recon { width: 100%; margin: 12px 0; border-collapse: collapse; }
+table.recon caption { text-align: left; font-weight: 600; padding-bottom: 4px; }
+table.recon th, table.recon td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: right; }
+table.recon th:first-child, table.recon td:first-child { text-align: left; }
+table.recon tfoot td { text-align: left; color: var(--muted); border-bottom: 0; }
+
 /* --- Формы --- */
 
 .form label { display: block; margin-top: 12px; color: var(--muted); }

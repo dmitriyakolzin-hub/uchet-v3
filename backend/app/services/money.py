@@ -149,3 +149,13 @@ def opening_balance_check(db: Session, organization_id: int) -> Decimal:
     lines = select_lines(organization_id, account_ids=_account_ids(db, ("00",))).subquery()
     signed = case((lines.c.side == "debit", lines.c.amount_rub), else_=-lines.c.amount_rub)
     return round_money(Decimal(db.scalar(select(func.coalesce(func.sum(signed), 0)))))
+
+
+def bank_balance(db: Session, organization_id: int, bank_account_id: int, on_date: dt.date) -> Decimal:
+    """Остаток на расчётном счёте на конец дня on_date по проведённым операциям."""
+    lines = select_lines(
+        organization_id, account_ids=_account_ids(db, BANK_ROOTS), date_to=on_date,
+        analytics={"bank_account": bank_account_id},
+    ).subquery()
+    signed = case((lines.c.side == "debit", lines.c.amount_rub), else_=-lines.c.amount_rub)
+    return round_money(Decimal(db.scalar(select(func.coalesce(func.sum(signed), 0)))))
