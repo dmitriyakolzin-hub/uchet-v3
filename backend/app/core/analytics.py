@@ -14,6 +14,7 @@ class AnalyticKind(StrEnum):
     EMPLOYEE = "employee"
     NOMENCLATURE = "nomenclature"
     WAREHOUSE = "warehouse"
+    FIXED_ASSET = "fixed_asset"
     CFO = "cfo"
     CASH_FLOW_ITEM = "cash_flow_item"
     PL_ITEM = "pl_item"
@@ -26,6 +27,7 @@ ANALYTIC_TITLES: dict[AnalyticKind, str] = {
     AnalyticKind.EMPLOYEE: "Сотрудник",
     AnalyticKind.NOMENCLATURE: "Номенклатура",
     AnalyticKind.WAREHOUSE: "Склад",
+    AnalyticKind.FIXED_ASSET: "Основное средство",
     AnalyticKind.CFO: "ЦФО",
     AnalyticKind.CASH_FLOW_ITEM: "Статья ДДС",
     AnalyticKind.PL_ITEM: "Статья ОПиУ",

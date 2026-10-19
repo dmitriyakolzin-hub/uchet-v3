@@ -20,6 +20,7 @@ class AnalyticsIn(BaseModel):
     employee: int | None = None
     nomenclature: int | None = None
     warehouse: int | None = None
+    fixed_asset: int | None = None
     cfo: int | None = None
     cash_flow_item: int | None = None
     pl_item: int | None = None

@@ -3,6 +3,7 @@ from app.models.article import Article
 from app.models.budget import Budget, BudgetVersion
 from app.models.cfo import Cfo, Employee
 from app.models.currency import Currency, ExchangeRate
+from app.models.fixed_asset import DepreciationRun, FixedAsset
 from app.models.journal import Operation, OperationEvent, Posting
 from app.models.membership import Membership
 from app.models.organization import LegalEntity, Organization
@@ -31,9 +32,11 @@ __all__ = [
     "Contract",
     "Counterparty",
     "Currency",
+    "DepreciationRun",
     "Employee",
     "EmployeeSalary",
     "ExchangeRate",
+    "FixedAsset",
     "LegalEntity",
     "Membership",
     "Nomenclature",

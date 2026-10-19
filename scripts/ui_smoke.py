@@ -36,7 +36,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(15)
+    expect(page.locator("#nav a")).to_have_count(16)
     expect(page.locator("#nav a.active")).to_have_text("Журнал операций")  # открывается первым
     page.click("#nav a[data-page=organizations]")
 
@@ -526,6 +526,46 @@ with sync_playwright() as p:
     expect(page.locator("text=Статус: отправлена в банк")).to_be_visible()
     page.click("text=← К списку")
 
+    # основные средства: карточка, поступление на 08 в журнале, ввод в эксплуатацию, амортизация
+    page.click("#nav a[data-page=fixedassets]")
+    page.click("text=Новое основное средство")
+    d = dialog_fill(page, {"name": "Ноутбук", "inventory_number": "ОС-1", "cost": "120 000", "useful_life_months": "36"})
+    d.locator("[name=cfo_id]").select_option(label="АВМВ / Торговля")
+    expect(d.locator("[name=pl_item_id] option:checked")).to_have_text("Амортизация основных средств")
+    d.locator("button[type=submit]").click()
+    expect(page.locator("tr", has_text="Ноутбук")).to_contain_text("не введено")
+
+    page.click("#nav a[data-page=journal]")
+    page.click("text=Новая операция")
+    d = page.locator("dialog[open]")
+    d.locator("[name=debit_account]").select_option(label="08 Вложения во внеоборотные активы")
+    d.locator("[name=credit_account]").select_option(label="60.01 Расчёты с поставщиками и подрядчиками")
+    d.locator("[name=amount]").fill("120000")
+    d.locator("[aria-label='Основное средство (дебет)']").select_option(label="Ноутбук (ОС-1)")
+    d.locator("[aria-label='Контрагент (кредит)']").select_option(label="Поставщик Плюс (7701111111)")
+    d.locator("[aria-label='Договор (кредит)']").select_option(index=1)
+    d.locator("[name=description]").fill("Покупка ноутбука")
+    d.locator("button", has_text="Сохранить и провести").click()
+    expect(page.locator(".tabulator-row", has_text="Покупка ноутбука")).to_contain_text("Проведена")
+
+    page.click("#nav a[data-page=fixedassets]")
+    row = page.locator("tr", has_text="Ноутбук")
+    expect(row).to_contain_text("120 000,00")  # на 08
+    row.locator("button", has_text="Ввести в эксплуатацию").click()
+    page.locator("dialog[open] button[type=submit]").click()
+    expect(page.locator(".toast")).to_have_text("Введено в эксплуатацию")
+    expect(row).to_contain_text("3 333,33")  # в месяц
+    expect(row.locator("button", has_text="Отменить ввод")).to_be_visible()
+    page.locator("select[aria-label='Месяц']").select_option(label="Ноябрь")
+    expect(page.locator("tr", has_text="Ноутбук (ОС-1)")).to_contain_text("3 333,33")
+    page.once("dialog", lambda dlg: dlg.accept())
+    page.click("button:has-text('Начислить за месяц')")
+    expect(page.locator("tr", has_text="Ноябрь 2026")).to_contain_text("3 333,33")
+    page.screenshot(path=f"{OUT}/33_fixed_assets.png", full_page=True)
+    page.once("dialog", lambda dlg: dlg.accept())
+    page.locator("tr", has_text="Ноябрь 2026").locator("button", has_text="Отменить").click()
+    expect(page.locator("text=Начислений пока нет.")).to_be_visible()
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")
@@ -550,7 +590,7 @@ with sync_playwright() as p:
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(14)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(15)  # нет «Пользователи»
     page.click("#nav a[data-page=organizations]")
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою
@@ -579,6 +619,13 @@ with sync_playwright() as p:
     page.click("#nav a[data-page=money]")
     expect(page.locator(".tabulator-row", has_text="Сбер, основной")).to_contain_text("8 499,50")
     expect(page.locator("button:has-text('Поступление')")).to_have_count(0)
+
+    # CEO видит основные средства без кнопок
+    page.click("#nav a[data-page=fixedassets]")
+    expect(page.locator("tr", has_text="Ноутбук")).to_contain_text("120 000,00")
+    expect(page.locator("text=Новое основное средство")).to_be_hidden()
+    expect(page.locator("button:has-text('Отменить ввод')")).to_have_count(0)
+    expect(page.locator("h2", has_text="Амортизация")).to_have_count(0)
 
     # CEO видит справочники организации без кнопок изменения
     page.click("#nav a[data-page=references]")

@@ -10,6 +10,7 @@ const KIND_TITLES = {
   employee: "Сотрудник",
   nomenclature: "Номенклатура",
   warehouse: "Склад",
+  fixed_asset: "Основное средство",
   cfo: "ЦФО",
   cash_flow_item: "Статья ДДС",
   pl_item: "Статья ОПиУ",
@@ -85,6 +86,9 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
         return ref.nomenclature.map((n) => [String(n.id), n.article ? `${n.name} (${n.article})` : n.name]);
       case "warehouse":
         return ref.warehouses.map((w) => [String(w.id), w.name]);
+      case "fixed_asset":
+        return ref.fixedAssets.filter((a) => !entityId || a.legal_entity_id === entityId)
+          .map((a) => [String(a.id), a.inventory_number ? `${a.name} (${a.inventory_number})` : a.name]);
       case "cfo":
         return ref.cfos.map((c) => [String(c.id), ref.cfoLabel.get(c.id)]);
       case "cash_flow_item":

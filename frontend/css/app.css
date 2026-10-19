@@ -245,3 +245,9 @@ tr.version-archived td { color: var(--muted); }
   .sidebar { width: auto; }
   .content { padding: 16px; }
 }
+/* Основные средства: текст — слева, суммы — справа */
+table.assets th, table.assets td { text-align: left; }
+table.assets td.num { text-align: right; white-space: nowrap; }
+table.assets td.strong { font-weight: 600; }
+table.assets tr.muted td { color: var(--muted); }
+table.assets td.actions { white-space: normal; }
