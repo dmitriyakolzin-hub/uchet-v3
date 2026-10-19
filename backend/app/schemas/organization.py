@@ -35,6 +35,7 @@ class OrganizationOut(BaseModel):
     kind: Kind
     note: str
     opening_balance_date: dt.date | None
+    closed_through: dt.date | None = None
     is_active: bool
     permissions: list[Perm] = []
     cfo_scope: int | None = None  # руководитель ЦФО: корень его ветки ЦФО

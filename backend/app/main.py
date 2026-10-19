@@ -1,7 +1,8 @@
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import (
@@ -9,6 +10,7 @@ from app.api import (
     articles,
     auth,
     budgets,
+    closing,
     currencies,
     fixed_assets,
     health,
@@ -22,6 +24,7 @@ from app.api import (
     users,
 )
 from app.core.config import SettingsError, get_settings
+from app.services.period import PeriodClosedError
 
 # В контейнере фронтенд лежит в /app/frontend, в репозитории — рядом с backend/.
 _FRONTEND_CANDIDATES = [
@@ -55,6 +58,13 @@ def create_app() -> FastAPI:
     app.include_router(budgets.router)
     app.include_router(payroll.router)
     app.include_router(fixed_assets.router)
+    app.include_router(closing.router)
+
+    # Запрет изменений в закрытом периоде срабатывает при записи в базу (app/services/period.py) —
+    # из любого раздела; ответ — понятная ошибка, а не «внутренняя ошибка сервера»
+    @app.exception_handler(PeriodClosedError)
+    def period_closed(_request: Request, exc: PeriodClosedError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
 
     frontend = next((p for p in _FRONTEND_CANDIDATES if p.is_dir()), None)
     if frontend is not None:

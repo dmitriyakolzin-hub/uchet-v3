@@ -2,6 +2,7 @@ import { api, clearSession, hasSession, login } from "./api.js";
 import { renderAccounts } from "./pages/accounts.js";
 import { renderArticles } from "./pages/articles.js";
 import { renderBudgets } from "./pages/budgets.js";
+import { renderClosing } from "./pages/closing.js";
 import { renderCommon } from "./pages/common.js";
 import { renderCurrencies } from "./pages/currencies.js";
 import { renderFixedAssets } from "./pages/fixedassets.js";
@@ -25,6 +26,7 @@ const PAGES = {
   budgets: { title: "Бюджеты", render: renderBudgets },
   payroll: { title: "Зарплата", render: renderPayroll },
   fixedassets: { title: "Основные средства", render: renderFixedAssets },
+  closing: { title: "Закрытие периода", render: renderClosing },
   import: { title: "Загрузка из Excel", render: renderImport },
   organizations: { title: "Организации", render: renderOrganizations },
   references: { title: "Справочники", render: renderReferences },

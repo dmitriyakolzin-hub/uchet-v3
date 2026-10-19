@@ -1,7 +1,7 @@
 // Форма операции журнала: шапка, проводки, аналитика по выбранным счетам, шаблон статьи.
 import { api } from "./api.js";
 import { money, parseNumber, quantity } from "./format.js";
-import { el, toast } from "./ui.js";
+import { el, openForm, toast } from "./ui.js";
 
 const KIND_TITLES = {
   bank_account: "Расчётный счёт",
@@ -38,7 +38,9 @@ function select(options, value, attrs = {}) {
 export function openOperation({ ref, org, op, perms, onChanged, opening = false, preset = null }) {
   const canDraft = perms.includes("draft");
   const canPost = perms.includes("post");
-  const editable = (op === null || op.status === "draft") && canDraft;
+  // операция закрытого периода не меняется (сервер всё равно не даст)
+  const closed = Boolean(op && org.closed_through && op.op_date <= org.closed_through);
+  const editable = (op === null || op.status === "draft") && canDraft && !closed;
   const isOpening = op ? op.is_opening : opening;
   const accountsById = new Map(ref.accounts.map((a) => [a.id, a]));
   // счёт 00 — только для ввода остатков
@@ -280,6 +282,33 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
     toast(message);
   }
 
+  // Регламентная операция: эта операция — образец, повторяется каждый месяц (страница «Закрытие периода»)
+  function makeRoutine() {
+    const next = new Date(op.op_date);
+    next.setMonth(next.getMonth() + 1, 1);
+    openForm({
+      title: "Сделать регламентной",
+      fields: [
+        { name: "name", label: "Название", required: true },
+        { name: "day", label: "Число месяца", type: "number", required: true,
+          hint: "Если в месяце меньше дней — последний день месяца" },
+        { name: "valid_from", label: "Первый месяц", type: "month", required: true },
+        { name: "valid_to", label: "Последний месяц (пусто — бессрочно)", type: "month" },
+        { name: "post", label: "Проводить сразу", type: "checkbox" },
+      ],
+      values: { name: op.description || (ref.articles.find((a) => a.id === op.article_id)?.name ?? ""),
+        day: Number(op.op_date.slice(8, 10)), valid_from: `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`,
+        post: true },
+      submitText: "Создать",
+      onSubmit: async (v) => {
+        await api.post(`/api/operations/${op.id}/routine`, {
+          name: v.name, day: Number(v.day), valid_from: `${v.valid_from}-01`,
+          valid_to: v.valid_to ? `${v.valid_to}-01` : null, post: v.post });
+        toast("Регламентная операция создана — выполняется на странице «Закрытие периода»");
+      },
+    });
+  }
+
   async function showHistory() {
     const events = await api.get(`/api/operations/${op.id}/history`);
     historyBox.replaceChildren(
@@ -303,16 +332,19 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
       if (confirm(`Удалить черновик № ${op.number}?`)) run(async () => { await api.delete(`/api/operations/${op.id}`); toast("Черновик удалён"); });
     }, "secondary danger"));
   }
-  if (op?.status === "posted" && canPost) {
+  if (op && canPost && !isOpening && !org.restricted && op.status !== "cancelled") {
+    actions.append(button("Сделать регламентной", makeRoutine, "secondary"));
+  }
+  if (op?.status === "posted" && canPost && !closed) {
     actions.append(
       button("Вернуть в черновик", () => run(() => transition("unpost", "Операция возвращена в черновик")), "secondary"),
       button("Аннулировать", () => run(() => transition("cancel", "Операция аннулирована")), "secondary danger"),
     );
   }
-  if (op?.status === "draft" && canPost && !editable) {
+  if (op?.status === "draft" && canPost && !editable && !closed) {
     actions.append(button("Аннулировать", () => run(() => transition("cancel", "Операция аннулирована")), "secondary danger"));
   }
-  if (op?.status === "cancelled" && canPost) {
+  if (op?.status === "cancelled" && canPost && !closed) {
     actions.append(button("Восстановить как черновик", () => run(() => transition("restore", "Операция восстановлена")), "secondary"));
   }
   actions.append(button(editable ? "Отмена" : "Закрыть", () => dialog.close(), "secondary"));
@@ -337,6 +369,7 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
     el("label", { class: "block" }, "Описание", description),
     postingsBox,
     editable ? el("button", { type: "button", class: "link", onclick: () => addPosting() }, "+ Добавить проводку") : null,
+    closed ? el("p", { class: "muted" }, `Период закрыт по ${org.closed_through.split("-").reverse().join(".")} — операцию изменить нельзя.`) : null,
     errorBox,
     historyBox,
     actions,
