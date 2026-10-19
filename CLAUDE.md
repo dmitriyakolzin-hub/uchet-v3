@@ -318,3 +318,14 @@
   «Бюджеты» (`js/pages/budgets.js`). Тестов 300, ui_smoke дополнен.
   Дальше: шаг 3.3 — плановые операции (operations: статус plan + budget_version_id), сетка ввода ОПиУ,
   копирование плана при новой версии, загрузка бюджета из Excel.
+- 2026-10-19 — 3.2 влита (PR 22). Шаг 3.3 (ветка `etap-3-3-plan-grid`), допущения — `docs/TZ.md`, раздел 13
+  «Детали 3.3». Миграция 0015: `operations.budget_version_id` (CASCADE), `plan_kind` (pl/cf), `plan_cfo_id`,
+  статус `plan`; номер журнала уникален только у факта (частичный индекс), уникальная ячейка
+  `uq_operations_plan_cell` (NULLS NOT DISTINCT). Журнал не видит план (404, фильтр списка и bulk).
+  `select_lines(budget_version_ids=...)` + колонка `budget_version_id`. `app/services/plan.py`: статьи сетки,
+  `set_cells` (через `journal.save_draft`), `grid`, `copy_plan` (новая версия «на основе»), Excel
+  (`plan_xlsx`, `import_plan` на хелперах `excel_import`). API в `app/api/budgets.py`: `/grid`, `/cells`,
+  `/plan.xlsx`, `/plan`. Интерфейс: `js/plangrid.js` (Tabulator, группы, итоги через `sumMoney`, ввод
+  нормализуется в `mutatorEdit` — иначе итоги падают на «1 500,50»), кнопка «Ввести план / Открыть план»
+  в «Бюджетах». План ДДС (вкладка сетки) готов там же. Тестов 307, ui_smoke дополнен.
+  Дальше: шаг 3.5 — отчёт план/факт (ОПиУ и ДДС; актуальный утверждённый бюджет: месяц > квартал > год).

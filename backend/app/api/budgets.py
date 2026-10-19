@@ -2,18 +2,22 @@
 удаление — право проводить (POST): финансовый директор и администратор."""
 
 import datetime as dt
+from decimal import Decimal
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
-from app.api.access import get_organization_for
+from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.models import Budget, BudgetVersion, User
+from app.services import plan
+from app.services.journal import JournalError
 
 router = APIRouter(prefix="/api", tags=["Бюджеты"])
 
@@ -163,7 +167,8 @@ def create_version(budget_id: int, body: VersionCreate, user: CurrentUser, db: D
         if source is None or source.budget_id != budget.id:
             raise _not_found("Версия бюджета")
     version = _new_version(db, budget, user, body.name, source)
-    # копирование плановых операций появится вместе с сеткой ввода (шаг 3.3)
+    if source is not None:
+        plan.copy_plan(db, source, version, user)
     db.commit()
     return _version_out(version)
 
@@ -211,3 +216,116 @@ def delete_version(version_id: int, user: CurrentUser, db: DbSession) -> None:
                             detail="Удалить можно только черновик; утверждённую версию — отправьте в архив")
     db.delete(version)
     db.commit()
+
+
+# --- Сетка ввода плана (шаг 3.3): ячейка = плановая операция ---
+
+PlanKind = Literal["pl", "cf"]
+
+
+class CellIn(BaseModel):
+    article_id: int
+    month: Annotated[int, Field(ge=1, le=12)]
+    amount: Annotated[Decimal, Field(max_digits=18, decimal_places=2)] | None = None
+
+
+class CellsIn(BaseModel):
+    kind: PlanKind
+    cfo_id: int | None = None
+    cells: list[CellIn] = Field(min_length=1, max_length=2000)
+
+
+class GridOut(BaseModel):
+    version: VersionOut
+    budget_title: str
+    kind: str
+    cfo_id: int | None
+    editable: bool
+    months: list[dict]
+    rows: list[dict]
+
+
+def _check_plan_cfo(db: Session, user: User, organization_id: int, cfo_id: int | None) -> None:
+    """Руководитель ЦФО работает с планом только своей ветки."""
+    scope = cfo_scope(db, user, organization_id)
+    if scope is not None and (cfo_id is None or cfo_id not in branch_ids(db, scope)):
+        raise _not_found("ЦФО")
+
+
+@router.get("/budget-versions/{version_id}/grid", response_model=GridOut)
+def get_grid(version_id: int, user: CurrentUser, db: DbSession, kind: PlanKind = "pl", cfo_id: int | None = None):
+    version = _get_version(db, user, version_id, Perm.VIEW)
+    budget = db.get(Budget, version.budget_id)
+    _check_plan_cfo(db, user, budget.organization_id, cfo_id)
+    data = plan.grid(db, version, kind, cfo_id)
+    editable = version.status == "draft" and Perm.DRAFT in org_permissions(db, user, budget.organization_id)
+    return GridOut(version=_version_out(version), budget_title=budget.title, kind=kind, cfo_id=cfo_id,
+                   editable=editable and (kind == "cf" or cfo_id is not None), **data)
+
+
+@router.put("/budget-versions/{version_id}/cells")
+def put_cells(version_id: int, body: CellsIn, user: CurrentUser, db: DbSession) -> dict:
+    """Записать ячейки сетки (пусто или 0 — очистить). Только черновик версии."""
+    version = _get_version(db, user, version_id, Perm.DRAFT)
+    budget = db.get(Budget, version.budget_id)
+    _check_plan_cfo(db, user, budget.organization_id, body.cfo_id)
+    try:
+        changed = plan.set_cells(db, version, body.kind, body.cfo_id,
+                                 [plan.Cell(c.article_id, c.month, c.amount) for c in body.cells], user)
+    except (plan.PlanError, JournalError) as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    db.commit()
+    return {"changed": changed}
+
+
+# --- План в Excel ---
+
+XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _branch_for(db: Session, user: User, organization_id: int) -> set[int] | None:
+    scope = cfo_scope(db, user, organization_id)
+    return None if scope is None else branch_ids(db, scope)
+
+
+@router.get("/budget-versions/{version_id}/plan.xlsx")
+def download_plan(version_id: int, user: CurrentUser, db: DbSession, kind: PlanKind = "pl"):
+    """Текущий план версии: ОПиУ — все ЦФО (руководителю ЦФО — его ветка) × статьи; ДДС — статьи."""
+    version = _get_version(db, user, version_id, Perm.VIEW)
+    budget = db.get(Budget, version.budget_id)
+    branch = _branch_for(db, user, budget.organization_id)
+    if kind == "cf":
+        if branch is not None:
+            raise _not_found("План ДДС")
+        cfo_ids: list[int | None] = [None]
+    else:
+        labels = plan.cfo_labels(db, budget.organization_id, branch)
+        cfo_ids = sorted(labels, key=lambda i: labels[i].lower())
+    content = plan.plan_xlsx(db, version, kind, cfo_ids)
+    name = f"plan_{'pl' if kind == 'pl' else 'dds'}_{budget.year}_v{version.number}.xlsx"
+    return Response(content, media_type=XLSX_TYPE, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@router.post("/budget-versions/{version_id}/plan")
+async def upload_plan(version_id: int, request: Request, user: CurrentUser, db: DbSession, kind: PlanKind = "pl"):
+    """Загрузить план из Excel в черновик версии (файл — как скачан, с исправленными суммами)."""
+    from app.services.excel_import import ExcelError
+
+    version = _get_version(db, user, version_id, Perm.DRAFT)
+    budget = db.get(Budget, version.budget_id)
+    branch = _branch_for(db, user, budget.organization_id)
+    if kind == "cf" and branch is not None:
+        raise _not_found("План ДДС")
+    raw = await request.body()
+    if not raw:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Файл пуст")
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, detail="Файл больше 10 МБ")
+    try:
+        result = await run_in_threadpool(plan.import_plan, db, version, kind, raw, user, branch)
+    except (ExcelError, plan.PlanError) as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    db.commit()
+    return {"rows": result.rows, "changed": result.changed, "errors": [e.__dict__ for e in result.errors]}
