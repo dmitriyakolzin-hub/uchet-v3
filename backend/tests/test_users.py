@@ -22,7 +22,7 @@ def test_admin_creates_user_with_roles(client, headers_for, admin, make_org):
     user = resp.json()
     assert user["login"] == "petrov"
     assert user["memberships"] == [{"organization_id": org.id, "organization_name": "Группа А",
-                                    "role": "ceo", "permissions": ["view"]}]
+                                    "role": "ceo", "cfo_id": None, "cfo_name": None, "permissions": ["view"]}]
     assert "password" not in user and "password_hash" not in user
 
     login = client.post("/api/auth/login", json={"login": "petrov", "password": "new-password-1"})

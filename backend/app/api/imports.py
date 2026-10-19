@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from app.api.access import get_organization_for
+from app.api.access import branch_ids, cfo_scope, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.services import excel_import as xl
@@ -66,9 +66,11 @@ def counterparties_template(organization_id: int, user: CurrentUser, db: DbSessi
 async def import_operations(organization_id: int, request: Request, user: CurrentUser, db: DbSession):
     """Тело запроса — файл .xlsx как есть. Строки становятся черновиками операций."""
     get_organization_for(db, user, organization_id, Perm.DRAFT)
+    scope = cfo_scope(db, user, organization_id)
+    branch = None if scope is None else branch_ids(db, scope)
     raw = await _body(request)
     try:
-        result = await run_in_threadpool(xl.import_operations, db, organization_id, user, raw)
+        result = await run_in_threadpool(xl.import_operations, db, organization_id, user, raw, branch)
     except xl.ExcelError as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None

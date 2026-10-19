@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 
-from app.api.access import get_organization_for
+from app.api.access import branch_ids, cfo_scope, forbid_scoped, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.models import Operation
@@ -81,6 +81,11 @@ def get_money(organization_id: int, date_from: dt.date, date_to: dt.date, user: 
     get_organization_for(db, user, organization_id, Perm.VIEW)
     _check_period(date_from, date_to)
     rows = money_overview(db, organization_id, date_from, date_to)
+    scope = cfo_scope(db, user, organization_id)
+    if scope is not None:
+        # руководитель ЦФО видит только кассу своей ветки
+        branch = branch_ids(db, scope)
+        rows = [r for r in rows if r["kind"] == "cash" and r["cfo_id"] in branch]
     total = {k: sum((r[k] for r in rows), Decimal("0.00")) for k in ("opening", "inflow", "outflow", "closing")}
     return MoneyOverview(date_from=date_from, date_to=date_to, rows=rows, **total)
 
@@ -92,6 +97,9 @@ def get_movements(
 ):
     get_organization_for(db, user, organization_id, Perm.VIEW)
     _check_period(date_from, date_to)
+    scope = cfo_scope(db, user, organization_id)
+    if scope is not None and (bank_account_id is not None or cfo_id not in branch_ids(db, scope)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Счёт не найден")
     if (bank_account_id is None) == (cfo_id is None):
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Укажите расчётный счёт или ЦФО кассы"
@@ -108,6 +116,7 @@ def get_movements(
 @router.get("/organizations/{organization_id}/opening-balances", response_model=OpeningSummary)
 def get_opening_summary(organization_id: int, user: CurrentUser, db: DbSession):
     organization = get_organization_for(db, user, organization_id, Perm.VIEW)
+    forbid_scoped(db, user, organization_id)
     counts = dict(db.execute(
         select(Operation.status, func.count())
         .where(Operation.organization_id == organization_id, Operation.is_opening)
@@ -156,6 +165,7 @@ class ImportOut(BaseModel):
 async def upload_statement(organization_id: int, request: Request, user: CurrentUser, db: DbSession):
     """Тело запроса — файл выписки как есть (kl_to_1c.txt). Платежи становятся черновиками."""
     get_organization_for(db, user, organization_id, Perm.DRAFT)
+    forbid_scoped(db, user, organization_id)
     raw = await request.body()
     if not raw:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Файл выписки пуст")

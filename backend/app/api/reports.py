@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.access import get_organization_for
+from app.api.access import branch_ids, cfo_scope, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.analytics import ANALYTIC_TITLES, AnalyticKind
 from app.core.permissions import Perm
@@ -42,6 +42,13 @@ def report_filter(
             obj = db.get(model, value)
             if obj is None or obj.organization_id != organization_id:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"{title} не найдено в этой организации")
+    scope = cfo_scope(db, user, organization_id)
+    if scope is not None:
+        # руководитель ЦФО видит отчёты только по своей ветке
+        if cfo_id is None:
+            cfo_id = scope
+        elif cfo_id not in branch_ids(db, scope):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="ЦФО не найдено в вашей ветке")
     return ReportFilter(organization_id, date_from, date_to, legal_entity_id, cfo_id, drafts)
 
 

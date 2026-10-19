@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import AdminUser, CurrentUser, DbSession
 from app.core.permissions import ROLE_PERMS, ROLE_TITLES, Role
 from app.core.security import hash_password
-from app.models import Membership, Organization, User
+from app.models import Cfo, Membership, Organization, User
 from app.schemas.user import (
     MembershipIn,
     MembershipOut,
@@ -24,8 +24,9 @@ router = APIRouter(prefix="/api", tags=["Пользователи"])
 
 def memberships_of(db: Session, user_id: int) -> list[MembershipOut]:
     rows = db.execute(
-        select(Membership.organization_id, Organization.name, Membership.role)
+        select(Membership.organization_id, Organization.name, Membership.role, Membership.cfo_id, Cfo.name)
         .join(Organization, Organization.id == Membership.organization_id)
+        .outerjoin(Cfo, Cfo.id == Membership.cfo_id)
         .where(Membership.user_id == user_id)
         .order_by(Organization.name)
     )
@@ -34,9 +35,11 @@ def memberships_of(db: Session, user_id: int) -> list[MembershipOut]:
             organization_id=org_id,
             organization_name=name,
             role=Role(role),
+            cfo_id=cfo_id,
+            cfo_name=cfo_name,
             permissions=sorted(ROLE_PERMS[Role(role)]),
         )
-        for org_id, name, role in rows
+        for org_id, name, role, cfo_id, cfo_name in rows
     ]
 
 
@@ -62,9 +65,15 @@ def _set_memberships(db: Session, user_id: int, items: list[MembershipIn]) -> No
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"Организации не найдены: {', '.join(map(str, sorted(missing)))}",
             )
+    for m in items:
+        if m.cfo_id is not None:
+            cfo = db.get(Cfo, m.cfo_id)
+            if cfo is None or cfo.organization_id != m.organization_id:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                    detail="ЦФО руководителя не найден в этой организации")
     db.query(Membership).filter(Membership.user_id == user_id).delete()
     db.add_all(
-        Membership(user_id=user_id, organization_id=m.organization_id, role=m.role.value)
+        Membership(user_id=user_id, organization_id=m.organization_id, role=m.role.value, cfo_id=m.cfo_id)
         for m in items
     )
 

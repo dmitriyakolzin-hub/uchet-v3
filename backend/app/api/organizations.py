@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.access import get_organization_for, org_permissions, visible_organization_ids
+from app.api.access import cfo_scope, get_organization_for, org_permissions, visible_organization_ids
 from app.api.deps import AdminUser, CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.models import LegalEntity, Operation, Organization, User
@@ -30,6 +30,11 @@ def _commit(db: Session, conflict_message: str) -> None:
 def _organization_out(db: Session, user: User, organization: Organization) -> OrganizationOut:
     out = OrganizationOut.model_validate(organization)
     out.permissions = sorted(org_permissions(db, user, organization.id))
+    try:
+        out.cfo_scope = cfo_scope(db, user, organization.id)
+        out.restricted = out.cfo_scope is not None
+    except HTTPException:
+        out.restricted = True  # руководитель ЦФО без назначенного ЦФО: данных не видит
     return out
 
 

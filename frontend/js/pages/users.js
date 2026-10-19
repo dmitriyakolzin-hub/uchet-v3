@@ -1,16 +1,33 @@
 import { api } from "../api.js";
 import { editButton, el, makeTable, openForm, toast, yesNo } from "../ui.js";
 
-// Таблица «организация → роль» внутри формы пользователя.
+// Таблица «организация → роль» внутри формы пользователя. Руководителю ЦФО выбирается его ЦФО (ветка).
 function rolesEditor(organizations, roles, memberships) {
-  const current = Object.fromEntries(memberships.map((m) => [m.organization_id, m.role]));
+  const current = Object.fromEntries(memberships.map((m) => [m.organization_id, m]));
   const options = [["", "— нет доступа —"], ...roles.map((r) => [r.code, r.title])];
   const rows = organizations.map((org) => {
     const select = el("select", { "data-org": org.id, "aria-label": `Роль в ${org.name}` });
     for (const [code, title] of options) {
-      select.append(el("option", { value: code, selected: code === (current[org.id] ?? "") }, title));
+      select.append(el("option", { value: code, selected: code === (current[org.id]?.role ?? "") }, title));
     }
-    return el("tr", {}, el("td", {}, org.name, org.is_active ? "" : " (архив)"), el("td", {}, select));
+    const cfoSelect = el("select", { "data-cfo": org.id, "aria-label": `ЦФО в ${org.name}`, hidden: true });
+    let loaded = false;
+    async function syncCfo() {
+      cfoSelect.hidden = select.value !== "cfo_head";
+      if (cfoSelect.hidden || loaded) return;
+      loaded = true;
+      const cfos = await api.get(`/api/organizations/${org.id}/cfos`);
+      const names = new Map(cfos.map((c) => [String(c.id), c.name]));
+      const label = (c) => c.path.split(".").map((id) => names.get(id)).join(" / ");
+      cfoSelect.replaceChildren(
+        el("option", { value: "" }, cfos.length ? "— выберите ЦФО —" : "— в организации нет ЦФО —"),
+        ...cfos.filter((c) => c.is_active).sort((a, b) => label(a).localeCompare(label(b)))
+          .map((c) => el("option", { value: c.id, selected: c.id === current[org.id]?.cfo_id }, label(c))),
+      );
+    }
+    select.addEventListener("change", syncCfo);
+    syncCfo();
+    return el("tr", {}, el("td", {}, org.name, org.is_active ? "" : " (архив)"), el("td", {}, select, cfoSelect));
   });
   const box = el(
     "fieldset",
@@ -19,11 +36,15 @@ function rolesEditor(organizations, roles, memberships) {
     organizations.length
       ? el("table", {}, el("tbody", {}, rows))
       : el("p", { class: "muted" }, "Организаций пока нет."),
+    el("p", { class: "muted" }, "Руководитель ЦФО видит и вводит данные только по выбранному ЦФО и его подчинённым."),
   );
   box.collect = () =>
     [...box.querySelectorAll("select[data-org]")]
       .filter((s) => s.value)
-      .map((s) => ({ organization_id: Number(s.dataset.org), role: s.value }));
+      .map((s) => {
+        const cfo = box.querySelector(`select[data-cfo="${s.dataset.org}"]`).value;
+        return { organization_id: Number(s.dataset.org), role: s.value, cfo_id: s.value === "cfo_head" && cfo ? Number(cfo) : null };
+      });
   return box;
 }
 
@@ -62,7 +83,7 @@ export async function renderUsers(view, { me }) {
         formatter: (cell) =>
           cell
             .getValue()
-            .map((m) => `${m.organization_name}: ${roleTitles[m.role]}`)
+            .map((m) => `${m.organization_name}: ${roleTitles[m.role]}${m.cfo_name ? ` (${m.cfo_name})` : ""}`)
             .join("; ")
             .replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]),
       },

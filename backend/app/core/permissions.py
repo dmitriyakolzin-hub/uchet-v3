@@ -30,7 +30,7 @@ ROLE_TITLES: dict[Role, str] = {
 ROLE_PERMS: dict[Role, frozenset[Perm]] = {
     Role.FINANCE_DIRECTOR: frozenset({Perm.VIEW, Perm.EDIT_REFERENCE, Perm.DRAFT, Perm.POST}),
     Role.CEO: frozenset({Perm.VIEW}),
-    # Ограничение просмотра веткой ЦФО добавится вместе со справочником ЦФО (шаг 1.3).
+    # Руководитель ЦФО ограничен своей веткой ЦФО (memberships.cfo_id, app/api/access.py: cfo_scope)
     Role.CFO_HEAD: frozenset({Perm.VIEW, Perm.DRAFT}),
 }
 

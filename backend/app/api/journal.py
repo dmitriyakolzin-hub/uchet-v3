@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.api.access import get_organization_for, org_permissions
+from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.models import Operation, OperationEvent, User
@@ -71,6 +71,31 @@ def _forbidden(message: str = "Недостаточно прав") -> HTTPExcept
     return HTTPException(status.HTTP_403_FORBIDDEN, detail=message)
 
 
+# --- Ветка ЦФО руководителя ЦФО: видна операция, где есть ЦФО ветки; менять — если нет ЦФО вне ветки ---
+
+
+def _operation_cfos(op: Operation) -> set[int]:
+    return {c for p in op.postings for c in (p.dt_cfo_id, p.ct_cfo_id) if c is not None}
+
+
+def _body_cfos(body: OperationIn) -> set[int]:
+    return {c for p in body.postings for c in (p.debit.cfo, p.credit.cfo) if c is not None}
+
+
+def _branch(db: Session, user: User, organization_id: int) -> set[int] | None:
+    scope = cfo_scope(db, user, organization_id)
+    return None if scope is None else branch_ids(db, scope)
+
+
+def _check_branch(cfos: set[int], branch: set[int] | None) -> None:
+    if branch is None:
+        return
+    if not cfos & branch:
+        raise _forbidden("Укажите в проводках ЦФО из вашей ветки")
+    if cfos - branch:
+        raise _forbidden("В операции есть ЦФО вне вашей ветки")
+
+
 def _get_operation(db: Session, user: User, operation_id: int, perm: Perm) -> Operation:
     op = db.get(Operation, operation_id)
     not_found = HTTPException(status.HTTP_404_NOT_FOUND, detail="Операция не найдена")
@@ -82,6 +107,12 @@ def _get_operation(db: Session, user: User, operation_id: int, perm: Perm) -> Op
         if exc.status_code == status.HTTP_404_NOT_FOUND:
             raise not_found from None
         raise
+    branch = _branch(db, user, op.organization_id)
+    if branch is not None:
+        if not _operation_cfos(op) & branch:
+            raise not_found
+        if perm != Perm.VIEW:
+            _check_branch(_operation_cfos(op), branch)
     return op
 
 
@@ -123,6 +154,10 @@ def list_operations(
 ) -> OperationList:
     get_organization_for(db, user, organization_id, Perm.VIEW)
     query = select(Operation).where(Operation.organization_id == organization_id)
+    scope = cfo_scope(db, user, organization_id)
+    if scope is not None:
+        in_branch = select_lines(organization_id, statuses=("draft", "posted", "cancelled"), cfo_branch=scope).subquery()
+        query = query.where(Operation.id.in_(select(in_branch.c.operation_id)))
     if date_from:
         query = query.where(Operation.op_date >= date_from)
     if date_to:
@@ -185,6 +220,7 @@ def create_operation(
     organization_id: int, body: OperationIn, user: CurrentUser, db: DbSession, post: bool = False
 ) -> OperationOut:
     get_organization_for(db, user, organization_id, Perm.DRAFT)
+    _check_branch(_body_cfos(body), _branch(db, user, organization_id))
     op = Operation(
         organization_id=organization_id, created_by=user.id, status="draft", is_opening=body.is_opening
     )
@@ -212,6 +248,7 @@ def update_operation(
 ) -> OperationOut:
     op = _get_operation(db, user, operation_id, Perm.DRAFT)
     _check_can_change_draft(db, user, op)
+    _check_branch(_body_cfos(body), _branch(db, user, op.organization_id))
     try:
         journal.save_draft(db, op, body, user)
         db.flush()
@@ -269,13 +306,20 @@ for _action in ACTION_PERMS:
 def bulk_action(organization_id: int, body: BulkIn, user: CurrentUser, db: DbSession) -> BulkOut:
     get_organization_for(db, user, organization_id, Perm.VIEW)
     perms = org_permissions(db, user, organization_id)
+    branch = _branch(db, user, organization_id)
     results = []
     for operation_id in dict.fromkeys(body.ids):  # без повторов, порядок сохраняется
         op = db.get(Operation, operation_id)
-        if op is None or op.organization_id != organization_id:
+        if (op is None or op.organization_id != organization_id
+                or (branch is not None and not _operation_cfos(op) & branch)):
             results.append(BulkResult(id=operation_id, ok=False, error="Операция не найдена"))
             continue
         try:
+            if branch is not None:
+                try:
+                    _check_branch(_operation_cfos(op), branch)
+                except HTTPException as exc:
+                    raise JournalError(exc.detail) from None
             with db.begin_nested():  # ошибка в одной операции не отменяет остальные
                 if body.action == "delete":
                     if Perm.DRAFT not in perms:

@@ -429,6 +429,16 @@ with sync_playwright() as p:
     expect(page.locator(".tabulator-row", has_text="Группа АВМВ: CEO")).to_be_visible()
     page.screenshot(path=f"{OUT}/3_users.png", full_page=True)
 
+    # руководитель ЦФО: роль с ЦФО «Торговля»
+    page.click("text=Добавить пользователя")
+    d = dialog_fill(page, {"login": "head", "full_name": "Петров П.П.", "password": "head-password-1"})
+    d.locator("select[aria-label='Роль в Группа АВМВ']").select_option("cfo_head")
+    cfo_select = d.locator("select[aria-label='ЦФО в Группа АВМВ']")
+    expect(cfo_select).to_be_visible()
+    cfo_select.select_option(label="АВМВ / Торговля")
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="Руководитель ЦФО (Торговля)")).to_be_visible()
+
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
@@ -490,6 +500,22 @@ with sync_playwright() as p:
     expect(page.locator(".toast")).to_have_text("Пароль изменён")
     page.reload()
     expect(page.locator("#app-view")).to_be_visible()  # остаётся в системе с новыми токенами
+
+    # руководитель ЦФО: журнал и отчёты только по своей ветке, без выписок и начальных остатков
+    page.click("#logout")
+    login(page, "head", "head-password-1")
+    page.click("#nav a[data-page=journal]")
+    expect(page.locator(".tabulator-row", has_text="Оплата по счёту 15")).to_have_count(0)
+    page.click("#nav a[data-page=money]")
+    expect(page.locator("h1", has_text="Деньги")).to_be_visible()
+    expect(page.locator("button:has-text('Загрузить выписку')")).to_have_count(0)
+    expect(page.locator(".tabulator-row", has_text="Сбер, основной")).to_have_count(0)
+    page.click("#nav a[data-page=opening]")
+    expect(page.locator("text=Раздел недоступен руководителю ЦФО")).to_be_visible()
+    page.click("#nav a[data-page=reports]")
+    expect(page.locator("select[aria-label='ЦФО'] option").first).to_have_text("Вся моя ветка")
+    expect(page.locator(".tabulator-row", has_text="Расчётные счета")).to_have_count(0)
+    page.screenshot(path=f"{OUT}/26_cfo_head.png", full_page=True)
     browser.close()
 
 print("ОШИБКИ В КОНСОЛИ:", errors or "нет")
