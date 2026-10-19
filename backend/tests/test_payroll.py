@@ -168,13 +168,13 @@ def test_lines_excel_roundtrip(client, env):
     resp = client.get(f"/api/payroll-runs/{run['id']}/lines.xlsx", headers=env["h"])
     wb = load_workbook(io.BytesIO(resp.content))
     ws = wb.active
-    assert [c.value for c in ws[1]][:3] == ["Таб. №", "Сотрудник", "Отработано дней"]
+    assert [c.value for c in ws[1]][:4] == ["Таб. №", "Вн. №", "Сотрудник", "Отработано дней"]
     for row in ws.iter_rows(min_row=2):
-        if row[1].value == "Андреев А.":
-            row[3].value = "20 000,50"  # премия
-            row[7].value = 500  # удержание
-    ws.append([None, "Нет такого", 5])
-    ws.append([None, "Уволен в январе", 0])  # сотрудник юрлица, не попавший в месяц, — добавляется
+        if row[2].value == "Андреев А.":
+            row[4].value = "20 000,50"  # премия
+            row[8].value = 500  # удержание
+    ws.append([None, None, "Нет такого", 5])
+    ws.append([None, None, "Уволен в январе", 0])  # сотрудник юрлица, не попавший в месяц, — добавляется
     out = io.BytesIO()
     wb.save(out)
     result = client.post(f"/api/payroll-runs/{run['id']}/lines", headers={**env["h"], "Content-Type":
@@ -183,6 +183,56 @@ def test_lines_excel_roundtrip(client, env):
     a = line_of(result["run"], env["a"])
     assert (a["bonus"], a["other_deduction"], a["accrued"]) == ("20000.50", "500.00", "120000.50")
     assert len(result["run"]["lines"]) == 3
+
+
+def test_lines_ready_amounts(client, env, db):
+    """Готовые суммы из другой программы: есть колонка «НДФЛ» — не пересчитываются."""
+    from app.models import Employee
+
+    from tests.test_excel_import import xlsx
+
+    db.query(Employee).filter_by(id=env["b"]["id"]).one().internal_number = "M-2"
+    db.commit()
+    run = create(client, env)
+    header = ["Вн. №", "Сотрудник", "Премия", "Начислено", "НДФЛ", "Взносы", "Прочие удержания", "К выплате"]
+    raw = xlsx(header, [
+        [None, "Андреев А.", 10000, 110000, 14300, None, 700, 95000],  # взносы посчитает программа
+        ["M-2", None, None, "30 000", 3900, 9000, None, None],
+        [None, "Андреев А.", None, 1000, 130, None, None, 999],  # «к выплате» не сходится
+    ])
+    resp = client.post(f"/api/payroll-runs/{run['id']}/lines", headers={**env["h"], "Content-Type": "application/octet-stream"},
+                       content=raw)
+    result = resp.json()
+    assert result["changed"] == 2 and [e["row"] for e in result["errors"]] == [4], result
+    assert "не сходится" in result["errors"][0]["error"]
+    a, b = line_of(result["run"], env["a"]), line_of(result["run"], env["b"])
+    assert (a["accrued"], a["salary_amount"], a["bonus"], a["ndfl"], a["net"], a["manual_totals"]) == (
+        "110000.00", "100000.00", "10000.00", "14300.00", "95000.00", True)
+    assert a["insurance"] == "22595.93"  # МСП 2026: 30% с 1,5 МРОТ (12 191,85) + 15% сверху (10 404,08)
+    assert (b["accrued"], b["ndfl"], b["insurance"], b["net"]) == ("30000.00", "3900.00", "9000.00", "26100.00")
+
+    # норма дней меняется — готовые суммы не пересчитываются
+    run = client.patch(f"/api/payroll-runs/{run['id']}", headers=env["h"], json={"norm_days": 18}).json()
+    assert line_of(run, env["a"])["accrued"] == "110000.00"
+    # проведение берёт загруженные суммы
+    run = client.post(f"/api/payroll-runs/{run['id']}/post", headers=env["h"]).json()
+    op = client.get(f"/api/operations/{run['operation_id']}", headers=env["h"]).json()
+    assert sum(Decimal(p["amount"]) for p in op["postings"] if p["credit_account_id"] == env["acc"]["68.01"]) == Decimal("18200")
+    client.post(f"/api/payroll-runs/{run['id']}/unpost", headers=env["h"])
+
+    # правка вручную — строка снова считается программой
+    run = client.patch(f"/api/payroll-lines/{a['id']}", headers=env["h"], json={"bonus": "0"}).json()
+    a = line_of(run, env["a"])
+    assert (a["manual_totals"], a["accrued"]) == (False, "100000.00")
+
+    # шаблон для готовых сумм
+    import io
+
+    from openpyxl import load_workbook
+
+    resp = client.get(f"/api/payroll-runs/{run['id']}/lines.xlsx", headers=env["h"], params={"ready": "true"})
+    assert [c.value for c in load_workbook(io.BytesIO(resp.content)).active[1]][-4:] == [
+        "Начислено", "НДФЛ", "Взносы", "К выплате"]
 
 
 # --- Ведомости на выплату ---

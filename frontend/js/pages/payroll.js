@@ -120,7 +120,12 @@ export async function renderPayroll(view) {
       index: "id",
       columnDefaults: { headerWordWrap: true },
       columns: [
-        { title: "Сотрудник", field: "employee_name", minWidth: 200, widthGrow: 2, frozen: true, headerSort: false },
+        { title: "Сотрудник", field: "employee_name", minWidth: 200, widthGrow: 2, frozen: true, headerSort: false,
+          formatter: (c) => {
+            const r = c.getRow().getData();
+            const name = String(c.getValue()).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+            return r.manual_totals ? `${name} <span class="status status-draft" title="Начислено, НДФЛ и взносы загружены из файла и не пересчитываются">из файла</span>` : name;
+          } },
         col("Оклад", "salary"), col("Дней", "work_days", { minWidth: 70 }), col("По окладу", "salary_amount"),
         col("Премия", "bonus"), col("Отпускные", "vacation"), col("Больничные", "sick"), col("Прочие начисл.", "other_accrual"),
         col("Начислено", "accrued", { cssClass: "strong" }), col("НДФЛ", "ndfl"), col("Прочие удерж.", "other_deduction"),
@@ -210,10 +215,13 @@ export async function renderPayroll(view) {
         el("p", { class: "muted" },
           `Статус: ${draft ? "черновик" : "проведено"}. Тариф взносов: ${TARIFFS[run.insurance_tariff]}. `,
           el("label", {}, "Рабочих дней в месяце:", normInput),
-          draft ? " Щёлкните по дням или сумме, чтобы изменить; Enter — сохранить." : ""),
+          draft ? " Щёлкните по дням или сумме, чтобы изменить; Enter — сохранить. Загрузка из Excel: файл с колонкой "
+            + "«НДФЛ» — готовые суммы (не пересчитываются, помечены «из файла»), без неё — дни и суммы, остальное посчитает программа." : ""),
         el("div", { class: "quick-actions" },
           draft ? button("Заполнить", () => update(api.post(`/api/payroll-runs/${run.id}/fill`))) : null,
           button("Скачать в Excel", () => api.download(`/api/payroll-runs/${run.id}/lines.xlsx`, `payroll_${run.year}_${run.month}.xlsx`)),
+          draft ? button("Скачать для готовых сумм", () => api.download(`/api/payroll-runs/${run.id}/lines.xlsx?ready=true`,
+            `payroll_ready_${run.year}_${run.month}.xlsx`)) : null,
           draft ? button("Загрузить из Excel", () => { fileInput.value = ""; fileInput.click(); }) : null,
           draft ? button("Провести", () => update(api.post(`/api/payroll-runs/${run.id}/post`)), "")
             : button("Отменить проведение", () => {

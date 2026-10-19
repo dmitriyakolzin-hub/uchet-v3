@@ -570,6 +570,7 @@ with sync_playwright() as p:
     page.keyboard.press("Enter")
     expect(row.locator(".tabulator-cell[tabulator-field=accrued]")).to_have_text("100 000,00")
     expect(row.locator(".tabulator-cell[tabulator-field=ndfl]")).to_have_text("13 000,00")
+    expect(page.locator("button", has_text="Скачать для готовых сумм")).to_be_visible()
     # отпускные по среднему (истории нет — оклад / 29,3), затем обнуляем вручную
     row.locator("[data-calc=vacation]").click()
     dialog_fill(page, {"days": "5"}).locator("button[type=submit]").click()

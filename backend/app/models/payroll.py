@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -90,6 +91,8 @@ class PayrollLine(Base):
     ndfl: Mapped[Decimal] = mapped_column(MONEY, default=0, server_default="0")
     insurance: Mapped[Decimal] = mapped_column(MONEY, default=0, server_default="0")
     net: Mapped[Decimal] = mapped_column(MONEY, default=0, server_default="0")
+    # суммы (начислено, НДФЛ, взносы) загружены из файла готовыми — не пересчитываются
+    manual_totals: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     # расчёт по среднему заработку: как получены отпускные и больничные (текст для пользователя)
     vacation_note: Mapped[str] = mapped_column(String(1000), default="", server_default="")
     sick_note: Mapped[str] = mapped_column(String(1000), default="", server_default="")
