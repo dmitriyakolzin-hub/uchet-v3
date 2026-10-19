@@ -15,10 +15,11 @@ import { el, makeTable, openForm, toast } from "./ui.js";
  *   canEdit     — показывать ли кнопки изменения
  *   tree        — показывать деревом: prepare(list) должен вернуть корни с _children
  *   prepare     — преобразование списка перед показом
+ *   extra       — дополнительные элементы в шапке вкладки (например, кнопки Excel)
  * Возвращает { reload, create(values) } — create открывает форму добавления с заполненными полями.
  */
 export async function referenceTab(box, options) {
-  const { title, addText, listUrl, itemUrl, columns, fields, canEdit, tree = false, prepare = (x) => x } = options;
+  const { title, addText, listUrl, itemUrl, columns, fields, canEdit, tree = false, prepare = (x) => x, extra = [] } = options;
 
   const tableBox = el("div");
   box.replaceChildren(
@@ -26,7 +27,8 @@ export async function referenceTab(box, options) {
       "div",
       { class: "page-head" },
       el("h2", {}, title),
-      canEdit ? el("button", { type: "button", onclick: () => edit(null) }, addText) : null,
+      el("div", { class: "quick-actions" }, ...extra,
+        canEdit ? el("button", { type: "button", onclick: () => edit(null) }, addText) : null),
     ),
     tableBox,
   );

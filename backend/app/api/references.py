@@ -245,7 +245,7 @@ for resource in (
     OrgResource(
         path="employees", model=Employee, title="Сотрудник",
         create_schema=s.EmployeeCreate, update_schema=s.EmployeeUpdate, out_schema=s.EmployeeOut,
-        conflict_message="Сотрудник с таким табельным номером уже есть",
+        conflict_message="Сотрудник с таким табельным или внутренним номером уже есть",
         order_by=lambda m: [m.full_name],
         refs={"cfo_id": Ref(Cfo, "ЦФО"), "legal_entity_id": LEGAL_ENTITY,
               "pl_item_id": Ref(Article, "Статья затрат", org_scoped=False)},

@@ -230,6 +230,7 @@ ShortText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=2
 class EmployeeCreate(BaseModel):
     full_name: Name
     personnel_number: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] = ""
+    internal_number: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] = ""
     inn: EmployeeInn | None = None
     position: ShortText = ""
     cfo_id: int | None = None
@@ -242,6 +243,7 @@ class EmployeeCreate(BaseModel):
 class EmployeeUpdate(BaseModel):
     full_name: Name | None = None
     personnel_number: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] | None = None
+    internal_number: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] | None = None
     inn: EmployeeInn | None = None
     position: ShortText | None = None
     cfo_id: int | None = None
@@ -257,6 +259,7 @@ class EmployeeOut(_Out):
     organization_id: int
     full_name: str
     personnel_number: str
+    internal_number: str = ""
     inn: str | None
     position: str
     cfo_id: int | None
