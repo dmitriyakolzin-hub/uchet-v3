@@ -2,7 +2,7 @@ from app.models.account import Account, AccountAnalytic
 from app.models.article import Article
 from app.models.budget import Budget, BudgetVersion
 from app.models.cfo import Cfo, Employee
-from app.models.closing import PeriodClosing, RoutineRule, RoutineRun
+from app.models.closing import PeriodClosing, ResultClosing, RoutineRule, RoutineRun
 from app.models.currency import Currency, ExchangeRate
 from app.models.fixed_asset import DepreciationRun, FixedAsset
 from app.models.journal import Operation, OperationEvent, Posting
@@ -50,6 +50,7 @@ __all__ = [
     "PayrollLine",
     "PayrollRun",
     "Posting",
+    "ResultClosing",
     "RoutineRule",
     "RoutineRun",
     "SalaryProject",

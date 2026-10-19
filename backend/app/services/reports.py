@@ -436,9 +436,12 @@ PL_TOTALS = {
 
 def pl(db: Session, f: ReportFilter, include_all: bool = False) -> ColumnsResult:
     """ОПиУ по аналитике «Статья ОПиУ»: по кредиту — доход (+), по дебету — расход (−).
-    Перенос затрат между счетами с этой аналитикой (20 → 90.02) взаимно гасится."""
+    Перенос затрат между счетами с этой аналитикой (20 → 90.02, 90 → 99) взаимно гасится;
+    реформация (99 → 84) в ОПиУ не попадает."""
     columns = month_columns(f.date_from, f.date_to)
-    lines = f.lines(date_from=f.date_from, date_to=f.date_to, opening=False).subquery()
+    reformation = list(db.scalars(select(Account.id).where(Account.code == "84")))
+    lines = f.lines(date_from=f.date_from, date_to=f.date_to, opening=False,
+                    exclude_corr_account_ids=reformation).subquery()
     marked = select(
         func.to_char(lines.c.op_date, "YYYY-MM").label("month"), lines.c.pl_item,
         case((lines.c.side == "credit", lines.c.amount_rub), else_=-lines.c.amount_rub).label("signed"),
@@ -469,7 +472,8 @@ def pl(db: Session, f: ReportFilter, include_all: bool = False) -> ColumnsResult
         article = articles[article_id]
         section = article.pl_section or "other_expense"
         items[section].append(ReportRow(f"art:{article_id}", article.name, 1, "item", values,
-                                        {"period": "turnover", "a": [f"pl_item:{article_id}"]}))
+                                        {"period": "turnover", "a": [f"pl_item:{article_id}"],
+                                         "exclude_corr_ids": reformation}))
         for k, v in values.items():
             sections[section][k] += v
 

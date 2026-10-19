@@ -44,6 +44,7 @@ export async function renderClosing(view) {
   const status = el("p", { class: "closing-status" });
   const monthBox = el("div", { class: "filters" });
   const routinesBox = el("div");
+  const resultBox = el("div");
   const checksBox = el("div");
   const rulesBox = el("div");
   const logBox = el("div");
@@ -51,9 +52,9 @@ export async function renderClosing(view) {
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Закрытие периода"), el("label", { class: "inline" }, "Организация ", orgSelect)),
     el("p", { class: "muted" }, "Месяц закрывается по порядку: выполните регламентные операции, начислите амортизацию и зарплату, "
-      + "проведите черновики — затем «Закрыть месяц». Операции закрытого периода нельзя создать, изменить, провести или удалить "
+      + "проведите черновики, определите финансовый результат — затем «Закрыть месяц». Операции закрытого периода нельзя создать, изменить, провести или удалить "
       + "ни из одного раздела. Открыть можно последний закрытый месяц."),
-    status, monthBox, routinesBox, checksBox, rulesBox, logBox,
+    status, monthBox, routinesBox, resultBox, checksBox, rulesBox, logBox,
   );
 
   async function act(promise, message) {
@@ -108,6 +109,33 @@ export async function renderClosing(view) {
                 `№ ${r.operation_number} — ${OP_STATUS[r.operation_status]}`)
               : el("span", { class: r.error ? "error" : "status status-draft" }, r.error ?? "не выполнена"))))))
         : el("p", { class: "muted" }, "На этот месяц регламентных операций нет."),
+    );
+  }
+
+  function renderResult(data) {
+    const ops = data.result_operations;
+    const KIND = { month: "Закрытие 26, 44, 90, 91 на 99", year: "Реформация 99 → 84" };
+    resultBox.replaceChildren(
+      el("div", { class: "page-head section" }, el("h2", {}, "Финансовый результат"),
+        el("div", { class: "quick-actions" },
+          el("button", { type: "button", onclick: () => act(api.post(`/api/organizations/${org.id}/closing/result`, period),
+            "Финансовый результат определён") }, ops.length ? "Пересчитать" : "Определить финансовый результат"),
+          ops.length ? el("button", { type: "button", class: "secondary danger", onclick: () => {
+            if (confirm("Удалить операции финансового результата месяца?")) {
+              act(api.delete(`/api/organizations/${org.id}/closing/result?year=${period.year}&month=${period.month}`), "Операции удалены");
+            }
+          } }, "Отменить") : null)),
+      el("p", { class: "muted" }, "Последним днём месяца: 26 и 44 → 90.02, субсчета 90 и 91 → 99 по статьям ОПиУ"
+        + (period.month === 12 ? "; в декабре — реформация: 99 → 84 (нераспределённая прибыль)" : "")
+        + ". ОПиУ от этого не меняется. Если после этого что-то провели — нажмите «Пересчитать»."),
+      ops.length
+        ? el("table", { class: "recon versions assets" },
+          el("thead", {}, el("tr", {}, ...["Юрлицо", "Операция", "Сумма проводок", ""].map((t) => el("th", {}, t)))),
+          el("tbody", {}, ...ops.map((o) => el("tr", {},
+            el("td", {}, o.legal_entity_name), el("td", {}, KIND[o.kind]), el("td", { class: "num" }, money(o.total)),
+            el("td", {}, el("button", { type: "button", class: "link", onclick: () => showOperation(o.operation_id) },
+              `№ ${o.operation_number}`))))))
+        : el("p", { class: "muted" }, "За этот месяц финансовый результат ещё не определяли."),
     );
   }
 
@@ -208,6 +236,7 @@ export async function renderClosing(view) {
       ? el("strong", {}, `Период закрыт по ${ruDate(data.closed_through)}`)
       : el("strong", {}, "Период не закрыт"));
     renderRuns(runs);
+    renderResult(data);
     renderChecks(data);
     renderRules(rules);
     renderLog(data.log);

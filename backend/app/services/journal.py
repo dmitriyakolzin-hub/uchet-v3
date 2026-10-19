@@ -242,6 +242,19 @@ def post(db: Session, op: Operation, user: User) -> None:
     _event(db, op, user, "posted")
 
 
+def create_posted(db: Session, organization_id: int, body: OperationIn, user: User) -> Operation:
+    """Новая проведённая операция (для операций, которые программа создаёт сама: начисления, закрытие)."""
+    op = Operation(organization_id=organization_id, created_by=user.id, status="draft")
+    save_draft(db, op, body, user)
+    op.number = next_number(db, organization_id)
+    db.add(op)
+    db.flush()
+    _event(db, op, user, "created")
+    post(db, op, user)
+    db.flush()
+    return op
+
+
 def unpost(db: Session, op: Operation, user: User) -> None:
     if op.status != "posted":
         raise JournalError("Вернуть в черновик можно только проведённую операцию")

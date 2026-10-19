@@ -72,3 +72,24 @@ class RoutineRun(Base):
     operation_id: Mapped[int] = mapped_column(ForeignKey("operations.id", ondelete="CASCADE"))
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ResultClosing(Base):
+    """Операция определения финансового результата за месяц (month) или реформации за год (year)."""
+
+    __tablename__ = "result_closings"
+    __table_args__ = (
+        UniqueConstraint("legal_entity_id", "year", "month", "kind", name="uq_result_closings_entity_month_kind"),
+        CheckConstraint("month BETWEEN 1 AND 12", name="month"),
+        CheckConstraint("kind IN ('month', 'year')", name="kind"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"), index=True)
+    legal_entity_id: Mapped[int] = mapped_column(ForeignKey("legal_entities.id", ondelete="RESTRICT"))
+    year: Mapped[int] = mapped_column(SmallInteger)
+    month: Mapped[int] = mapped_column(SmallInteger)
+    kind: Mapped[str] = mapped_column(String(10))
+    operation_id: Mapped[int] = mapped_column(ForeignKey("operations.id", ondelete="CASCADE"))
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

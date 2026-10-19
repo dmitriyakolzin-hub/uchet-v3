@@ -74,6 +74,7 @@ export function planFactReport({ box, ctx }) {
         date_from: col.date_from, date_to: col.date_to,
         ...(m.length ? { account_id: m } : {}),
         ...(r.drill.exclude_corr ? { exclude_corr_account_id: m } : {}),
+        ...(r.drill.exclude_corr_ids?.length ? { exclude_corr_account_id: r.drill.exclude_corr_ids } : {}),
         ...(planVersion ? { plan_version_id: planVersion } : {}),
       },
     });

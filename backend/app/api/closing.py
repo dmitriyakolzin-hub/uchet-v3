@@ -17,7 +17,7 @@ from app.api.access import forbid_scoped, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.models import LegalEntity, Operation, Organization, PeriodClosing, Posting, RoutineRule, RoutineRun, User
-from app.services import period, routines
+from app.services import period, result, routines
 
 router = APIRouter(prefix="/api", tags=["Закрытие периода"])
 
@@ -34,12 +34,12 @@ def _organization(db: Session, user: User, organization_id: int) -> None:
 
 def _call(db: Session, func_, *args, **kwargs):
     try:
-        result = func_(*args, **kwargs)
-    except (period.ClosingError, routines.RoutineError) as exc:
+        value = func_(*args, **kwargs)
+    except (period.ClosingError, routines.RoutineError, result.ResultError) as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
     db.commit()
-    return result
+    return value
 
 
 # --- Закрытие ---
@@ -61,12 +61,21 @@ class LogOut(BaseModel):
     at: dt.datetime
 
 
+class ResultOut(BaseModel):
+    legal_entity_name: str
+    kind: str  # month — закрытие 26, 44, 90, 91 на 99; year — реформация 99 → 84
+    operation_id: int
+    operation_number: int
+    total: Decimal
+
+
 class ClosingOut(BaseModel):
     closed_through: dt.date | None
     year: int
     month: int
     checks: list[CheckOut]
     can_close: bool
+    result_operations: list[ResultOut]
     log: list[LogOut]
 
 
@@ -80,6 +89,12 @@ def _closing_out(db: Session, organization_id: int, year: int, month: int) -> Cl
         closed_through=db.get(Organization, organization_id).closed_through, year=year, month=month,
         checks=[CheckOut(**c.__dict__) for c in checks],
         can_close=all(c.ok for c in checks if c.blocking),
+        result_operations=[
+            ResultOut(legal_entity_name=db.get(LegalEntity, rc.legal_entity_id).short_name, kind=rc.kind,
+                      operation_id=op.id, operation_number=op.number,
+                      total=db.scalar(select(func.coalesce(func.sum(Posting.amount_rub), 0))
+                                      .where(Posting.operation_id == op.id)))
+            for rc, op in result.operations_of(db, organization_id, year, month)],
         log=[LogOut(action=r.action, closed_through=r.closed_through, previous=r.previous, user_name=name, at=r.at)
              for r, name in rows])
 
@@ -101,6 +116,21 @@ def close_month(organization_id: int, body: MonthIn, user: CurrentUser, db: DbSe
     _organization(db, user, organization_id)
     _call(db, period.close, db, organization_id, body.year, body.month, user)
     return _closing_out(db, organization_id, body.year, body.month)
+
+
+@router.post("/organizations/{organization_id}/closing/result", response_model=ClosingOut)
+def close_result(organization_id: int, body: MonthIn, user: CurrentUser, db: DbSession):
+    """Определить финансовый результат месяца: 26, 44, 90, 91 → 99 (в декабре — и реформация 99 → 84)."""
+    _organization(db, user, organization_id)
+    _call(db, result.close_month, db, organization_id, body.year, body.month, user)
+    return _closing_out(db, organization_id, body.year, body.month)
+
+
+@router.delete("/organizations/{organization_id}/closing/result", response_model=ClosingOut)
+def undo_result(organization_id: int, year: Year, month: Month, user: CurrentUser, db: DbSession):
+    _organization(db, user, organization_id)
+    _call(db, result.undo, db, organization_id, year, month)
+    return _closing_out(db, organization_id, year, month)
 
 
 @router.post("/organizations/{organization_id}/closing/reopen", response_model=ClosingOut)
