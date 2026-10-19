@@ -19,6 +19,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -53,6 +54,13 @@ class Operation(Base):
         UniqueConstraint("organization_id", "number", name="uq_operations_organization_number"),
         CheckConstraint("status IN ('draft', 'posted', 'cancelled')", name="status"),
         Index("ix_operations_organization_date", "organization_id", "op_date"),
+        Index(
+            "uq_operations_organization_import_key",
+            "organization_id",
+            "import_key",
+            unique=True,
+            postgresql_where=text("import_key IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -65,6 +73,8 @@ class Operation(Base):
     status: Mapped[str] = mapped_column(String(20), default="draft", server_default="draft")
     # Ввод начальных остатков (проводки против счёта 00, дата — дата остатков организации)
     is_opening: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Ключ платежа из банковской выписки: повторная загрузка того же платежа не создаёт дубль
+    import_key: Mapped[str | None] = mapped_column(String(300))
 
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

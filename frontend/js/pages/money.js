@@ -2,7 +2,7 @@
 import { api } from "../api.js";
 import { date, money, monthBounds } from "../format.js";
 import { openOperation } from "../opform.js";
-import { el, makeTable } from "../ui.js";
+import { el, makeTable, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
@@ -105,10 +105,15 @@ export async function renderMoney(view) {
     return { account, analytics: { bank_account: row.bank_account_id } };
   }
 
+  const fileInput = el("input", { type: "file", accept: ".txt", hidden: true, "aria-label": "Файл выписки" });
+  fileInput.addEventListener("change", () => uploadStatement(fileInput.files[0]));
+
   function renderQuick() {
     const can = org.permissions.includes("draft");
     const hint = selected ? `для «${selected.name}»` : "— сначала выберите счёт";
     quick.replaceChildren(...(can ? [
+      el("button", { type: "button", class: "secondary", onclick: () => { fileInput.value = ""; fileInput.click(); } }, "Загрузить выписку"),
+      fileInput,
       el("button", { type: "button", disabled: !selected, onclick: () => openPreset("in") }, "Поступление"),
       el("button", { type: "button", disabled: !selected, onclick: () => openPreset("out") }, "Списание"),
       el("button", { type: "button", class: "secondary", disabled: !selected || selected.kind !== "bank", onclick: () => openPreset("transfer") }, "Перевод между своими счетами"),
@@ -129,6 +134,57 @@ export async function renderMoney(view) {
       };
     }
     openOperation({ ref, org, op: null, perms: org.permissions, onChanged: reload, preset });
+  }
+
+  async function uploadStatement(file) {
+    if (!file) return;
+    fileInput.value = ""; // чтобы тот же файл можно было выбрать снова
+    toast(`Загружается ${file.name}…`);
+    try {
+      const result = await api.upload(`/api/organizations/${org.id}/bank-statements`, file);
+      showImportResult(file.name, result);
+      await reload();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+
+  function showImportResult(fileName, r) {
+    const period = r.date_from ? `${date(r.date_from)} — ${date(r.date_to)}` : "";
+    const lines = [
+      `Создано черновиков: ${r.created.length}`,
+      r.incomplete.length ? `Из них неполных (нужно дополнить в журнале): ${r.incomplete.length} — № ${r.incomplete.join(", ")}` : null,
+      r.skipped_duplicates ? `Пропущено — уже были загружены раньше: ${r.skipped_duplicates}` : null,
+      r.skipped_before_opening ? `Пропущено — не позже даты начальных остатков: ${r.skipped_before_opening}` : null,
+      r.new_counterparties.length ? `Новые контрагенты (${r.new_counterparties.length}): ${r.new_counterparties.join(", ")}` : null,
+    ].filter(Boolean);
+    const checks = r.accounts.map((a) => {
+      const diff = (x, y) => (x === y ? "✓" : "≠");
+      return el("table", { class: "recon" },
+        el("caption", {}, `${a.name} ··${a.number.slice(-4)}`),
+        el("thead", {}, el("tr", {}, el("th", {}, ""), el("th", {}, "По выписке"), el("th", {}, "В системе (проведено)"), el("th", {}, ""))),
+        el("tbody", {},
+          el("tr", {}, el("td", {}, "Остаток на начало"), el("td", {}, money(a.statement_opening)), el("td", {}, money(a.system_opening)), el("td", {}, diff(a.statement_opening, a.system_opening))),
+          el("tr", {}, el("td", {}, "Остаток на конец"), el("td", {}, money(a.statement_closing)), el("td", {}, money(a.system_closing)), el("td", {}, diff(a.statement_closing, a.system_closing))),
+        ),
+        el("tfoot", {}, el("tr", {}, el("td", { colspan: 4 }, a.totals_match
+          ? `Все платежи файла учтены: поступило ${money(a.statement_in)}, списано ${money(a.statement_out)}`
+          : `Внимание: итоги банка (поступило ${money(a.statement_in)}, списано ${money(a.statement_out)}) не совпадают с суммой платежей в файле (${money(a.documents_in)} / ${money(a.documents_out)})`))),
+      );
+    });
+    const dialog = el(
+      "dialog",
+      { class: "dialog wide" },
+      el("h2", {}, `Выписка загружена: ${fileName}`),
+      el("p", { class: "muted" }, period),
+      el("ul", {}, ...lines.map((l) => el("li", {}, l))),
+      ...checks,
+      el("p", { class: "muted" }, "Остаток в системе сойдётся с выпиской, когда все её платежи будут проведены. Черновики — в «Журнале операций» (фильтр «Черновики»)."),
+      el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => dialog.close() }, "Понятно")),
+    );
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.showModal();
   }
 
   async function loadAccounts() {

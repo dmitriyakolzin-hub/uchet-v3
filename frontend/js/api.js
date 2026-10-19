@@ -61,15 +61,16 @@ async function refresh() {
   return true;
 }
 
-async function request(method, path, body) {
+async function request(method, path, body, raw = false) {
+  // raw — тело отправляется как есть (файл), без JSON
   const send = () =>
     fetch(path, {
       method,
       headers: {
         Authorization: `Bearer ${localStorage.getItem(ACCESS) || ""}`,
-        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...(raw ? { "Content-Type": "application/octet-stream" } : body !== undefined ? { "Content-Type": "application/json" } : {}),
       },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: raw ? body : body !== undefined ? JSON.stringify(body) : undefined,
     });
   let resp = await send();
   if (resp.status === 401 && (await refresh())) resp = await send();
@@ -89,5 +90,6 @@ export const api = {
   patch: (path, body) => request("PATCH", path, body),
   put: (path, body) => request("PUT", path, body),
   delete: (path) => request("DELETE", path),
+  upload: (path, file) => request("POST", path, file, true),
   storeTokens: store,
 };

@@ -3,14 +3,18 @@
 import datetime as dt
 from decimal import Decimal
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 
 from app.api.access import get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.models import Operation
+from app.services.bank_import import import_statement
+from app.services.bank_statement import StatementError
+from app.services.journal import JournalError
 from app.services.money import money_movements, money_overview, opening_balance_check
 
 router = APIRouter(prefix="/api", tags=["Деньги"])
@@ -114,4 +118,59 @@ def get_opening_summary(organization_id: int, user: CurrentUser, db: DbSession):
         account_00_balance=opening_balance_check(db, organization_id),
         posted=counts.get("posted", 0),
         drafts=counts.get("draft", 0),
+    )
+
+
+# --- Загрузка банковской выписки ---
+
+MAX_STATEMENT_BYTES = 10 * 1024 * 1024
+
+
+class AccountCheckOut(BaseModel):
+    bank_account_id: int
+    name: str
+    number: str
+    statement_opening: Decimal | None
+    statement_closing: Decimal | None
+    statement_in: Decimal
+    statement_out: Decimal
+    documents_in: Decimal
+    documents_out: Decimal
+    totals_match: bool
+    system_opening: Decimal
+    system_closing: Decimal
+
+
+class ImportOut(BaseModel):
+    date_from: dt.date | None
+    date_to: dt.date | None
+    created: list[int]
+    incomplete: list[int]
+    skipped_duplicates: int
+    skipped_before_opening: int
+    new_counterparties: list[str]
+    accounts: list[AccountCheckOut]
+
+
+@router.post("/organizations/{organization_id}/bank-statements", response_model=ImportOut)
+async def upload_statement(organization_id: int, request: Request, user: CurrentUser, db: DbSession):
+    """Тело запроса — файл выписки как есть (kl_to_1c.txt). Платежи становятся черновиками."""
+    get_organization_for(db, user, organization_id, Perm.DRAFT)
+    raw = await request.body()
+    if not raw:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Файл выписки пуст")
+    if len(raw) > MAX_STATEMENT_BYTES:
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, detail="Файл больше 10 МБ")
+    try:
+        # разбор и запись — обычный (синхронный) код, выполняем вне цикла событий
+        result = await run_in_threadpool(import_statement, db, organization_id, user, raw)
+    except (StatementError, JournalError) as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    db.commit()
+    return ImportOut(
+        date_from=result.date_from, date_to=result.date_to, created=result.created,
+        incomplete=result.incomplete, skipped_duplicates=result.skipped_duplicates,
+        skipped_before_opening=result.skipped_before_opening, new_counterparties=result.new_counterparties,
+        accounts=[AccountCheckOut(**{**a.__dict__, "totals_match": a.totals_match}) for a in result.accounts],
     )

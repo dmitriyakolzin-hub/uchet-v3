@@ -26,8 +26,9 @@ export async function renderOpening(view) {
 
   const orgSelect = el("select", { class: "inline-select", "aria-label": "Организация" },
     ...orgs.map((o) => el("option", { value: o.id, selected: o.id === org.id }, o.name)));
-  const dateInput = el("input", { type: "date", "aria-label": "Дата начальных остатков" });
-  const saveDate = el("button", { type: "button", class: "secondary" }, "Сохранить дату");
+  // до загрузки данных поле недоступно — иначе загрузка затрёт введённую дату
+  const dateInput = el("input", { type: "date", "aria-label": "Дата начальных остатков", disabled: true });
+  const saveDate = el("button", { type: "button", class: "secondary", hidden: true }, "Сохранить дату");
   const dateRow = el("div", { class: "filters" }, el("label", { class: "inline" }, "Дата начальных остатков", dateInput), saveDate);
   const status = el("div", { class: "check-box" });
   const addButton = el("button", { type: "button" }, "Добавить остатки");
