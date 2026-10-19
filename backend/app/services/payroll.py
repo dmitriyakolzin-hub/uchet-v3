@@ -111,7 +111,8 @@ def recalc(db: Session, run: PayrollRun) -> None:
         line.accrued = line.salary_amount + line.bonus + line.vacation + line.sick + line.other_accrual
         income_before, tax_before = _ytd_before(db, run, line.employee_id)
         line.ndfl = max(ZERO, rates.ndfl_total(income_before + line.accrued) - tax_before) + ZERO
-        line.insurance = rates.insurance(tariff, run.year, line.accrued, income_before)
+        # пособие по болезни взносами не облагается
+        line.insurance = rates.insurance(tariff, run.year, line.accrued - line.sick, income_before)
         line.net = line.accrued - line.ndfl - line.other_deduction
     db.flush()
 
@@ -403,3 +404,75 @@ def registry_xlsx(db: Session, sheet: PayoutSheet) -> bytes:
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()
+
+
+# --- Средний заработок: отпускные и больничные (docs/TZ.md, раздел 15, «Детали 5.4») ---
+
+DAYS_PER_MONTH = Decimal("29.3")
+SICK_PERCENT = {"lt6m": Decimal(100), "lt5": Decimal(60), "5to8": Decimal(80), "ge8": Decimal(100)}
+EMPLOYER_SICK_DAYS = 3
+
+
+def _ru(value: Decimal) -> str:
+    return f"{value:,.2f}".replace(",", " ").replace(".", ",")
+
+
+def _posted_lines(db: Session, employee_id: int, first: tuple[int, int], last: tuple[int, int]):
+    """Строки проведённых начислений сотрудника за месяцы first..last включительно, с нормой дней."""
+    lo, hi = first[0] * 12 + first[1], last[0] * 12 + last[1]
+    return db.execute(select(PayrollLine, PayrollRun).join(PayrollRun, PayrollRun.id == PayrollLine.run_id).where(
+        PayrollLine.employee_id == employee_id, PayrollRun.status == "posted",
+        PayrollRun.year * 12 + PayrollRun.month >= lo, PayrollRun.year * 12 + PayrollRun.month <= hi)).all()
+
+
+def calc_vacation(db: Session, line: PayrollLine, days: int) -> None:
+    """Отпускные: выплаты за 12 месяцев до месяца начисления / (29,3 × месяцы) × календарные дни отпуска."""
+    run = db.get(PayrollRun, line.run_id)
+    end = (run.year, run.month - 1) if run.month > 1 else (run.year - 1, 12)
+    start = (end[0] - 1, end[1] + 1) if end[1] < 12 else (end[0], 1)
+    earnings, base_days, months = ZERO, Decimal(0), 0
+    for past, past_run in _posted_lines(db, line.employee_id, start, end):
+        earnings += past.salary_amount + past.bonus + past.other_accrual
+        share = min(past.work_days / past_run.norm_days, Decimal(1)) if past_run.norm_days else Decimal(0)
+        base_days += DAYS_PER_MONTH * share
+        months += 1
+    if base_days > 0:
+        average = round_money(earnings / base_days)
+        how = (f"выплаты за 12 мес. ({months} мес. в программе) {_ru(earnings)} ₽ / "
+               f"{str(base_days.quantize(Decimal('0.01'))).replace('.', ',')} дн.")
+    else:
+        average = round_money(line.salary / DAYS_PER_MONTH)
+        how = f"истории начислений нет — оклад {_ru(line.salary)} ₽ / 29,3"
+    line.vacation = round_money(average * days)
+    line.vacation_note = f"Отпуск {days} дн. × средний {_ru(average)} ₽ ({how}) = {_ru(line.vacation)} ₽"
+    recalc(db, run)
+
+
+def calc_sick(db: Session, line: PayrollLine, days: int, experience: str,
+              earnings_by_year: dict[int, Decimal] | None = None) -> None:
+    """Больничный: заработок за 2 предыдущих года (не больше предельной базы) / 730 × процент по стажу;
+    работодатель платит первые 3 дня — они и попадают в начисление."""
+    run = db.get(PayrollRun, line.run_id)
+    years = [run.year - 2, run.year - 1]
+    parts, total = [], ZERO
+    for year in years:
+        if earnings_by_year and earnings_by_year.get(year) is not None:
+            amount, source = earnings_by_year[year], "введено"
+        else:
+            amount = sum((p.salary_amount + p.bonus + p.vacation + p.other_accrual
+                          for p, _ in _posted_lines(db, line.employee_id, (year, 1), (year, 12))), ZERO)
+            source = "по программе"
+        capped = min(amount, rates.base_limit(year))
+        total += capped
+        parts.append(f"{year}: {_ru(capped)} ₽ ({source})")
+    minimum = round_money(rates.mrot(run.year) * 24 / 730)
+    maximum = round_money((rates.base_limit(years[0]) + rates.base_limit(years[1])) / 730)
+    average = minimum if experience == "lt6m" else min(max(round_money(total / 730), minimum), maximum)
+    daily = round_money(average * SICK_PERCENT[experience] / 100)
+    employer_days = min(days, EMPLOYER_SICK_DAYS)
+    line.sick = round_money(daily * employer_days)
+    fund = round_money(daily * (days - employer_days))
+    line.sick_note = (f"Больничный {days} дн.: средний {_ru(average)} ₽ ({'; '.join(parts)}; / 730, "
+                      f"мин. {_ru(minimum)}) × {SICK_PERCENT[experience]}% = {_ru(daily)} ₽ в день; "
+                      f"работодатель {employer_days} дн. = {_ru(line.sick)} ₽, СФР {days - employer_days} дн. = {_ru(fund)} ₽")
+    recalc(db, run)

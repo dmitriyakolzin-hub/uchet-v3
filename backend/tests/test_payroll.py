@@ -284,3 +284,53 @@ def test_sheet_access(client, bank_env, db):
         "year": 2026, "month": 2, "pay_date": "2026-02-15"})
     assert resp.status_code == 422
     assert client.delete(f"/api/payout-sheets/{adv['id']}", headers=env["h"]).status_code == 204
+
+
+def test_vacation_by_average_earnings(client, env):
+    for month in (1, 2, 3):  # три полных месяца по 100 000
+        run = create(client, env, month)
+        assert client.post(f"/api/payroll-runs/{run['id']}/post", headers=env["h"]).status_code == 200
+    run = create(client, env, 4)
+    a = line_of(run, env["a"])
+    resp = client.post(f"/api/payroll-lines/{a['id']}/vacation", headers=env["h"], json={"days": 14})
+    assert resp.status_code == 200, resp.text
+    a = line_of(resp.json(), env["a"])
+    # 300 000 / (3 × 29,3) = 3 412,97 в день × 14
+    assert a["vacation"] == "47781.58"
+    assert "средний 3 412,97" in a["vacation_note"] and "87,90 дн." in a["vacation_note"]
+    assert a["accrued"] == str(Decimal(a["salary_amount"]) + Decimal("47781.58"))
+
+    # без истории — оклад / 29,3
+    b = line_of(run, env["b"])
+    b = line_of(client.post(f"/api/payroll-lines/{b['id']}/vacation", headers=env["h"], json={"days": 7}).json(), env["b"])
+    assert b["vacation"] == str((Decimal("60000") / Decimal("29.3")).quantize(Decimal("0.01")) * 7)
+
+    # сумма, поправленная вручную, сбрасывает пояснение
+    run = client.patch(f"/api/payroll-lines/{a['id']}", headers=env["h"], json={"vacation": "40000"}).json()
+    assert line_of(run, env["a"])["vacation_note"] == ""
+
+
+def test_sick_by_average_earnings(client, env):
+    run = create(client, env, 4)
+    a = line_of(run, env["a"])
+    insurance_before = a["insurance"]
+    resp = client.post(f"/api/payroll-lines/{a['id']}/sick", headers=env["h"], json={
+        "days": 10, "experience": "5to8", "earnings": {"2024": "1200000", "2025": "3000000"}})
+    assert resp.status_code == 200, resp.text
+    a = line_of(resp.json(), env["a"])
+    # (1 200 000 + 2 759 000 предельная база 2025) / 730 = 5 423,29 × 80% = 4 338,63; работодатель — 3 дня
+    assert a["sick"] == "13015.89"
+    assert "СФР 7 дн. = 30 370,41" in a["sick_note"]
+    assert a["insurance"] == insurance_before  # пособие взносами не облагается
+
+    # меньше 6 месяцев стажа — из МРОТ
+    a = line_of(client.post(f"/api/payroll-lines/{a['id']}/sick", headers=env["h"],
+                            json={"days": 2, "experience": "lt6m"}).json(), env["a"])
+    assert a["sick"] == str((Decimal("27093") * 24 / 730).quantize(Decimal("0.01")) * 2)
+
+    # проведённое начисление не пересчитывается
+    client.post(f"/api/payroll-runs/{run['id']}/post", headers=env["h"])
+    resp = client.post(f"/api/payroll-lines/{a['id']}/sick", headers=env["h"], json={"days": 2, "experience": "ge8"})
+    assert resp.status_code == 422
+    resp = client.post(f"/api/payroll-lines/{a['id']}/vacation", headers=env["ceo"], json={"days": 2})
+    assert resp.status_code == 403

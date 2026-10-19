@@ -15,8 +15,9 @@ NDFL_SCALE = [
 ]
 
 # МРОТ и предельная база для взносов по годам; для следующих лет — последние известные значения
-MROT = {2025: Decimal("22440"), 2026: Decimal("27093")}
-INSURANCE_BASE_LIMIT = {2025: Decimal("2759000"), 2026: Decimal("2979000")}
+MROT = {2023: Decimal("16242"), 2024: Decimal("19242"), 2025: Decimal("22440"), 2026: Decimal("27093")}
+INSURANCE_BASE_LIMIT = {2023: Decimal("1917000"), 2024: Decimal("2225000"), 2025: Decimal("2759000"),
+                        2026: Decimal("2979000")}
 
 GENERAL_RATE, GENERAL_OVER_LIMIT = Decimal("0.30"), Decimal("0.151")
 SME_RATE, SME_REDUCED = Decimal("0.30"), Decimal("0.15")

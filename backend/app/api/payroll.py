@@ -124,6 +124,8 @@ class LineOut(BaseModel):
     other_deduction: Decimal
     insurance: Decimal
     net: Decimal
+    vacation_note: str = ""
+    sick_note: str = ""
 
 
 class RunOut(BaseModel):
@@ -154,6 +156,7 @@ def _run_out(db: Session, run: PayrollRun, with_lines: bool = True) -> RunOut:
     totals = {f: sum((getattr(line, f) for line, _ in rows), Decimal("0.00")) for f in TOTAL_FIELDS}
     if with_lines:
         lines = [LineOut(id=line.id, employee_id=e.id, employee_name=e.full_name, personnel_number=e.personnel_number,
+                         vacation_note=line.vacation_note, sick_note=line.sick_note,
                          **{f: getattr(line, f) for f in ["salary", "work_days", *TOTAL_FIELDS]}) for line, e in rows]
     return RunOut(id=run.id, organization_id=run.organization_id, legal_entity_id=run.legal_entity_id,
                   legal_entity_name=entity.short_name, insurance_tariff=entity.insurance_tariff, year=run.year,
@@ -258,9 +261,47 @@ def update_line(line_id: int, body: LineUpdate, user: CurrentUser, db: DbSession
     for field, value in body.model_dump(exclude_unset=True).items():
         if value is not None:
             setattr(line, field, value)
+            if field in ("vacation", "sick"):
+                setattr(line, f"{field}_note", "")  # сумма введена вручную — прежний расчёт не действует
     payroll.recalc(db, run)
     db.commit()
     return _run_out(db, run)
+
+
+class VacationIn(BaseModel):
+    days: Annotated[int, Field(ge=1, le=366)]
+
+
+class SickIn(BaseModel):
+    days: Annotated[int, Field(ge=1, le=366)]
+    experience: Literal["lt6m", "lt5", "5to8", "ge8"]  # страховой стаж
+    earnings: dict[int, Money] = {}  # заработок по годам, если не из программы (прежние работодатели)
+
+
+def _draft_line(db: Session, user: User, line_id: int) -> PayrollLine:
+    line = db.get(PayrollLine, line_id)
+    if line is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Строка не найдена")
+    _draft(_run(db, user, line.run_id))
+    return line
+
+
+@router.post("/payroll-lines/{line_id}/vacation", response_model=RunOut)
+def calc_vacation(line_id: int, body: VacationIn, user: CurrentUser, db: DbSession):
+    """Рассчитать отпускные по среднему заработку за 12 месяцев."""
+    line = _draft_line(db, user, line_id)
+    payroll.calc_vacation(db, line, body.days)
+    db.commit()
+    return _run_out(db, db.get(PayrollRun, line.run_id))
+
+
+@router.post("/payroll-lines/{line_id}/sick", response_model=RunOut)
+def calc_sick(line_id: int, body: SickIn, user: CurrentUser, db: DbSession):
+    """Рассчитать больничный за счёт работодателя (первые 3 дня) по заработку за 2 года."""
+    line = _draft_line(db, user, line_id)
+    payroll.calc_sick(db, line, body.days, body.experience, body.earnings)
+    db.commit()
+    return _run_out(db, db.get(PayrollRun, line.run_id))
 
 
 @router.delete("/payroll-lines/{line_id}", response_model=RunOut)

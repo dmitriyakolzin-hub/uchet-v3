@@ -101,8 +101,9 @@ export async function renderPayroll(view) {
     let run = await api.get(`/api/payroll-runs/${runId}`);
     const head = el("div");
     const tableBox = el("div");
+    const notesBox = el("div");
     const fileInput = el("input", { type: "file", accept: ".xlsx", hidden: true, "aria-label": "Файл начисления" });
-    view.replaceChildren(head, tableBox, fileInput);
+    view.replaceChildren(head, tableBox, notesBox, fileInput);
 
     const editor = () => (run.status === "draft" ? { editor: "input", editorParams: { selectContents: true }, mutatorEdit: (value, _d, _t, _p, cell) => {
       const raw = parseNumber(value);
@@ -124,6 +125,13 @@ export async function renderPayroll(view) {
         col("Премия", "bonus"), col("Отпускные", "vacation"), col("Больничные", "sick"), col("Прочие начисл.", "other_accrual"),
         col("Начислено", "accrued", { cssClass: "strong" }), col("НДФЛ", "ndfl"), col("Прочие удерж.", "other_deduction"),
         col("К выплате", "net", { cssClass: "strong" }), col("Взносы", "insurance"),
+        ...(run.status === "draft" ? [{ title: "Расчёт", field: "_calc", width: 150, headerSort: false,
+          formatter: () => '<span class="link-like" data-calc="vacation">отпуск</span> · <span class="link-like" data-calc="sick">больничный</span>',
+          cellClick: (e, c) => {
+            const kind = e.target.dataset?.calc;
+            if (kind === "vacation") calcVacation(c.getRow().getData());
+            if (kind === "sick") calcSick(c.getRow().getData());
+          } }] : []),
         ...(run.status === "draft" ? [{ title: "", field: "_delete", width: 40, hozAlign: "center", headerSort: false,
           formatter: () => "✕", cellClick: async (_e, c) => {
             if (!confirm(`Убрать ${c.getRow().getData().employee_name} из начисления?`)) return;
@@ -136,11 +144,51 @@ export async function renderPayroll(view) {
         () => cell.restoreOldValue());
     });
 
+    function calcVacation(line) {
+      openForm({
+        title: `Отпускные: ${line.employee_name}`,
+        fields: [{ name: "days", label: "Календарных дней отпуска", type: "number", required: true,
+          hint: "Средний дневной заработок — по проведённым начислениям за 12 месяцев (29,3 дня в месяце)" }],
+        submitText: "Рассчитать",
+        onSubmit: async (v) => update(api.post(`/api/payroll-lines/${line.id}/vacation`, { days: Number(v.days) })),
+      });
+    }
+
+    function calcSick(line) {
+      const y = run.year;
+      openForm({
+        title: `Больничный: ${line.employee_name}`,
+        fields: [
+          { name: "days", label: "Календарных дней болезни", type: "number", required: true },
+          { name: "experience", label: "Страховой стаж", type: "select",
+            options: [["lt5", "до 5 лет — 60%"], ["5to8", "5–8 лет — 80%"], ["ge8", "8 лет и больше — 100%"], ["lt6m", "меньше 6 месяцев — из МРОТ"]] },
+          { name: "y1", label: `Заработок за ${y - 2} год, ₽`, hint: "Пусто — по начислениям в программе; заполните, если были другие работодатели" },
+          { name: "y2", label: `Заработок за ${y - 1} год, ₽` },
+        ],
+        values: { experience: "ge8" },
+        submitText: "Рассчитать",
+        onSubmit: async (v) => {
+          const earnings = {};
+          if (v.y1) earnings[y - 2] = parseNumber(v.y1);
+          if (v.y2) earnings[y - 1] = parseNumber(v.y2);
+          await update(api.post(`/api/payroll-lines/${line.id}/sick`, { days: Number(v.days), experience: v.experience, earnings }));
+        },
+      });
+    }
+
+    function renderNotes() {
+      const notes = run.lines.flatMap((l) => [l.vacation_note, l.sick_note].filter(Boolean).map((n) => `${l.employee_name}: ${n}`));
+      notesBox.replaceChildren(...(notes.length
+        ? [el("h3", {}, "Расчёт по среднему заработку"), el("ul", { class: "calc-notes" }, ...notes.map((n) => el("li", {}, n)))]
+        : []));
+    }
+
     async function update(promise, onError) {
       try {
         const result = await promise;
         run = result.run ?? result;
         renderHead();
+        renderNotes();
         await table.setData(run.lines);
         table.recalc();
       } catch (err) {
@@ -197,6 +245,7 @@ export async function renderPayroll(view) {
     });
 
     renderHead();
+    renderNotes();
     await table.ready;
     await table.setData(run.lines);
     table.recalc();
