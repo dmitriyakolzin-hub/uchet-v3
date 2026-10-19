@@ -4,6 +4,7 @@ import { renderArticles } from "./pages/articles.js";
 import { renderBudgets } from "./pages/budgets.js";
 import { renderCommon } from "./pages/common.js";
 import { renderCurrencies } from "./pages/currencies.js";
+import { renderFixedAssets } from "./pages/fixedassets.js";
 import { renderImport } from "./pages/import.js";
 import { renderJournal } from "./pages/journal.js";
 import { renderMoney } from "./pages/money.js";
@@ -23,6 +24,7 @@ const PAGES = {
   reports: { title: "Отчёты", render: renderReports },
   budgets: { title: "Бюджеты", render: renderBudgets },
   payroll: { title: "Зарплата", render: renderPayroll },
+  fixedassets: { title: "Основные средства", render: renderFixedAssets },
   import: { title: "Загрузка из Excel", render: renderImport },
   organizations: { title: "Организации", render: renderOrganizations },
   references: { title: "Справочники", render: renderReferences },

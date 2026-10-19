@@ -126,4 +126,4 @@ def test_only_admin_changes_chart(client, headers_for, fd):
 def test_analytic_kinds(client, headers_for, fd):
     kinds = client.get("/api/analytic-kinds", headers=headers_for(fd)).json()
     assert {"code": "cash_flow_item", "title": "Статья ДДС"} in kinds
-    assert len(kinds) == 9
+    assert len(kinds) == 10

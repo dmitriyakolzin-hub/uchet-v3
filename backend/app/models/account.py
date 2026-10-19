@@ -48,7 +48,7 @@ class AccountAnalytic(Base):
         UniqueConstraint("account_id", "kind", name="uq_account_analytics_account_kind"),
         CheckConstraint(
             "kind IN ('bank_account', 'counterparty', 'contract', 'employee', 'nomenclature', "
-            "'warehouse', 'cfo', 'cash_flow_item', 'pl_item')",
+            "'warehouse', 'fixed_asset', 'cfo', 'cash_flow_item', 'pl_item')",
             name="kind",
         ),
     )

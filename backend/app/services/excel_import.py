@@ -33,6 +33,7 @@ from app.models import (
     Counterparty,
     Currency,
     Employee,
+    FixedAsset,
     LegalEntity,
     Nomenclature,
     Operation,
@@ -79,6 +80,8 @@ OPERATION_COLUMNS = [
     Column("Сотрудник (таб. № или ФИО)", "employee", False, 24, True),
     Column("Номенклатура (артикул или наименование)", "nomenclature", False, 28, True),
     Column("Склад", "warehouse", False, 18, True),
+    Column("Основное средство (инв. № или наименование)", "fixed_asset", False, 28, True,
+           "Для счетов 01, 02, 08"),
     Column("ЦФО", "cfo", False, 22, True, "Наименование ЦФО"),
     Column("Описание", "description", False, 40),
 ]
@@ -94,7 +97,8 @@ COUNTERPARTY_COLUMNS = [
 ]
 
 # Колонки аналитики шаблона → вид аналитики (статья ставится отдельно — по признакам статьи)
-ANALYTIC_KEYS = ["counterparty", "contract", "bank_account", "employee", "nomenclature", "warehouse", "cfo"]
+ANALYTIC_KEYS = ["counterparty", "contract", "bank_account", "employee", "nomenclature", "warehouse", "fixed_asset",
+                 "cfo"]
 KIND_TITLES = {"организация": "legal", "юрлицо": "legal", "юл": "legal",
                "ип": "entrepreneur", "индивидуальный предприниматель": "entrepreneur",
                "физлицо": "person", "физ. лицо": "person", "физическое лицо": "person", "фл": "person"}
@@ -379,6 +383,7 @@ class _OperationsImporter:
         self.employees = scoped(Employee)
         self.nomenclature = scoped(Nomenclature)
         self.warehouses = scoped(Warehouse)
+        self.fixed_assets = scoped(FixedAsset)
         self.cfos = scoped(Cfo)
 
     # --- поиск в справочниках ---
@@ -439,6 +444,9 @@ class _OperationsImporter:
             return self._one(found or self._by_name(self.nomenclature, text), "Номенклатура", text).id
         if kind == "warehouse":
             return self._one(self._by_name(self.warehouses, text), "Склад", text).id
+        if kind == "fixed_asset":
+            found = [a for a in self.fixed_assets if a.inventory_number and a.inventory_number == text]
+            return self._one(found or self._by_name(self.fixed_assets, text), "Основное средство", text).id
         if kind == "cfo":
             return self._one(self._by_name(self.cfos, text), "ЦФО", text).id
         raise AssertionError(kind)

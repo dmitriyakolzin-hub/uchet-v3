@@ -353,3 +353,46 @@ class WarehouseOut(_Out):
     name: str
     cfo_id: int | None
     is_active: bool
+
+
+# --- Основные средства (карточка; остатки — из журнала) ---
+
+Cost = Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=2)]
+UsefulLife = Annotated[int, Field(ge=1, le=1200)]
+InventoryNumber = Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)]
+
+
+class FixedAssetCreate(BaseModel):
+    name: Name
+    inventory_number: InventoryNumber = ""
+    legal_entity_id: int
+    cost: Cost
+    useful_life_months: UsefulLife
+    cfo_id: int | None = None
+    pl_item_id: int | None = None  # статья амортизации; не указана — «Амортизация основных средств»
+
+
+class FixedAssetUpdate(BaseModel):
+    name: Name | None = None
+    inventory_number: InventoryNumber | None = None
+    legal_entity_id: int | None = None
+    cost: Cost | None = None
+    useful_life_months: UsefulLife | None = None
+    cfo_id: int | None = None
+    pl_item_id: int | None = None
+    is_active: bool | None = None
+
+
+class FixedAssetOut(_Out):
+    id: int
+    organization_id: int
+    name: str
+    inventory_number: str
+    legal_entity_id: int
+    cost: Decimal
+    useful_life_months: int
+    cfo_id: int | None
+    pl_item_id: int | None
+    commissioned_on: dt.date | None
+    commission_operation_id: int | None
+    is_active: bool

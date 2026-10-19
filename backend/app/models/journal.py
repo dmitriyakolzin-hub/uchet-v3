@@ -32,6 +32,7 @@ ANALYTIC_COLUMNS: dict[str, tuple[str, str]] = {
     "employee": ("employee_id", "employees"),
     "nomenclature": ("nomenclature_id", "nomenclature"),
     "warehouse": ("warehouse_id", "warehouses"),
+    "fixed_asset": ("fixed_asset_id", "fixed_assets"),
     "cfo": ("cfo_id", "cfos"),
     "cash_flow_item": ("cash_flow_article_id", "articles"),
     "pl_item": ("pl_article_id", "articles"),

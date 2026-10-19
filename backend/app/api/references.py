@@ -1,7 +1,7 @@
 """Справочники части 1.3б: банки (общие) и справочники организации."""
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select, text
+from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,7 @@ from app.models import (
     Counterparty,
     Currency,
     Employee,
+    FixedAsset,
     LegalEntity,
     Nomenclature,
     SalaryProject,
@@ -24,6 +25,7 @@ from app.models import (
 )
 from app.models.cfo import CFO_LEVELS
 from app.schemas import reference as s
+from app.services.fixed_assets import DEPRECIATION_ARTICLE
 
 router = APIRouter(prefix="/api", tags=["Справочники"])
 
@@ -154,6 +156,27 @@ def _check_employee(db, employee: Employee, _creating: bool) -> None:
         raise ValueError("Дата увольнения раньше даты приёма")
 
 
+# после ввода в эксплуатацию стоимость, срок и юрлицо меняются только через отмену ввода
+FIXED_ASSET_LOCKED = {"legal_entity_id": "юрлицо", "cost": "стоимость", "useful_life_months": "срок"}
+
+
+def _check_fixed_asset(db, asset: FixedAsset, creating: bool) -> None:
+    if asset.pl_item_id is None:
+        asset.pl_item_id = db.scalar(select(Article.id).where(Article.name == DEPRECIATION_ARTICLE))
+    if asset.pl_item_id is not None:
+        article = db.get(Article, asset.pl_item_id)
+        if article is None or not article.is_pl or article.debit_account_id is None:
+            raise ValueError("Статья амортизации — статья ОПиУ с шаблоном проводки (счёт затрат в дебете)")
+    if not creating and asset.commissioned_on is not None:
+        state = inspect(asset)
+        changed = [title for name, title in FIXED_ASSET_LOCKED.items()
+                   if state.attrs[name].history.has_changes()
+                   and state.attrs[name].history.deleted != state.attrs[name].history.added]
+        if changed:
+            raise ValueError(f"Основное средство введено в эксплуатацию — {', '.join(changed)} не меняются. "
+                             "Чтобы исправить, отмените ввод в эксплуатацию")
+
+
 for resource in (
     OrgResource(
         path="bank-accounts", model=BankAccount, title="Расчётный счёт",
@@ -216,6 +239,16 @@ for resource in (
         order_by=lambda m: [m.name],
         refs={"cfo_id": Ref(Cfo, "ЦФО")},
         nullable_fields={"cfo_id"},
+    ),
+    OrgResource(
+        path="fixed-assets", model=FixedAsset, title="Основное средство",
+        create_schema=s.FixedAssetCreate, update_schema=s.FixedAssetUpdate, out_schema=s.FixedAssetOut,
+        conflict_message="Основное средство с таким инвентарным номером уже есть",
+        order_by=lambda m: [m.name],
+        refs={"cfo_id": Ref(Cfo, "ЦФО"), "legal_entity_id": LEGAL_ENTITY,
+              "pl_item_id": Ref(Article, "Статья амортизации", org_scoped=False)},
+        nullable_fields={"cfo_id", "pl_item_id"},
+        check=_check_fixed_asset,
     ),
 ):
     register(router, resource)
