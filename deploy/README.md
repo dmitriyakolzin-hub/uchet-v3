@@ -304,3 +304,20 @@ grep -E '^(POSTGRES_PASSWORD|JWT_SECRET)=' /opt/uchet-v3/.env | awk -F= '{print 
 
 Должно быть 48 и 64 символа. **Не меняйте** `POSTGRES_PASSWORD` после первого запуска —
 база запомнила его при создании, и приложение перестанет к ней подключаться.
+
+### «password authentication failed for user "uchet3"» (ошибка 500 при входе)
+
+Значит, пароль базы в `.env` поменялся (например, повторно выполнен шаг 1.3), а база помнит
+старый. Данные при этом целы. Команда задаёт базе пароль из текущего `.env` (выполняется внутри
+контейнера базы, пароль на экран не выводится):
+
+```bash
+cd /opt/uchet-v3
+docker compose exec db bash -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v pw="$POSTGRES_PASSWORD" <<< "ALTER USER CURRENT_USER PASSWORD :'\''pw'\'';"'
+docker compose restart app
+sleep 15
+curl -s http://127.0.0.1:8001/api/health
+```
+
+**Должно вывести:** сначала `ALTER ROLE`, в конце — `{"status":"ok","db":"ok"}`. Если при этом поменялся
+и `JWT_SECRET`, всем пользователям нужно войти заново — это нормально.
