@@ -7,6 +7,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api.access import branch_ids, cfo_scope, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
+from app.services import employee_import
 from app.services import excel_import as xl
 
 router = APIRouter(prefix="/api/organizations/{organization_id}/import", tags=["Загрузка из Excel"])
@@ -96,3 +97,41 @@ async def import_counterparties(organization_id: int, request: Request, user: Cu
         rows=result.rows, created=result.created, skipped_existing=result.skipped_existing,
         errors=[e.__dict__ for e in result.errors],
     )
+
+
+# --- Сотрудники: список в Excel и загрузка (создание и обновление, оклады) ---
+
+
+class EmployeesImportOut(BaseModel):
+    rows: int
+    created: list[str]
+    updated: list[str]
+    errors: list[RowErrorOut]
+
+
+@router.get("/templates/employees.xlsx")
+def employees_template(organization_id: int, user: CurrentUser, db: DbSession):
+    get_organization_for(db, user, organization_id, Perm.EDIT_REFERENCE)
+    return _xlsx(employee_import.employees_xlsx(db, organization_id, with_rows=False), "employees_template.xlsx")
+
+
+@router.get("/employees.xlsx")
+def employees_list(organization_id: int, user: CurrentUser, db: DbSession):
+    """Текущий список сотрудников в формате загрузки (с окладами на сегодня)."""
+    get_organization_for(db, user, organization_id, Perm.EDIT_REFERENCE)
+    return _xlsx(employee_import.employees_xlsx(db, organization_id), "employees.xlsx")
+
+
+@router.post("/employees", response_model=EmployeesImportOut)
+async def import_employees(organization_id: int, request: Request, user: CurrentUser, db: DbSession):
+    """Тело запроса — файл .xlsx как есть. Сотрудник ищется по табельному, внутреннему № или ФИО."""
+    get_organization_for(db, user, organization_id, Perm.EDIT_REFERENCE)
+    raw = await _body(request)
+    try:
+        result = await run_in_threadpool(employee_import.import_employees, db, organization_id, raw)
+    except xl.ExcelError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    db.commit()
+    return EmployeesImportOut(rows=result.rows, created=result.created, updated=result.updated,
+                              errors=[e.__dict__ for e in result.errors])

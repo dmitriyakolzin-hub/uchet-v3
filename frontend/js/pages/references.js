@@ -75,6 +75,39 @@ async function openSalaries(employee) {
   await load();
 }
 
+// Сотрудники в Excel: скачать список (по нему же править) и загрузить — создаёт новых и обновляет найденных
+function employeesExcel(org, reload) {
+  const input = el("input", { type: "file", accept: ".xlsx", hidden: true, "aria-label": "Файл сотрудников" });
+  input.addEventListener("change", async () => {
+    const file = input.files[0];
+    if (!file) return;
+    input.value = "";
+    try {
+      const r = await api.upload(`/api/organizations/${org.id}/import/employees`, file);
+      const dialog = el("dialog", { class: "dialog wide" },
+        el("h2", {}, `Сотрудники загружены: ${file.name}`),
+        el("ul", {}, el("li", {}, `Строк в файле: ${r.rows}`), el("li", {}, `Добавлено: ${r.created.length}`),
+          el("li", {}, `Обновлено: ${r.updated.length}`)),
+        ...(r.errors.length ? [el("h3", {}, `Не загружено строк: ${r.errors.length}`),
+          el("ul", { class: "error-list" }, ...r.errors.map((e) => el("li", {}, `Строка ${e.row}: ${e.error}`)))] : []),
+        el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => dialog.close() }, "Понятно")));
+      document.body.append(dialog);
+      dialog.addEventListener("close", () => dialog.remove());
+      dialog.showModal();
+      await reload();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  });
+  return [
+    el("button", { type: "button", class: "secondary", onclick: () => api.download(
+      `/api/organizations/${org.id}/import/employees.xlsx`, "employees.xlsx").catch((err) => toast(err.message, "error")) },
+    "Скачать в Excel"),
+    el("button", { type: "button", class: "secondary", onclick: () => { input.value = ""; input.click(); } }, "Загрузить из Excel"),
+    input,
+  ];
+}
+
 const PROJECT_STATUSES = [["planned", "План"], ["active", "В работе"], ["done", "Завершён"]];
 const CFO_LEVELS = { 1: "Компания", 2: "Направление", 3: "Филиал", 4: "Магазин", 5: "Подразделение учёта" };
 
@@ -286,12 +319,14 @@ const TABS = [
     key: "employees",
     title: "Сотрудники",
     addText: "Добавить сотрудника",
+    extra: (org, reload) => employeesExcel(org, reload),
     columns: (d, state) => {
       const labels = cfoPathLabels(d.cfos);
       const date = (c) => (c.getValue() ? c.getValue().split("-").reverse().join(".") : "");
       return [
         { title: "ФИО", field: "full_name", widthGrow: 2, headerFilter: "input", headerFilterPlaceholder: "поиск" },
-        { title: "Таб. №", field: "personnel_number", width: 100 },
+        { title: "Таб. №", field: "personnel_number", width: 100, headerFilter: "input", headerFilterPlaceholder: "поиск" },
+        { title: "Вн. №", field: "internal_number", width: 100, headerFilter: "input", headerFilterPlaceholder: "поиск" },
         { title: "Должность", field: "position", widthGrow: 2 },
         { title: "ЦФО", field: "cfo_id", widthGrow: 3, formatter: (c) => labels.get(c.getValue()) ?? "", tooltip: (_e, c) => labels.get(c.getValue()) ?? "" },
         { title: "Принят", field: "hired_on", width: 110, formatter: date },
@@ -307,6 +342,7 @@ const TABS = [
       return [
         { name: "full_name", label: "ФИО", required: true },
         { name: "personnel_number", label: "Табельный номер" },
+        { name: "internal_number", label: "Внутренний номер", hint: "Второй номер сотрудника; не повторяется в организации" },
         { name: "inn", label: "ИНН", nullable: true, hint: "12 цифр" },
         { name: "position", label: "Должность" },
         { name: "cfo_id", label: "ЦФО", type: "select", numeric: true,
@@ -457,6 +493,7 @@ export async function renderReferences(view) {
         return tab.prepare ? tab.prepare(list) : list;
       },
       columns: tab.columns(d, state),
+      extra: tab.extra && state.canEdit ? tab.extra(org, () => state.ref.reload()) : [],
       fields: (row, preset) => tab.fields(d, row, preset ?? {}),
     });
   }

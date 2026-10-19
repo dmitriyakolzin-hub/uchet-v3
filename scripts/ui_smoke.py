@@ -198,8 +198,8 @@ with sync_playwright() as p:
 
     page.click("button.tab:has-text('Сотрудники')")
     page.click("text=Добавить сотрудника")
-    d = dialog_fill(page, {"full_name": "Иванов Иван", "personnel_number": "0001", "position": "Продавец",
-                           "hired_on": "2026-01-10"})
+    d = dialog_fill(page, {"full_name": "Иванов Иван", "personnel_number": "0001", "internal_number": "M-1",
+                           "position": "Продавец", "hired_on": "2026-01-10"})
     d.locator("[name=cfo_id]").select_option(label="АВМВ / Торговля / Филиал Юг")
     d.locator("[name=pl_item_id]").select_option(label="Оплата труда — коммерческий персонал")
     d.locator("[name=legal_entity_id]").select_option(label="Ромашка")
@@ -217,6 +217,18 @@ with sync_playwright() as p:
     d.locator("button[type=submit]").click()
     expect(sal.locator(".tabulator-row")).to_contain_text("85 000,00")
     sal.locator("button", has_text="Закрыть").click()
+    expect(emp).to_contain_text("M-1")
+    # загрузка сотрудников из Excel (без юрлица — в начисление зарплаты не попадёт)
+    from openpyxl import Workbook
+    wb = Workbook()
+    wb.active.append(["ФИО", "Табельный №", "Внутренний №", "Должность"])
+    wb.active.append(["Петров Пётр", "0002", "M-2", "Кассир"])
+    wb.save(f"{OUT}/employees.xlsx")
+    page.locator("input[aria-label='Файл сотрудников']").set_input_files(f"{OUT}/employees.xlsx")
+    d = page.locator("dialog[open]", has_text="Сотрудники загружены")
+    expect(d).to_contain_text("Добавлено: 1")
+    d.locator("button", has_text="Понятно").click()
+    expect(page.locator(".tabulator-row", has_text="Петров Пётр")).to_contain_text("M-2")
 
     # журнал: операция по статье с шаблоном, проведение, неполный черновик, массовое проведение
     page.click("#nav a[data-page=journal]")

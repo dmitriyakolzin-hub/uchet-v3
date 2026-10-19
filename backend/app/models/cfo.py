@@ -56,10 +56,18 @@ class Employee(OrgScoped, Base):
             unique=True,
             postgresql_where=text("personnel_number <> ''"),
         ),
+        Index(
+            "uq_employees_organization_internal_number",
+            "organization_id",
+            "internal_number",
+            unique=True,
+            postgresql_where=text("internal_number <> ''"),
+        ),
     )
 
     full_name: Mapped[str] = mapped_column(String(255))
-    personnel_number: Mapped[str] = mapped_column(String(50), default="", server_default="")
+    personnel_number: Mapped[str] = mapped_column(String(50), default="", server_default="")  # табельный №
+    internal_number: Mapped[str] = mapped_column(String(50), default="", server_default="")  # внутренний №
     inn: Mapped[str | None] = mapped_column(String(12))
     position: Mapped[str] = mapped_column(String(255), default="", server_default="")
     cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"), index=True)
