@@ -40,7 +40,7 @@ export async function renderReports(view) {
 
   const orgSelect = el("select", { class: "inline-select", "aria-label": "Организация" },
     ...orgs.map((o) => el("option", { value: o.id, selected: o.id === org.id }, o.name)));
-  const filters = reportFilters({ ref, onChange: () => reload(), onExcel: () => excel() });
+  const filters = reportFilters({ ref, scope: org.cfo_scope, onChange: () => reload(), onExcel: () => excel() });
   const tabs = el("div", { class: "tabs" });
   const box = el("div");
 
@@ -85,7 +85,7 @@ export async function renderReports(view) {
     org = orgs.find((o) => String(o.id) === orgSelect.value);
     remember(ORG_KEY, org.id);
     ref = await loadReferences(org.id);
-    filters.setRef(ref);
+    filters.setRef(ref, org.cfo_scope);
     await report.reset();
     await reload();
   });

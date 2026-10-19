@@ -22,6 +22,11 @@ export async function renderOpening(view) {
     return;
   }
   let org = orgs.find((o) => String(o.id) === recall(ORG_KEY)) ?? orgs[0];
+  if (org.restricted) {
+    view.replaceChildren(el("h1", {}, "Начальные остатки"),
+      el("p", { class: "muted" }, "Раздел недоступен руководителю ЦФО: начальные остатки вводит финансовый директор."));
+    return;
+  }
   let ref = await loadReferences(org.id);
 
   const orgSelect = el("select", { class: "inline-select", "aria-label": "Организация" },

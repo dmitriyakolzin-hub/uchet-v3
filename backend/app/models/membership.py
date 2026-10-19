@@ -10,6 +10,7 @@ class Membership(Base):
     __tablename__ = "memberships"
     __table_args__ = (
         CheckConstraint("role IN ('finance_director', 'ceo', 'cfo_head')", name="role"),
+        CheckConstraint("cfo_id IS NULL OR role = 'cfo_head'", name="cfo_only_for_cfo_head"),
     )
 
     user_id: Mapped[int] = mapped_column(
@@ -19,3 +20,5 @@ class Membership(Base):
         ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True, index=True
     )
     role: Mapped[str] = mapped_column(String(30))
+    # Руководитель ЦФО: корень его ветки дерева ЦФО (docs/TZ.md, раздел 13)
+    cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"), index=True)

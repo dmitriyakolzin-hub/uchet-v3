@@ -358,8 +358,9 @@ def _flag(value, title: str) -> bool:
 
 
 class _OperationsImporter:
-    def __init__(self, db: Session, organization_id: int, user: User):
+    def __init__(self, db: Session, organization_id: int, user: User, branch: set[int] | None = None):
         self.db, self.org_id, self.user = db, organization_id, user
+        self.branch = branch  # ветка ЦФО руководителя ЦФО: операции только с ЦФО из неё
         self.result = OperationsResult()
         self.unused: list[tuple] = []  # по каждой проводке операции: неиспользованная и использованная аналитика
         org = organization_id
@@ -518,6 +519,10 @@ class _OperationsImporter:
             if len(postings) > 100:
                 raise RowProblem("В одной операции больше 100 проводок")
             self.check_unused(rows)
+            if self.branch is not None:
+                cfos = {c for p in postings for c in (p.debit.cfo, p.credit.cfo) if c is not None}
+                if not cfos & self.branch or cfos - self.branch:
+                    raise RowProblem("Можно загружать только операции с ЦФО вашей ветки")
         except RowProblem as exc:
             self.result.errors.append(RowError(first_no, str(exc)))
             return
@@ -563,9 +568,10 @@ class _OperationsImporter:
         return f"xlsx:{digest}:{occurrence}"
 
 
-def import_operations(db: Session, organization_id: int, user: User, raw: bytes) -> OperationsResult:
+def import_operations(db: Session, organization_id: int, user: User, raw: bytes,
+                      branch: set[int] | None = None) -> OperationsResult:
     rows = _read_rows(raw, OPERATION_COLUMNS)
-    importer = _OperationsImporter(db, organization_id, user)
+    importer = _OperationsImporter(db, organization_id, user, branch)
     importer.result.rows = len(rows)
 
     groups: dict[str, list] = {}

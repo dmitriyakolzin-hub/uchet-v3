@@ -41,6 +41,10 @@ def env(client, headers_for, make_user, make_org, db):
     bank_acc = post("bank-accounts", {"legal_entity_id": le.id, "bank_id": bank.id, "currency_id": rub.id,
                                       "number": "40702810900000012345", "name": "Сбер"})
     company = post("cfos", {"name": "АВМВ"})
+    from app.models import Membership
+
+    db.query(Membership).filter(Membership.role == "cfo_head").update({"cfo_id": company["id"]})
+    db.commit()
     accounts = {a["code"]: a["id"] for a in client.get("/api/accounts", headers=h).json()}
     articles = {a["name"]: a["id"] for a in client.get("/api/articles", headers=h).json()}
     return {
@@ -63,6 +67,14 @@ def payment(env, amount="1000.00", **over):
             "description": "Оплата по счёту 15", "postings": [posting]}
     body.update(over)
     return body
+
+
+def cost(env, amount="700.00"):
+    """Расход ЦФО: Дт 26 (ЦФО, статья ОПиУ) — Кт 60.01 — такие черновики вводит руководитель ЦФО."""
+    return {"legal_entity_id": env["le"].id, "op_date": "2026-10-05", "description": "Связь", "postings": [{
+        "debit_account_id": env["acc"]["26"], "credit_account_id": env["acc"]["60.01"], "amount": amount,
+        "debit": {"cfo": env["cfo"]["id"], "pl_item": env["art"]["Связь и IT"]},
+        "credit": {"counterparty": env["cp"]["id"], "contract": env["contract"]["id"]}}]}
 
 
 def create(client, env, body, who=None, post=False):
@@ -256,16 +268,16 @@ def test_delete_draft(client, env):
 
 
 def test_cfo_head_drafts_only_own(client, env):
-    op = create(client, env, payment(env), who="head")
+    op = create(client, env, cost(env), who="head")
     assert op.status_code == 201
     op = op.json()
     assert act(client, env, op["id"], "post", who="head").status_code == 403
-    assert create(client, env, payment(env), who="head", post=True).status_code == 403
+    assert create(client, env, cost(env), who="head", post=True).status_code == 403
     h2 = env["headers_for"](env["head2"])
-    assert client.put(f"/api/operations/{op['id']}", headers=h2, json=payment(env)).status_code == 403
+    assert client.put(f"/api/operations/{op['id']}", headers=h2, json=cost(env)).status_code == 403
     assert client.delete(f"/api/operations/{op['id']}", headers=h2).status_code == 403
     h1 = env["headers_for"](env["head"])
-    assert client.put(f"/api/operations/{op['id']}", headers=h1, json=payment(env, amount="5")).status_code == 200
+    assert client.put(f"/api/operations/{op['id']}", headers=h1, json=cost(env, amount="5")).status_code == 200
     # финансовый директор может провести черновик руководителя ЦФО
     assert act(client, env, op["id"], "post").status_code == 200
 

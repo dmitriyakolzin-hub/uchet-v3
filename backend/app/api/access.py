@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.permissions import ADMIN_PERMS, ROLE_PERMS, Perm, Role
-from app.models import Membership, Organization, User
+from app.models import Cfo, Membership, Organization, User
 
 
 def org_permissions(db: Session, user: User, organization_id: int) -> frozenset[Perm]:
@@ -39,3 +39,32 @@ def visible_organization_ids(db: Session, user: User) -> list[int] | None:
     if user.is_admin:
         return None
     return list(db.scalars(select(Membership.organization_id).where(Membership.user_id == user.id)))
+
+
+# --- Ветка ЦФО руководителя ЦФО (docs/TZ.md, раздел 13) ---
+
+
+def cfo_scope(db: Session, user: User, organization_id: int) -> int | None:
+    """Корень ветки ЦФО, которой ограничен пользователь в организации; None — ограничения нет.
+    Руководителю ЦФО без назначенного ЦФО данные недоступны."""
+    if user.is_admin:
+        return None
+    membership = db.scalar(select(Membership).where(
+        Membership.user_id == user.id, Membership.organization_id == organization_id))
+    if membership is None or membership.role != Role.CFO_HEAD:
+        return None
+    if membership.cfo_id is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Руководителю ЦФО не назначен ЦФО — обратитесь к администратору")
+    return membership.cfo_id
+
+
+def branch_ids(db: Session, root_id: int) -> set[int]:
+    """ЦФО вместе со всеми подчинёнными."""
+    root = select(Cfo.path).where(Cfo.id == root_id).scalar_subquery()
+    return set(db.scalars(select(Cfo.id).where(Cfo.path.op("<@")(root))))
+
+
+def forbid_scoped(db: Session, user: User, organization_id: int) -> None:
+    """Раздел только для пользователей без ограничения веткой ЦФО (расчётные счета, остатки, выписки)."""
+    if cfo_scope(db, user, organization_id) is not None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Раздел недоступен руководителю ЦФО")

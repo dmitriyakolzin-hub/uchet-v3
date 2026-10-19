@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from app.core.permissions import Perm, Role
 from app.core.security import MIN_PASSWORD_LENGTH
@@ -17,12 +17,23 @@ Password = Annotated[str, Field(min_length=MIN_PASSWORD_LENGTH, max_length=200)]
 class MembershipIn(BaseModel):
     organization_id: int
     role: Role
+    cfo_id: int | None = None  # обязателен для руководителя ЦФО: корень его ветки
+
+    @model_validator(mode="after")
+    def _cfo_for_cfo_head(self):
+        if self.role == Role.CFO_HEAD and self.cfo_id is None:
+            raise ValueError("руководителю ЦФО укажите ЦФО")
+        if self.role != Role.CFO_HEAD:
+            self.cfo_id = None
+        return self
 
 
 class MembershipOut(BaseModel):
     organization_id: int
     organization_name: str
     role: Role
+    cfo_id: int | None = None
+    cfo_name: str | None = None
     permissions: list[Perm]
 
 

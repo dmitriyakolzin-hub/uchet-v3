@@ -37,6 +37,8 @@ class OrganizationOut(BaseModel):
     opening_balance_date: dt.date | None
     is_active: bool
     permissions: list[Perm] = []
+    cfo_scope: int | None = None  # руководитель ЦФО: корень его ветки ЦФО
+    restricted: bool = False  # доступ ограничен веткой ЦФО
 
 
 class LegalEntityCreate(BaseModel):

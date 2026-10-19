@@ -112,8 +112,9 @@ export async function renderMoney(view) {
     const can = org.permissions.includes("draft");
     const hint = selected ? `для «${selected.name}»` : "— сначала выберите счёт";
     quick.replaceChildren(...(can ? [
-      el("button", { type: "button", class: "secondary", onclick: () => { fileInput.value = ""; fileInput.click(); } }, "Загрузить выписку"),
-      fileInput,
+      // выписки по расчётным счетам — не для руководителя ЦФО (он видит только кассу своей ветки)
+      org.restricted ? null : el("button", { type: "button", class: "secondary", onclick: () => { fileInput.value = ""; fileInput.click(); } }, "Загрузить выписку"),
+      org.restricted ? null : fileInput,
       el("button", { type: "button", disabled: !selected, onclick: () => openPreset("in") }, "Поступление"),
       el("button", { type: "button", disabled: !selected, onclick: () => openPreset("out") }, "Списание"),
       el("button", { type: "button", class: "secondary", disabled: !selected || selected.kind !== "bank", onclick: () => openPreset("transfer") }, "Перевод между своими счетами"),

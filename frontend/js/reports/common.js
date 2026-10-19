@@ -17,7 +17,7 @@ export function moneyCell(cell) {
  * Панель фильтров: юрлицо, период, ЦФО, «с черновиками». onChange вызывается при изменении.
  * filters.params() — URLSearchParams для запросов отчёта; filters.describe() — для заголовка расшифровки.
  */
-export function reportFilters({ ref, onChange, onExcel }) {
+export function reportFilters({ ref, scope = null, onChange, onExcel }) {
   const [monthStart, monthEnd] = monthBounds();
   const dateFrom = el("input", { type: "date", "aria-label": "С даты", value: monthStart });
   const dateTo = el("input", { type: "date", "aria-label": "По дату", value: monthEnd });
@@ -27,11 +27,14 @@ export function reportFilters({ ref, onChange, onExcel }) {
   const cfo = el("select", { "aria-label": "ЦФО" });
   const drafts = el("input", { type: "checkbox", "aria-label": "С черновиками" });
 
-  function fillLists(r) {
+  function fillLists(r, branchRoot = scope) {
+    scope = branchRoot;
     entity.replaceChildren(el("option", { value: "" }, "Все юрлица"),
       ...r.entities.map((e) => el("option", { value: e.id }, e.short_name)));
-    const cfos = [...r.cfos].sort((a, b) => r.cfoLabel.get(a.id).localeCompare(r.cfoLabel.get(b.id)));
-    cfo.replaceChildren(el("option", { value: "" }, "Все ЦФО"),
+    // руководителю ЦФО — только его ветка (сервер всё равно ограничит отчёт веткой)
+    const inBranch = (c) => !scope || c.path.split(".").includes(String(scope));
+    const cfos = r.cfos.filter(inBranch).sort((a, b) => r.cfoLabel.get(a.id).localeCompare(r.cfoLabel.get(b.id)));
+    cfo.replaceChildren(el("option", { value: "" }, scope ? "Вся моя ветка" : "Все ЦФО"),
       ...cfos.map((c) => el("option", { value: c.id }, r.cfoLabel.get(c.id))));
   }
   fillLists(ref);
@@ -45,7 +48,7 @@ export function reportFilters({ ref, onChange, onExcel }) {
 
   return {
     box,
-    setRef(r) { fillLists(r); },
+    setRef(r, branchRoot = null) { fillLists(r, branchRoot); },
     valid() {
       if (!dateFrom.value || !dateTo.value) return false;
       if (dateFrom.value > dateTo.value) { toast("Начало периода позже его конца", "error"); return false; }
