@@ -463,6 +463,9 @@ with sync_playwright() as p:
     d.locator("button[type=submit]").click()
     card.locator("tr", has_text="Пересмотр за февраль").locator("button", has_text="Ввести план").click()
     expect(page.locator("h1", has_text="Бюджет 2027 — Пересмотр за февраль")).to_be_visible()
+    # у ЦФО с подчинёнными сначала свод по ветке (только просмотр); ввод — в «Свой план»
+    expect(page.locator("button.tab.active", has_text="Свод по ветке")).to_be_visible()
+    page.click("button.tab:has-text('Свой план')")
     rent = page.locator(".tabulator-row", has_text="Аренда")
     rent.locator(".tabulator-cell[tabulator-field='2027-01']").click()
     page.keyboard.type("1 500,50")
@@ -470,6 +473,12 @@ with sync_playwright() as p:
     expect(rent.locator(".tabulator-cell[tabulator-field=total]")).to_have_text("1 500,50")
     expect(page.locator(".toast-error")).to_have_count(0)
     page.screenshot(path=f"{OUT}/28_plan_grid.png", full_page=True)
+    page.click("button.tab:has-text('Свод по ветке')")
+    rent = page.locator(".tabulator-row", has_text="Аренда").first
+    expect(rent.locator(".tabulator-cell[tabulator-field=total]")).to_have_text("1 500,50")
+    rent.locator(".tabulator-data-tree-control").click()
+    expect(page.locator(".tabulator-row", has_text="свой план")).to_contain_text("1 500,50")
+    page.screenshot(path=f"{OUT}/28b_plan_branch.png", full_page=True)
     page.click("text=← К бюджетам")
     page.locator("select[aria-label='Год']").select_option("2027")
     expect(page.locator(".budget-card", has_text="Бюджет 2027")).to_be_visible()

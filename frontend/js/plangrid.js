@@ -30,8 +30,12 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   let kind = "pl";
   let cfoId = choices[0]?.id ?? null;
   let data = null;
+  // у ЦФО с подчинёнными по умолчанию — свод по ветке (просмотр), ввод — в «Свой план»
+  const hasChildren = (id) => cfos.some((c) => c.parent_id === id);
+  let mode = hasChildren(cfoId) ? "branch" : "own";
 
   const kindTabs = el("div", { class: "tabs" });
+  const modeTabs = el("div", { class: "tabs small-tabs" });
   const cfoSelect = el("select", { class: "inline-select", "aria-label": "ЦФО плана" },
     ...choices.map((c) => el("option", { value: c.id }, label(c))));
   const cfoLabel = el("label", { class: "inline" }, "ЦФО ", cfoSelect);
@@ -45,26 +49,39 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       el("h1", {}, `${budget.title} — ${version.name}`),
       el("button", { type: "button", class: "secondary", onclick: onBack }, "← К бюджетам")),
     kindTabs,
-    el("div", { class: "filters" }, cfoLabel,
+    el("div", { class: "filters" }, cfoLabel, modeTabs,
       el("button", { type: "button", class: "secondary", onclick: () => download() }, "Скачать в Excel"),
       uploadButton, fileInput),
     status,
     tableBox,
   );
 
-  const table = makeTable(tableBox, {
-    index: "article_id",
-    groupBy: "group",
-    groupHeader: (value) => value,
-    columnCalcs: "group",
-    columns: [{ title: "Статья", field: "name" }],
-  });
+  let table = null;
+  function newTable() {
+    table?.destroy();
+    const box = el("div");
+    tableBox.replaceChildren(box);
+    table = makeTable(box, {
+      index: "key",
+      groupBy: "group",
+      groupHeader: (value) => value,
+      columnCalcs: "group",
+      ...(mode === "branch" ? { dataTree: true, dataTreeStartExpanded: false, dataTreeChildIndent: 18 } : {}),
+      columns: [{ title: "Статья", field: "name" }],
+    });
+    table.on("cellEdited", onEdited);
+    return table.ready ?? Promise.resolve();
+  }
 
   function renderTabs() {
     const tabs = Object.entries(KINDS).filter(([k]) => k === "pl" || !org.restricted);
     kindTabs.replaceChildren(...tabs.map(([k, title]) =>
       el("button", { type: "button", class: `tab${k === kind ? " active" : ""}`, onclick: () => { kind = k; renderTabs(); load(); } }, title)));
     cfoLabel.hidden = kind !== "pl";
+    const showModes = kind === "pl" && hasChildren(cfoId);
+    modeTabs.hidden = !showModes;
+    modeTabs.replaceChildren(...(showModes ? [["branch", "Свод по ветке"], ["own", "Свой план"]].map(([m, title]) =>
+      el("button", { type: "button", class: `tab${m === mode ? " active" : ""}`, onclick: () => { mode = m; renderTabs(); load(); } }, title)) : []));
   }
 
   const sumCalc = (values) => sumMoney(values);
@@ -72,13 +89,18 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   async function load() {
     if (kind === "pl" && !cfoId) {
       status.textContent = "В организации нет ЦФО — сначала заведите дерево ЦФО в «Справочниках».";
-      await table.setData([]);
+      tableBox.replaceChildren();
       return;
     }
-    const params = new URLSearchParams({ kind, ...(kind === "pl" ? { cfo_id: cfoId } : {}) });
+    const branch = kind === "pl" && mode === "branch" && hasChildren(cfoId);
+    const params = new URLSearchParams({ kind, ...(kind === "pl" ? { cfo_id: cfoId } : {}), mode: branch ? "branch" : "own" });
     data = await api.get(`/api/budget-versions/${version.id}/grid?${params}`);
+    await newTable();
     uploadButton.hidden = !data.editable;
-    status.textContent = data.editable
+    status.textContent = data.mode === "branch"
+      ? "Свод по ветке: план этого ЦФО вместе со всеми подчинёнными — только просмотр. Нажмите ⊞ у статьи, "
+        + "чтобы увидеть, из каких ЦФО сложилась сумма. Вводить план — в «Свой план» или в сетке нижестоящего ЦФО."
+      : data.editable
       ? "Введите сумму в ячейку и нажмите Enter — она сразу сохраняется. Пустая ячейка или 0 — плана нет. "
         + "Суммы — положительные: доход или расход определяется статьёй."
       : version.status === "draft"
@@ -94,12 +116,16 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       { title: "Итого", field: "total", hozAlign: "right", minWidth: 120, headerSort: false, cssClass: "strong",
         formatter: moneyOrEmpty, bottomCalc: sumCalc, bottomCalcFormatter: moneyOrEmpty },
     ]);
-    const rows = data.rows.map((r) => ({ article_id: r.article_id, name: r.name, group: r.group, ...r.values,
-      total: sumMoney(Object.values(r.values)) }));
+    const rows = data.rows.map((r) => ({
+      key: String(r.article_id), article_id: r.article_id, name: r.name, group: r.group, ...r.values,
+      total: sumMoney(Object.values(r.values)),
+      ...(r.parts?.length ? { _children: r.parts.map((p) => ({ key: `${r.article_id}:${p.cfo_id}`, name: p.name,
+        group: r.group, ...p.values, total: sumMoney(Object.values(p.values)) })) } : {}),
+    }));
     await table.setData(rows);
   }
 
-  table.on("cellEdited", async (cell) => {
+  async function onEdited(cell) {
     const month = data.months.find((m) => m.key === cell.getField());
     if (!month) return;
     const row = cell.getRow();
@@ -116,10 +142,15 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       toast(err.message, "error");
       cell.restoreOldValue();
     }
-  });
+  }
 
   async function download() {
     try {
+      if (data?.mode === "branch") {
+        await api.download(`/api/budget-versions/${version.id}/branch.xlsx?cfo_id=${cfoId}`,
+          `plan_svod_${budget.year}_v${version.number}.xlsx`);
+        return;
+      }
       await api.download(`/api/budget-versions/${version.id}/plan.xlsx?kind=${kind}`,
         `${kind === "pl" ? "plan_pl" : "plan_dds"}_${budget.year}_v${version.number}.xlsx`);
     } catch (err) {
@@ -149,8 +180,12 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     }
   });
 
-  cfoSelect.addEventListener("change", () => { cfoId = Number(cfoSelect.value); load(); });
+  cfoSelect.addEventListener("change", () => {
+    cfoId = Number(cfoSelect.value);
+    mode = hasChildren(cfoId) ? "branch" : "own";
+    renderTabs();
+    load();
+  });
   renderTabs();
-  await table.ready;
   await load();
 }
