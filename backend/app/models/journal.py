@@ -17,7 +17,6 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
-    UniqueConstraint,
     func,
     text,
 )
@@ -45,14 +44,22 @@ def analytic_column(side: str, kind: str) -> str:
     return f"{SIDES[side]}_{ANALYTIC_COLUMNS[kind][0]}"
 
 
-OPERATION_STATUSES = {"draft": "Черновик", "posted": "Проведена", "cancelled": "Аннулирована"}
+OPERATION_STATUSES = {"draft": "Черновик", "posted": "Проведена", "cancelled": "Аннулирована", "plan": "План"}
 
 
 class Operation(Base):
     __tablename__ = "operations"
     __table_args__ = (
-        UniqueConstraint("organization_id", "number", name="uq_operations_organization_number"),
-        CheckConstraint("status IN ('draft', 'posted', 'cancelled')", name="status"),
+        # номер журнала — только у фактических операций; плановые (бюджет) — без номера (0)
+        Index("uq_operations_organization_number", "organization_id", "number", unique=True,
+              postgresql_where=text("budget_version_id IS NULL")),
+        CheckConstraint("status IN ('draft', 'posted', 'cancelled', 'plan')", name="status"),
+        CheckConstraint("(status = 'plan') = (budget_version_id IS NOT NULL)", name="plan_has_version"),
+        CheckConstraint("plan_kind IS NULL OR plan_kind IN ('pl', 'cf')", name="plan_kind"),
+        # ячейка бюджета: версия + вид плана (ОПиУ / ДДС) + ЦФО + статья + месяц — одна плановая операция
+        Index("uq_operations_plan_cell", "budget_version_id", "plan_kind", "plan_cfo_id", "article_id", "op_date",
+              unique=True, postgresql_nulls_not_distinct=True,
+              postgresql_where=text("budget_version_id IS NOT NULL")),
         Index("ix_operations_organization_date", "organization_id", "op_date"),
         Index(
             "uq_operations_organization_import_key",
@@ -75,6 +82,12 @@ class Operation(Base):
     is_opening: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     # Ключ платежа из банковской выписки: повторная загрузка того же платежа не создаёт дубль
     import_key: Mapped[str | None] = mapped_column(String(300))
+    # Плановая операция бюджета (docs/TZ.md, раздел 13): статус plan, версия, вид плана и ЦФО ячейки
+    budget_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("budget_versions.id", ondelete="CASCADE"), index=True
+    )
+    plan_kind: Mapped[str | None] = mapped_column(String(2))
+    plan_cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"))
 
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

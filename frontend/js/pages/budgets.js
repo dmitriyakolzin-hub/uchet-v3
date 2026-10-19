@@ -1,5 +1,6 @@
 // «Бюджеты»: бюджеты на год / квартал / месяц и их версии (черновик → утверждена → архив).
 import { api } from "../api.js";
+import { openPlanGrid } from "../plangrid.js";
 import { el, openForm, toast } from "../ui.js";
 
 const ORG_KEY = "uchet3_org";
@@ -125,9 +126,10 @@ export async function renderBudgets(view) {
   }
 
   function versionRow(budget, v) {
-    const actions = [];
+    const link = (text, onclick, cls = "") => el("button", { type: "button", class: `link ${cls}`, onclick }, text);
+    const actions = [link(v.status === "draft" ? "Ввести план" : "Открыть план",
+      () => openPlanGrid(view, { org, budget, version: v, onBack: () => renderBudgets(view) }))];
     if (canManage()) {
-      const link = (text, onclick, cls = "") => el("button", { type: "button", class: `link ${cls}`, onclick }, text);
       actions.push(link("Переименовать", () => renameVersion(v)));
       if (v.status === "draft") {
         actions.push(link("Утвердить", () => {

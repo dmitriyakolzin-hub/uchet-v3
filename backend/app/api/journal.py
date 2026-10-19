@@ -99,7 +99,7 @@ def _check_branch(cfos: set[int], branch: set[int] | None) -> None:
 def _get_operation(db: Session, user: User, operation_id: int, perm: Perm) -> Operation:
     op = db.get(Operation, operation_id)
     not_found = HTTPException(status.HTTP_404_NOT_FOUND, detail="Операция не найдена")
-    if op is None:
+    if op is None or op.budget_version_id is not None:  # плановые операции — только через бюджет
         raise not_found
     try:
         get_organization_for(db, user, op.organization_id, perm)
@@ -153,7 +153,7 @@ def list_operations(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> OperationList:
     get_organization_for(db, user, organization_id, Perm.VIEW)
-    query = select(Operation).where(Operation.organization_id == organization_id)
+    query = select(Operation).where(Operation.organization_id == organization_id, Operation.budget_version_id.is_(None))
     scope = cfo_scope(db, user, organization_id)
     if scope is not None:
         in_branch = select_lines(organization_id, statuses=("draft", "posted", "cancelled"), cfo_branch=scope).subquery()
@@ -310,7 +310,7 @@ def bulk_action(organization_id: int, body: BulkIn, user: CurrentUser, db: DbSes
     results = []
     for operation_id in dict.fromkeys(body.ids):  # без повторов, порядок сохраняется
         op = db.get(Operation, operation_id)
-        if (op is None or op.organization_id != organization_id
+        if (op is None or op.organization_id != organization_id or op.budget_version_id is not None
                 or (branch is not None and not _operation_cfos(op) & branch)):
             results.append(BulkResult(id=operation_id, ok=False, error="Операция не найдена"))
             continue

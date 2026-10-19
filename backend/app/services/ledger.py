@@ -27,6 +27,7 @@ def _side(side: str, account_col, corr_col):
         Operation.op_date.label("op_date"),
         Operation.status.label("status"),
         Operation.is_opening.label("is_opening"),
+        Operation.budget_version_id.label("budget_version_id"),
         account_col.label("account_id"),
         corr_col.label("corr_account_id"),
         literal(side).label("side"),
@@ -69,12 +70,14 @@ def select_lines(
     cfo_branch: int | None = None,
     exclude_corr_account_ids: list[int] | None = None,
     opening: bool | None = None,
+    budget_version_ids: list[int] | None = None,
 ) -> Select:
     """Строки проводок по условиям. Счёт (account_id или любой из account_ids) отбирается
     вместе со всеми своими субсчетами. Аналитика со значением None — «не указана».
     cfo_branch — ЦФО вместе со всеми подчинёнными (строки без ЦФО не попадают).
     exclude_corr_account_ids — без строк, где корреспондирующий счёт — один из этих (с субсчетами).
     opening — True: только ввод начальных остатков, False: без него, None: все.
+    budget_version_ids — плановые операции этих версий бюджета (вместе со statuses=("plan",)).
 
     По умолчанию — только проведённые операции (так считают отчёты).
     """
@@ -90,6 +93,8 @@ def select_lines(
         query = query.where(lines.c.side == side)
     if opening is not None:
         query = query.where(lines.c.is_opening == opening)
+    if budget_version_ids is not None:
+        query = query.where(lines.c.budget_version_id.in_(budget_version_ids))
     roots = ([account_id] if account_id is not None else []) + list(account_ids or [])
     if roots:
         query = query.where(lines.c.account_id.in_(subtree(roots)))

@@ -441,6 +441,24 @@ with sync_playwright() as p:
     expect(card.locator("tr", has_text="Версия 1")).to_contain_text("Архив")
     page.screenshot(path=f"{OUT}/27_budgets.png", full_page=True)
 
+    # сетка плана: черновик третьей версии, ввод суммы в ячейку, итоги
+    card.locator("button", has_text="Новая версия").click()
+    d = page.locator("dialog[open]")
+    d.locator("[name=name]").fill("Пересмотр за февраль")
+    d.locator("button[type=submit]").click()
+    card.locator("tr", has_text="Пересмотр за февраль").locator("button", has_text="Ввести план").click()
+    expect(page.locator("h1", has_text="Бюджет 2027 — Пересмотр за февраль")).to_be_visible()
+    rent = page.locator(".tabulator-row", has_text="Аренда")
+    rent.locator(".tabulator-cell[tabulator-field='2027-01']").click()
+    page.keyboard.type("1 500,50")
+    page.keyboard.press("Enter")
+    expect(rent.locator(".tabulator-cell[tabulator-field=total]")).to_have_text("1 500,50")
+    expect(page.locator(".toast-error")).to_have_count(0)
+    page.screenshot(path=f"{OUT}/28_plan_grid.png", full_page=True)
+    page.click("text=← К бюджетам")
+    page.locator("select[aria-label='Год']").select_option("2027")
+    expect(page.locator(".budget-card", has_text="Бюджет 2027")).to_be_visible()
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")
