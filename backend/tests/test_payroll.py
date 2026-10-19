@@ -183,3 +183,104 @@ def test_lines_excel_roundtrip(client, env):
     a = line_of(result["run"], env["a"])
     assert (a["bonus"], a["other_deduction"], a["accrued"]) == ("20000.50", "500.00", "120000.50")
     assert len(result["run"]["lines"]) == 3
+
+
+# --- Ведомости на выплату ---
+
+from tests.test_bank_import import BANK, OUR, statement  # noqa: E402
+
+
+@pytest.fixture
+def bank_env(client, env, db):
+    from app.models import Bank, Currency
+
+    bank = Bank(bic="044525225", name="Сбер")
+    db.add(bank)
+    db.commit()
+    rub = db.query(Currency).filter_by(code="RUB").one()
+    acc = client.post(f"{env['o']}/bank-accounts", headers=env["h"], json={
+        "legal_entity_id": env["le"].id, "bank_id": bank.id, "currency_id": rub.id, "number": OUR, "name": "Основной"})
+    assert acc.status_code == 201, acc.text
+    env["bank_acc"] = acc.json()
+    return env
+
+
+def sheet(client, env, kind, month=2, **extra):
+    resp = client.post(f"{env['o']}/payout-sheets", headers=env["h"], json={
+        "legal_entity_id": env["le"].id, "bank_account_id": env["bank_acc"]["id"], "kind": kind, "year": 2026,
+        "month": month, "pay_date": f"2026-{month:02d}-15" if kind == "advance" else f"2026-{month + 1:02d}-05", **extra})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def us():
+    return (OUR, 'ООО "А"', "7701234567")
+
+
+def test_advance_confirmed_by_statement(client, bank_env):
+    env = bank_env
+    adv = sheet(client, env, "advance", advance_percent="40")
+    amounts = {line["employee_name"]: line["amount"] for line in adv["lines"]}
+    assert amounts == {"Андреев А.": "40000.00", "Борисов Б.": "24000.00"}
+    b = next(line for line in adv["lines"] if line["employee_name"] == "Борисов Б.")
+    adv = client.delete(f"/api/payout-lines/{b['id']}", headers=env["h"]).json()  # принят после аванса
+    assert adv["total"] == "40000.00" and adv["number"] == 1
+
+    reg = client.get(f"/api/payout-sheets/{adv['id']}/registry.xlsx", headers=env["h"])
+    assert reg.status_code == 200
+    sent = client.post(f"/api/payout-sheets/{adv['id']}/send", headers=env["h"]).json()
+    assert sent["status"] == "sent"
+    assert client.patch(f"/api/payout-lines/{adv['lines'][0]['id']}", headers=env["h"],
+                        json={"amount": "1"}).status_code == 422  # отправленную не меняем
+
+    raw = statement(OUR, [("501", "16.02.2026", "40000", us(), BANK, "Перечисление аванса по реестру № 1 за февраль")],
+                    opening="100000", date_from="01.02.2026", date_to="28.02.2026")
+    result = client.post(f"{env['o']}/bank-statements", headers={**env["h"], "Content-Type": "application/octet-stream"},
+                         content=raw).json()
+    assert result["confirmed_sheets"] == [1] and len(result["created"]) == 1
+    paid = client.get(f"/api/payout-sheets/{adv['id']}", headers=env["h"]).json()
+    assert (paid["status"], paid["paid_on"], paid["confirmed_by_statement"]) == ("paid", "2026-02-16", True)
+    op = client.get(f"/api/operations/{paid['operation_id']}", headers=env["h"]).json()
+    assert op["status"] == "posted" and op["postings"][0]["debit"] == {"employee": env["a"]["id"]}
+    # повторная загрузка той же выписки — дубль
+    again = client.post(f"{env['o']}/bank-statements", headers={**env["h"], "Content-Type": "application/octet-stream"},
+                        content=raw).json()
+    assert again["skipped_duplicates"] == 1 and again["confirmed_sheets"] == []
+
+
+def test_salary_sheet_minus_advance_and_manual_pay(client, bank_env):
+    env = bank_env
+    adv = sheet(client, env, "advance")
+    client.post(f"/api/payout-sheets/{adv['id']}/send", headers=env["h"])
+    resp = client.post(f"{env['o']}/payout-sheets", headers=env["h"], json={
+        "legal_entity_id": env["le"].id, "bank_account_id": env["bank_acc"]["id"], "kind": "salary",
+        "year": 2026, "month": 2, "pay_date": "2026-03-05"})
+    assert resp.status_code == 422 and "начисление" in resp.json()["detail"]
+
+    run = create(client, env)
+    assert client.post(f"/api/payroll-runs/{run['id']}/post", headers=env["h"]).status_code == 200
+    run = client.get(f"/api/payroll-runs/{run['id']}", headers=env["h"]).json()
+    sal = sheet(client, env, "salary")
+    a_net = Decimal(line_of(run, env["a"])["net"])
+    amounts = {line["employee_id"]: Decimal(line["amount"]) for line in sal["lines"]}
+    assert amounts[env["a"]["id"]] == a_net - Decimal("50000.00")  # минус аванс 50%
+    client.post(f"/api/payout-sheets/{sal['id']}/send", headers=env["h"])
+    paid = client.post(f"/api/payout-sheets/{sal['id']}/pay", headers=env["h"], json={"paid_on": "2026-03-05"}).json()
+    assert paid["status"] == "paid" and paid["confirmed_by_statement"] is False
+    unpaid = client.post(f"/api/payout-sheets/{sal['id']}/unpay", headers=env["h"]).json()
+    assert unpaid["status"] == "sent" and unpaid["operation_id"] is None
+    assert client.post(f"/api/payout-sheets/{sal['id']}/unpay", headers=env["h"]).status_code == 422
+
+
+def test_sheet_access(client, bank_env, db):
+    env = bank_env
+    adv = sheet(client, env, "advance")
+    assert client.get(f"/api/payout-sheets/{adv['id']}", headers=env["ceo"]).status_code == 403
+    assert client.get(f"/api/payout-sheets/{adv['id']}", headers=env["other"]).status_code == 404
+    assert client.get(f"{env['o']}/payout-sheets", headers=env["ceo"]).status_code == 403
+    # счёт чужого юрлица не подходит
+    resp = client.post(f"{env['o']}/payout-sheets", headers=env["h"], json={
+        "legal_entity_id": env["le2"].id, "bank_account_id": env["bank_acc"]["id"], "kind": "advance",
+        "year": 2026, "month": 2, "pay_date": "2026-02-15"})
+    assert resp.status_code == 422
+    assert client.delete(f"/api/payout-sheets/{adv['id']}", headers=env["h"]).status_code == 204

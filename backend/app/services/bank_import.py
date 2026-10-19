@@ -26,7 +26,7 @@ from app.models import (
 )
 from app.models.journal import analytic_column
 from app.schemas.journal import AnalyticsIn, OperationIn, PostingIn
-from app.services import journal
+from app.services import journal, payroll
 from app.services.bank_statement import Document, Statement, parse
 from app.services.journal import JournalError
 from app.services.money import bank_balance
@@ -71,6 +71,7 @@ class ImportResult:
     skipped_before_opening: int = 0
     new_counterparties: list[str] = field(default_factory=list)
     accounts: list[AccountCheck] = field(default_factory=list)
+    confirmed_sheets: list[int] = field(default_factory=list)  # № ведомостей, оплату которых подтвердил платёж
 
 
 def _valid_inn(inn: str) -> bool:
@@ -195,6 +196,20 @@ class _Importer:
         if self.db.scalar(select(Operation.id).where(Operation.organization_id == self.org_id, Operation.import_key == key)):
             self.result.skipped_duplicates += 1
             return
+
+        if not inflow and not transfer:
+            # выплата по ведомости: платёж подтверждает её и сам становится операцией оплаты
+            sheet = payroll.match_sheet(self.db, self.org_id, own.id, doc.amount, doc.purpose)
+            if sheet is not None:
+                try:
+                    with self.db.begin_nested():  # при ошибке откатывается только эта попытка
+                        op = payroll.pay_sheet(self.db, sheet, self.user, op_date, import_key=key, confirmed=True)
+                except payroll.PayrollError:
+                    pass  # не удалось — платёж загрузится обычным черновиком
+                else:
+                    self.result.created.append(op.number)
+                    self.result.confirmed_sheets.append(sheet.number)
+                    return
 
         posting, article = self.build_posting(doc, transfer, inflow, own, payer, payee)
         other_name = _clean_name(doc.payer_name if inflow else doc.payee_name)

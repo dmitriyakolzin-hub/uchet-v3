@@ -199,6 +199,9 @@ table.versions th, table.versions td { text-align: left; }
 table.versions td.actions { white-space: nowrap; }
 table.versions td.actions button.link { margin-right: 12px; }
 tr.version-archived td { color: var(--muted); }
+.sheet-draft { background: #fef0c7; color: #93370d; }
+.sheet-sent { background: #e8eef8; color: #2557a7; }
+.sheet-paid { background: #d1fadf; color: #05603a; }
 .budget-draft { background: #fef0c7; color: #93370d; }
 .budget-approved { background: #d1fadf; color: #05603a; }
 .budget-archived { background: #eaecf0; color: #475467; }

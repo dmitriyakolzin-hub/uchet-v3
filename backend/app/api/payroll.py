@@ -1,11 +1,12 @@
 """Зарплата (docs/TZ.md, раздел 14). Оклады видят и меняют те, кто правит справочники (EDIT_REFERENCE)."""
 
+import datetime as dt
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -13,7 +14,17 @@ from starlette.concurrency import run_in_threadpool
 from app.api.access import get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import Employee, EmployeeSalary, LegalEntity, PayrollLine, PayrollRun, User
+from app.models import (
+    BankAccount,
+    Employee,
+    EmployeeSalary,
+    LegalEntity,
+    PayoutLine,
+    PayoutSheet,
+    PayrollLine,
+    PayrollRun,
+    User,
+)
 from app.schemas.reference import SalaryIn, SalaryOut
 from app.services import payroll
 
@@ -317,3 +328,211 @@ async def upload_lines(run_id: int, request: Request, user: CurrentUser, db: DbS
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
     db.commit()
     return {"rows": rows, "changed": changed, "errors": [e.__dict__ for e in errors], "run": _run_out(db, run)}
+
+
+# --- Ведомости на выплату ---
+
+
+class SheetCreate(BaseModel):
+    legal_entity_id: int
+    bank_account_id: int
+    kind: Literal["advance", "salary"]
+    year: Annotated[int, Field(ge=2000, le=2100)]
+    month: Annotated[int, Field(ge=1, le=12)]
+    pay_date: dt.date
+    advance_percent: Annotated[Decimal, Field(gt=0, le=100)] = Decimal(50)
+
+
+class SheetLineUpdate(BaseModel):
+    amount: Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=2)]
+
+
+class PayIn(BaseModel):
+    paid_on: dt.date
+
+
+class SheetLineOut(BaseModel):
+    id: int
+    employee_id: int
+    employee_name: str
+    personnel_number: str
+    amount: Decimal
+
+
+class SheetOut(BaseModel):
+    id: int
+    number: int
+    legal_entity_id: int
+    legal_entity_name: str
+    bank_account_id: int
+    bank_account_name: str
+    kind: str
+    year: int
+    month: int
+    pay_date: dt.date
+    status: str
+    operation_id: int | None
+    paid_on: dt.date | None
+    confirmed_by_statement: bool
+    total: Decimal
+    lines: list[SheetLineOut] = []
+
+
+def _sheet_out(db: Session, sheet: PayoutSheet, with_lines: bool = True) -> SheetOut:
+    db.expire_all()
+    entity = db.get(LegalEntity, sheet.legal_entity_id)
+    bank = db.get(BankAccount, sheet.bank_account_id)
+    lines = []
+    if with_lines:
+        rows = db.execute(select(PayoutLine, Employee).join(Employee, Employee.id == PayoutLine.employee_id)
+                          .where(PayoutLine.sheet_id == sheet.id).order_by(Employee.full_name)).all()
+        lines = [SheetLineOut(id=line.id, employee_id=e.id, employee_name=e.full_name,
+                              personnel_number=e.personnel_number, amount=line.amount) for line, e in rows]
+    return SheetOut(
+        id=sheet.id, number=sheet.number, legal_entity_id=entity.id, legal_entity_name=entity.short_name,
+        bank_account_id=bank.id, bank_account_name=f"{bank.name} ··{bank.number[-4:]}", kind=sheet.kind,
+        year=sheet.year, month=sheet.month, pay_date=sheet.pay_date, status=sheet.status,
+        operation_id=sheet.operation_id, paid_on=sheet.paid_on, confirmed_by_statement=sheet.confirmed_by_statement,
+        total=payroll.sheet_total(db, sheet), lines=lines,
+    )
+
+
+def _sheet(db: Session, user: User, sheet_id: int) -> PayoutSheet:
+    sheet = db.get(PayoutSheet, sheet_id)
+    not_found = HTTPException(status.HTTP_404_NOT_FOUND, detail="Ведомость не найдена")
+    if sheet is None:
+        raise not_found
+    try:
+        get_organization_for(db, user, sheet.organization_id, Perm.POST)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_404_NOT_FOUND:
+            raise not_found from None
+        raise
+    return sheet
+
+
+def _sheet_status(sheet: PayoutSheet, *allowed: str) -> None:
+    if sheet.status not in allowed:
+        titles = {"draft": "черновик", "sent": "отправлена в банк", "paid": "оплачена"}
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail=f"Ведомость {titles[sheet.status]} — это действие недоступно")
+
+
+def _payroll_call(db: Session, func, *args, **kwargs):
+    try:
+        result = func(*args, **kwargs)
+    except payroll.PayrollError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    db.commit()
+    return result
+
+
+@router.get("/organizations/{organization_id}/payout-sheets", response_model=list[SheetOut])
+def list_sheets(organization_id: int, user: CurrentUser, db: DbSession, year: int | None = None):
+    get_organization_for(db, user, organization_id, Perm.POST)
+    query = select(PayoutSheet).where(PayoutSheet.organization_id == organization_id)
+    if year is not None:
+        query = query.where(PayoutSheet.year == year)
+    return [_sheet_out(db, s, with_lines=False)
+            for s in db.scalars(query.order_by(PayoutSheet.year.desc(), PayoutSheet.month.desc(), PayoutSheet.number.desc()))]
+
+
+@router.post("/organizations/{organization_id}/payout-sheets", response_model=SheetOut, status_code=201)
+def create_sheet(organization_id: int, body: SheetCreate, user: CurrentUser, db: DbSession):
+    """Новая ведомость; сразу заполняется (аванс — доля оклада, зарплата — из проведённого начисления)."""
+    get_organization_for(db, user, organization_id, Perm.POST)
+    entity = db.get(LegalEntity, body.legal_entity_id)
+    bank = db.get(BankAccount, body.bank_account_id)
+    if entity is None or entity.organization_id != organization_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Юрлицо не найдено в этой организации")
+    if bank is None or bank.legal_entity_id != entity.id:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Расчётный счёт должен принадлежать этому юрлицу")
+    number = (db.scalar(select(func.max(PayoutSheet.number)).where(PayoutSheet.organization_id == organization_id)) or 0) + 1
+    sheet = PayoutSheet(organization_id=organization_id, legal_entity_id=entity.id, bank_account_id=bank.id,
+                        number=number, kind=body.kind, year=body.year, month=body.month, pay_date=body.pay_date,
+                        created_by=user.id)
+    db.add(sheet)
+    db.flush()
+    _payroll_call(db, payroll.fill_sheet, db, sheet, body.advance_percent)
+    return _sheet_out(db, sheet)
+
+
+@router.get("/payout-sheets/{sheet_id}", response_model=SheetOut)
+def get_sheet(sheet_id: int, user: CurrentUser, db: DbSession):
+    return _sheet_out(db, _sheet(db, user, sheet_id))
+
+
+@router.patch("/payout-lines/{line_id}", response_model=SheetOut)
+def update_sheet_line(line_id: int, body: SheetLineUpdate, user: CurrentUser, db: DbSession):
+    line = db.get(PayoutLine, line_id)
+    if line is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Строка не найдена")
+    sheet = _sheet(db, user, line.sheet_id)
+    _sheet_status(sheet, "draft")
+    line.amount = body.amount
+    db.commit()
+    return _sheet_out(db, sheet)
+
+
+@router.delete("/payout-lines/{line_id}", response_model=SheetOut)
+def delete_sheet_line(line_id: int, user: CurrentUser, db: DbSession):
+    line = db.get(PayoutLine, line_id)
+    if line is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Строка не найдена")
+    sheet = _sheet(db, user, line.sheet_id)
+    _sheet_status(sheet, "draft")
+    db.delete(line)
+    db.commit()
+    return _sheet_out(db, sheet)
+
+
+@router.delete("/payout-sheets/{sheet_id}", status_code=204)
+def delete_sheet(sheet_id: int, user: CurrentUser, db: DbSession) -> None:
+    sheet = _sheet(db, user, sheet_id)
+    _sheet_status(sheet, "draft")
+    db.delete(sheet)
+    db.commit()
+
+
+@router.post("/payout-sheets/{sheet_id}/send", response_model=SheetOut)
+def send_sheet(sheet_id: int, user: CurrentUser, db: DbSession):
+    """Отправлена в банк: суммы закрепляются, ведомость ждёт подтверждения выпиской."""
+    sheet = _sheet(db, user, sheet_id)
+    _sheet_status(sheet, "draft")
+    if payroll.sheet_total(db, sheet) <= 0:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="В ведомости нет сумм к выплате")
+    sheet.status = "sent"
+    db.commit()
+    return _sheet_out(db, sheet)
+
+
+@router.post("/payout-sheets/{sheet_id}/unsend", response_model=SheetOut)
+def unsend_sheet(sheet_id: int, user: CurrentUser, db: DbSession):
+    sheet = _sheet(db, user, sheet_id)
+    _sheet_status(sheet, "sent")
+    sheet.status = "draft"
+    db.commit()
+    return _sheet_out(db, sheet)
+
+
+@router.post("/payout-sheets/{sheet_id}/pay", response_model=SheetOut)
+def pay_sheet(sheet_id: int, body: PayIn, user: CurrentUser, db: DbSession):
+    """Подтвердить оплату вручную (без выписки)."""
+    sheet = _sheet(db, user, sheet_id)
+    _payroll_call(db, payroll.pay_sheet, db, sheet, user, body.paid_on)
+    return _sheet_out(db, sheet)
+
+
+@router.post("/payout-sheets/{sheet_id}/unpay", response_model=SheetOut)
+def unpay_sheet(sheet_id: int, user: CurrentUser, db: DbSession):
+    sheet = _sheet(db, user, sheet_id)
+    _payroll_call(db, payroll.unpay_sheet, db, sheet)
+    return _sheet_out(db, sheet)
+
+
+@router.get("/payout-sheets/{sheet_id}/registry.xlsx")
+def download_registry(sheet_id: int, user: CurrentUser, db: DbSession):
+    sheet = _sheet(db, user, sheet_id)
+    return Response(payroll.registry_xlsx(db, sheet), media_type=XLSX_TYPE,
+                    headers={"Content-Disposition": f'attachment; filename="registry_{sheet.number}.xlsx"'})
