@@ -390,6 +390,21 @@ with sync_playwright() as p:
     page.click("button.tab:has-text('ОПиУ')")
     expect(page.locator(".tabulator-row", has_text="Чистая прибыль")).to_be_visible()
     expect(page.locator(".tabulator-row", has_text="Валовая прибыль")).to_be_visible()
+    # Баланс: актив = пассив, деньги и уставный капитал; дебиторка раскрывается по контрагентам
+    page.click("button.tab:has-text('Баланс')")
+    expect(page.locator(".tabulator-row", has_text="Денежные средства")).to_contain_text("8 499,50")
+    assets = page.locator(".tabulator-row", has_text="Итого актив").inner_text().split()[-2:]
+    passive = page.locator(".tabulator-row", has_text="Итого пассив").inner_text().split()[-2:]
+    assert assets == passive, (assets, passive)
+    page.locator(".tabulator-row", has_text="Авансы, выданные поставщикам").locator(".drill").last.click()
+    d = page.locator("dialog[open]", has_text="Авансы, выданные поставщикам")
+    expect(d.locator(".tabulator-row", has_text="Поставщик Плюс")).to_contain_text("1 500,50")
+    d.locator(".tabulator-row", has_text="Поставщик Плюс").locator(".drill").click()
+    d2 = page.locator("dialog[open]", has_text="Расшифровка")
+    expect(d2).to_contain_text("Дебет: 1 500,50")
+    page.screenshot(path=f"{OUT}/22_balance.png", full_page=True)
+    d2.locator("button", has_text="Закрыть").click()
+    d.locator("button", has_text="Закрыть").click()
     page.click("button.tab:has-text('ОСВ')")
 
     # пользователь CEO

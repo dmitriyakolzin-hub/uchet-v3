@@ -10,7 +10,7 @@ function escape(text) {
 }
 
 /** Отчёт с колонками по месяцам (ДДС, ОПиУ): строки приходят с сервера готовыми. */
-export function columnsReport({ box, ctx, path, hint, fileName }) {
+export function columnsReport({ box, ctx, path, hint, fileName, onDetails, firstTitle = "Статья" }) {
   const tableBox = el("div");
   box.replaceChildren(el("p", { class: "muted" }, hint), tableBox);
   let data = null;
@@ -28,6 +28,10 @@ export function columnsReport({ box, ctx, path, hint, fileName }) {
     const r = cell.getRow().getData();
     const col = data?.columns.find((c) => c.key === cell.getField());
     if (!col || !r.drill || Number(cell.getValue() ?? 0) === 0) return;
+    if (r.drill.details) {
+      onDetails?.(r, col);
+      return;
+    }
     const money = data.money_account_ids;
     const extra = {
       period: r.drill.period, a: r.drill.a, opening: r.drill.opening,
@@ -44,7 +48,7 @@ export function columnsReport({ box, ctx, path, hint, fileName }) {
   async function load() {
     data = await api.get(`/api/organizations/${ctx.org().id}/reports/${path}?${ctx.filters.params()}`);
     table.setColumns([
-      { title: "Статья", field: "title", minWidth: 260, widthGrow: 3, headerSort: false, frozen: true,
+      { title: firstTitle, field: "title", minWidth: 260, widthGrow: 3, headerSort: false, frozen: true,
         formatter: (c) => {
           const r = c.getRow().getData();
           return `<span style="padding-left:${r.level * 18}px">${escape(r.title)}</span>`;
