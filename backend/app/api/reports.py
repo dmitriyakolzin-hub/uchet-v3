@@ -252,6 +252,37 @@ def get_balance_details(f: Filter, db: DbSession, line: str):
                              rows=[r.__dict__ for r in rows], total=sum((r.amount for r in rows), reports.ZERO))
 
 
+class DebtRowOut(BaseModel):
+    key: str
+    parent: str | None
+    title: str
+    account: str
+    receivable: Decimal
+    advance_paid: Decimal
+    payable: Decimal
+    advance_received: Decimal
+    opening: Decimal
+    saldo: Decimal
+    drill: dict
+
+
+class DebtsOut(BaseModel):
+    rows: list[DebtRowOut]
+    total: dict[str, Decimal]
+
+
+def _debts(db: Session, f: ReportFilter) -> DebtsOut:
+    rows, total = reports.debts(db, f)
+    return DebtsOut(rows=[DebtRowOut(key=r.key, parent=r.parent, title=r.title, account=r.account,
+                                     drill=r.drill, **r.values) for r in rows], total=total)
+
+
+@router.get("/debts", response_model=DebtsOut)
+def get_debts(f: Filter, db: DbSession):
+    """Дебиторская и кредиторская задолженность на конец периода по контрагентам и договорам."""
+    return _debts(db, f)
+
+
 @router.get("/dds", response_model=ColumnsReportOut)
 def get_dds(f: Filter, db: DbSession):
     return _dds(db, f)
@@ -325,3 +356,22 @@ def get_pl_xlsx(f: Filter, db: DbSession):
 def get_balance_xlsx(f: Filter, db: DbSession):
     content = _columns_xlsx("Управленческий баланс", _balance(db, f), _subtitle(db, f), "Показатель")
     return _xlsx(content, f"balance_{f.date_to:%Y-%m-%d}.xlsx")
+
+
+DEBT_XLSX = [("receivable", "Дебиторская задолженность"), ("advance_paid", "Авансы выданные"),
+             ("payable", "Кредиторская задолженность"), ("advance_received", "Авансы полученные"),
+             ("opening", "Сальдо на начало"), ("saldo", "Сальдо на конец")]
+
+
+@router.get("/debts.xlsx")
+def get_debts_xlsx(f: Filter, db: DbSession):
+    data = _debts(db, f)
+    rows = [(1 if r.parent else 0, [r.title, r.account] + [getattr(r, k) for k, _ in DEBT_XLSX], r.parent is None)
+            for r in data.rows]
+    content = xlsx.build(
+        "Дебиторская и кредиторская задолженность", _subtitle(db, f),
+        [xlsx.XlsxColumn("Контрагент / договор", 45), xlsx.XlsxColumn("Счёт", 9)]
+        + [xlsx.XlsxColumn(t, 17, True) for _, t in DEBT_XLSX],
+        rows, ["Итого", ""] + [data.total[k] for k, _ in DEBT_XLSX],
+    )
+    return _xlsx(content, f"debts_{f.date_to:%Y-%m-%d}.xlsx")

@@ -620,3 +620,88 @@ def balance_details(db: Session, f: ReportFilter, line: str) -> list[BalanceDeta
         for account, analytics, net in found
     ]
     return sorted(result, key=lambda d: (-d.amount, d.account, d.name))
+
+
+# --- Дебиторская и кредиторская задолженность ---
+
+DEBT_ROOTS = ("60", "62", "66", "67", "71", "76")
+DEBT_COLUMNS = ("receivable", "advance_paid", "payable", "advance_received")
+
+
+def _debt_column(code: str, net: Decimal) -> str:
+    top = code.split(".")[0]
+    if top == "62":
+        return "receivable" if net > 0 else "advance_received"
+    if top == "60":
+        return "advance_paid" if net > 0 else "payable"
+    return "receivable" if net > 0 else "payable"
+
+
+@dataclass
+class DebtRow:
+    key: str
+    parent: str | None
+    title: str
+    account: str
+    values: dict[str, Decimal]
+    drill: dict
+
+
+def debts(db: Session, f: ReportFilter) -> tuple[list[DebtRow], dict[str, Decimal]]:
+    """Задолженность на конец периода по контрагентам (подотчётным лицам) с раскрытием по счетам и договорам.
+    Сальдо каждой группы «счёт + контрагент + договор + сотрудник» — в одной из колонок по знаку."""
+    root_ids = list(db.scalars(select(Account.id).where(Account.code.in_(DEBT_ROOTS))))
+    accounts = {a.id: a for a in db.scalars(select(Account))}
+    lines = f.lines(date_to=f.date_to, account_ids=root_ids).subquery()
+    signed = case((lines.c.side == "debit", lines.c.amount_rub), else_=-lines.c.amount_rub)
+    keys = [lines.c.account_id, lines.c.counterparty, lines.c.contract, lines.c.employee]
+    groups = db.execute(
+        select(*keys, func.coalesce(func.sum(case((lines.c.op_date < f.date_from, signed))), 0),
+               func.coalesce(func.sum(signed), 0)).group_by(*keys)
+    ).all()
+
+    names = {k: analytic_names(db, k, [g[i] for g in groups]) for i, k in
+             ((1, "counterparty"), (2, "contract"), (3, "employee"))}
+
+    def empty() -> dict[str, Decimal]:
+        return {k: ZERO for k in (*DEBT_COLUMNS, "opening", "saldo")}
+
+    parents: dict[str, DebtRow] = {}
+    children: list[DebtRow] = []
+    for account_id, cp, contract, employee, opening, closing in groups:
+        opening, closing = Decimal(opening) + ZERO, Decimal(closing) + ZERO
+        if opening == 0 and closing == 0:
+            continue
+        if cp is not None:
+            pkey, title, a_parent = f"cp:{cp}", names["counterparty"].get(cp, "?"), [f"counterparty:{cp}"]
+        elif employee is not None:
+            pkey, title = f"emp:{employee}", f"{names['employee'].get(employee, '?')} (сотрудник)"
+            a_parent = [f"counterparty:none", f"employee:{employee}"]
+        else:
+            pkey, title, a_parent = "none", "Без контрагента", ["counterparty:none", "employee:none"]
+        parent = parents.setdefault(pkey, DebtRow(pkey, None, title, "", empty(),
+                                                  {"account_id": root_ids, "a": a_parent}))
+        code = accounts[account_id].code
+        values = empty()
+        if closing != 0:
+            values[_debt_column(code, closing)] = abs(closing)
+        values["opening"], values["saldo"] = opening, closing
+        detail = names["contract"].get(contract, "без договора") if contract is not None else "без договора"
+        if employee is not None and cp is not None:
+            detail += f", {names['employee'].get(employee, '?')}"
+        a = [f"{k}:{'none' if v is None else v}" for k, v in
+             (("counterparty", cp), ("contract", contract), ("employee", employee))]
+        children.append(DebtRow(f"{pkey}/{account_id}/{contract}/{employee}", pkey, detail, code, values,
+                                {"account_id": [account_id], "a": a}))
+        for k, v in values.items():
+            parent.values[k] += v
+
+    total = empty()
+    for p in parents.values():
+        for k, v in p.values.items():
+            total[k] += v
+    ordered = []
+    for p in sorted(parents.values(), key=lambda r: (r.key == "none", r.title.lower())):
+        ordered.append(p)
+        ordered += sorted((c for c in children if c.parent == p.key), key=lambda c: (c.account, c.title))
+    return ordered, total
