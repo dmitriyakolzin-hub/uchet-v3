@@ -7,7 +7,7 @@
 
 import datetime as dt
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
@@ -94,6 +94,33 @@ def commission(asset_id: int, body: CommissionIn, user: CurrentUser, db: DbSessi
 def uncommission(asset_id: int, user: CurrentUser, db: DbSession):
     asset = _asset(db, user, asset_id)
     _call(db, fa.uncommission, db, asset)
+    db.refresh(asset)
+    return asset
+
+
+class DisposeIn(BaseModel):
+    disposed_on: dt.date
+    kind: Literal["sale", "writeoff"]
+    counterparty_id: int | None = None
+    contract_id: int | None = None
+    price: Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=2)] = Decimal("0")
+    vat_rate: Literal[0, 5, 7, 10, 20, 22] = 0  # НДС в цене, %
+
+
+@router.post("/fixed-assets/{asset_id}/dispose", response_model=FixedAssetOut)
+def dispose(asset_id: int, body: DisposeIn, user: CurrentUser, db: DbSession):
+    """Продажа или списание основного средства."""
+    asset = _asset(db, user, asset_id)
+    _call(db, lambda: fa.dispose(db, asset, body.disposed_on, body.kind, user, counterparty_id=body.counterparty_id,
+                                 contract_id=body.contract_id, price=body.price, vat_rate=body.vat_rate))
+    db.refresh(asset)
+    return asset
+
+
+@router.post("/fixed-assets/{asset_id}/undispose", response_model=FixedAssetOut)
+def undispose(asset_id: int, user: CurrentUser, db: DbSession):
+    asset = _asset(db, user, asset_id)
+    _call(db, fa.undo_disposal, db, asset)
     db.refresh(asset)
     return asset
 

@@ -31,6 +31,8 @@ class FixedAsset(OrgScoped, Base):
     __table_args__ = (
         CheckConstraint("cost >= 0", name="cost"),
         CheckConstraint("useful_life_months BETWEEN 1 AND 1200", name="useful_life"),
+        CheckConstraint("disposal_kind IS NULL OR disposal_kind IN ('sale', 'writeoff')", name="disposal_kind"),
+        CheckConstraint("(disposed_on IS NULL) = (disposal_kind IS NULL)", name="disposal_fields"),
         Index("uq_fixed_assets_organization_inventory", "organization_id", "inventory_number", unique=True,
               postgresql_where=text("inventory_number <> ''")),
     )
@@ -46,6 +48,10 @@ class FixedAsset(OrgScoped, Base):
     commissioned_on: Mapped[date | None] = mapped_column(Date)
     # операция Дт 01 — Кт 08; None у введённого до даты начальных остатков (остатки — вводом остатков)
     commission_operation_id: Mapped[int | None] = mapped_column(ForeignKey("operations.id", ondelete="SET NULL"))
+    # выбытие: дата, вид (sale — продажа, writeoff — списание) и операция
+    disposed_on: Mapped[date | None] = mapped_column(Date)
+    disposal_kind: Mapped[str | None] = mapped_column(String(10))
+    disposal_operation_id: Mapped[int | None] = mapped_column(ForeignKey("operations.id", ondelete="SET NULL"))
 
 
 class DepreciationRun(Base):

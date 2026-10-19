@@ -395,4 +395,7 @@ class FixedAssetOut(_Out):
     pl_item_id: int | None
     commissioned_on: dt.date | None
     commission_operation_id: int | None
+    disposed_on: dt.date | None = None
+    disposal_kind: str | None = None
+    disposal_operation_id: int | None = None
     is_active: bool
