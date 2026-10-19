@@ -1,5 +1,6 @@
 // «Отчёты»: общие фильтры и вкладки отчётов. Каждый отчёт раскрывается до проводок.
 import { api } from "../api.js";
+import { ddsReport } from "../reports/dds.js";
 import { osvReport } from "../reports/osv.js";
 import { reportFilters } from "../reports/common.js";
 import { el, toast } from "../ui.js";
@@ -17,6 +18,7 @@ function remember(key, value) {
 
 const REPORTS = {
   osv: { title: "ОСВ", make: osvReport },
+  dds: { title: "ДДС", make: ddsReport },
 };
 
 export async function renderReports(view) {

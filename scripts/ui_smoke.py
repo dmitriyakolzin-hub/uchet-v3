@@ -375,6 +375,19 @@ with sync_playwright() as p:
         page.click("button:has-text('Скачать в Excel')")
     assert dl.value.suggested_filename.startswith("osv_")
 
+    # ДДС: остатки и статья, расшифровка ячейки
+    page.click("button.tab:has-text('ДДС')")
+    expect(page.locator(".tabulator-row", has_text="Остаток денег на начало")).to_contain_text("10 000,00")
+    expect(page.locator(".tabulator-row", has_text="Остаток денег на конец")).to_contain_text("8 499,50")
+    supplier_row = page.locator(".tabulator-row", has_text="Оплата поставщикам")
+    expect(supplier_row).to_contain_text("-1 500,50")
+    supplier_row.locator(".drill").first.click()
+    d = page.locator("dialog[open]", has_text="Расшифровка")
+    expect(d).to_contain_text("кредит: 1 500,50")
+    page.screenshot(path=f"{OUT}/19_dds.png", full_page=True)
+    d.locator("button", has_text="Закрыть").click()
+    page.click("button.tab:has-text('ОСВ')")
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")

@@ -163,11 +163,51 @@ def get_lines(
     account_id: Annotated[list[int] | None, Query()] = None,
     side: Literal["debit", "credit"] | None = None,
     a: Annotated[list[str] | None, Query(description="аналитика: kind:id или kind:none")] = None,
+    exclude_corr_account_id: Annotated[list[int] | None, Query()] = None,
+    opening: bool | None = None,
 ):
     """Расшифровка: проводки, из которых сложилась цифра отчёта (те же условия отбора)."""
-    result = reports.drill(db, f, period, account_ids=account_id, side=side, analytics=_analytics_param(a or []))
+    result = reports.drill(db, f, period, account_ids=account_id, side=side, analytics=_analytics_param(a or []),
+                           exclude_corr_account_ids=exclude_corr_account_id, opening=opening)
     return DrillOut(rows=result.rows, count=result.count, limit=reports.DRILL_LIMIT,
                     debit=result.debit, credit=result.credit)
+
+
+class ColumnOut(BaseModel):
+    key: str
+    title: str
+    date_from: dt.date
+    date_to: dt.date
+
+
+class ReportRowOut(BaseModel):
+    key: str
+    title: str
+    level: int
+    kind: str
+    values: dict[str, Decimal]
+    drill: dict | None
+
+
+class ColumnsReportOut(BaseModel):
+    """Отчёт с колонками по месяцам (ДДС, ОПиУ)."""
+
+    columns: list[ColumnOut]
+    money_account_ids: list[int] = []
+    rows: list[ReportRowOut]
+
+
+def _dds(db: Session, f: ReportFilter) -> ColumnsReportOut:
+    result = reports.dds(db, f)
+    return ColumnsReportOut(
+        columns=[c.__dict__ for c in result.columns], money_account_ids=result.money_account_ids,
+        rows=[r.__dict__ for r in result.rows],
+    )
+
+
+@router.get("/dds", response_model=ColumnsReportOut)
+def get_dds(f: Filter, db: DbSession):
+    return _dds(db, f)
 
 
 # --- Excel ---
@@ -213,3 +253,16 @@ def get_osv_xlsx(f: Filter, db: DbSession):
         [xlsx.XlsxColumn("Счёт", 10), xlsx.XlsxColumn("Наименование", 40)] + BALANCE_COLUMNS, rows, total,
     )
     return _xlsx(content, f"osv_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
+
+
+def _columns_xlsx(title: str, data: ColumnsReportOut, subtitle: str) -> bytes:
+    rows = [(r.level, [r.title] + [r.values.get(c.key) if r.values else None for c in data.columns],
+             r.kind in ("balance", "section", "total", "title")) for r in data.rows]
+    return xlsx.build(title, subtitle, [xlsx.XlsxColumn("Статья", 45)]
+                      + [xlsx.XlsxColumn(c.title, 16, True) for c in data.columns], rows)
+
+
+@router.get("/dds.xlsx")
+def get_dds_xlsx(f: Filter, db: DbSession):
+    content = _columns_xlsx("Движение денежных средств", _dds(db, f), _subtitle(db, f))
+    return _xlsx(content, f"dds_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
