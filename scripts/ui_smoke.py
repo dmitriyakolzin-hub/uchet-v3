@@ -319,6 +319,23 @@ with sync_playwright() as p:
     page.screenshot(path=f"{OUT}/14_money.png", full_page=True)
     d.locator("button", has_text="Отмена").click()
 
+    # касса ЦФО: добавить (видна без операций), кнопки кассы, убрать пустую
+    page.click("button:has-text('Добавить кассу')")
+    d = page.locator("dialog[open]")
+    d.locator("[name=cfo_id]").select_option(label="АВМВ / Торговля / Филиал Юг")
+    d.locator("button[type=submit]").click()
+    cash = page.locator(".tabulator-row", has_text="Касса — Филиал Юг")
+    expect(cash).to_be_visible()
+    cash.locator(".tabulator-cell").first.click()
+    expect(page.locator("button", has_text="Сдать в банк")).to_be_visible()
+    page.click("button:has-text('Выдать под отчёт')")
+    d = page.locator("dialog[open]")
+    expect(d.locator("[name=debit_account] option:checked")).to_contain_text("71 ")
+    expect(d.locator("[aria-label='ЦФО (кредит)'] option:checked")).to_contain_text("Филиал Юг")
+    d.locator("button", has_text="Отмена").click()
+    page.click("button:has-text('Убрать кассу')")
+    expect(page.locator(".tabulator-row", has_text="Касса — Филиал Юг")).to_have_count(0)
+
     # загрузка выписки: два платежа, повторная загрузка не создаёт дублей
     stmt = "\n".join([
         "1CClientBankExchange", "ВерсияФормата=1.03", "ДатаНачала=01.10.2026", "ДатаКонца=31.10.2026",

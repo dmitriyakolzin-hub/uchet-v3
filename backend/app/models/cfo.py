@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from sqlalchemy import CheckConstraint, Date, ForeignKey, Index, SmallInteger, String, text
+from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, Index, SmallInteger, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -40,6 +40,8 @@ class Cfo(OrgScoped, Base):
     legal_entity_id: Mapped[int | None] = mapped_column(
         ForeignKey("legal_entities.id", ondelete="RESTRICT")
     )
+    # в ЦФО есть касса (счёт 50): строка кассы на «Деньгах» видна и без операций
+    has_cash: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class Employee(OrgScoped, Base):

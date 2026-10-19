@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from app.api.access import branch_ids, cfo_scope, forbid_scoped, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import Operation
+from app.models import Cfo, Operation
 from app.services.bank_import import import_statement
 from app.services.bank_statement import StatementError
 from app.services.journal import JournalError
@@ -88,6 +88,36 @@ def get_money(organization_id: int, date_from: dt.date, date_to: dt.date, user: 
         rows = [r for r in rows if r["kind"] == "cash" and r["cfo_id"] in branch]
     total = {k: sum((r[k] for r in rows), Decimal("0.00")) for k in ("opening", "inflow", "outflow", "closing")}
     return MoneyOverview(date_from=date_from, date_to=date_to, rows=rows, **total)
+
+
+class CashDeskIn(BaseModel):
+    cfo_id: int
+
+
+def _cash_cfo(db, user, organization_id: int, cfo_id: int) -> Cfo:
+    get_organization_for(db, user, organization_id, Perm.EDIT_REFERENCE)
+    cfo = db.get(Cfo, cfo_id)
+    if cfo is None or cfo.organization_id != organization_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="ЦФО не найден в этой организации")
+    return cfo
+
+
+@router.post("/organizations/{organization_id}/cash-desks", status_code=204)
+def add_cash_desk(organization_id: int, body: CashDeskIn, user: CurrentUser, db: DbSession) -> None:
+    """Касса ЦФО: строка на «Деньгах» видна и без операций."""
+    cfo = _cash_cfo(db, user, organization_id, body.cfo_id)
+    if not cfo.is_active:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="ЦФО в архиве")
+    cfo.has_cash = True
+    db.commit()
+
+
+@router.delete("/organizations/{organization_id}/cash-desks/{cfo_id}", status_code=204)
+def remove_cash_desk(organization_id: int, cfo_id: int, user: CurrentUser, db: DbSession) -> None:
+    """Убрать пустую кассу из списка (касса с движением видна всегда)."""
+    cfo = _cash_cfo(db, user, organization_id, cfo_id)
+    cfo.has_cash = False
+    db.commit()
 
 
 @router.get("/organizations/{organization_id}/money/movements", response_model=MovementsOut)

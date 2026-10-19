@@ -2,7 +2,7 @@
 import { api } from "../api.js";
 import { date, money, monthBounds } from "../format.js";
 import { openOperation } from "../opform.js";
-import { el, makeTable, toast } from "../ui.js";
+import { el, makeTable, openForm, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
@@ -118,13 +118,70 @@ export async function renderMoney(view) {
       el("button", { type: "button", disabled: !selected, onclick: () => openPreset("in") }, "Поступление"),
       el("button", { type: "button", disabled: !selected, onclick: () => openPreset("out") }, "Списание"),
       el("button", { type: "button", class: "secondary", disabled: !selected || selected.kind !== "bank", onclick: () => openPreset("transfer") }, "Перевод между своими счетами"),
+      ...(selected?.kind === "cash" ? [
+        el("button", { type: "button", class: "secondary", onclick: () => openPreset("deposit") }, "Сдать в банк"),
+        el("button", { type: "button", class: "secondary", onclick: () => openPreset("withdraw") }, "Снять с расчётного счёта"),
+        el("button", { type: "button", class: "secondary", onclick: () => openPreset("advance") }, "Выдать под отчёт"),
+      ] : []),
       el("span", { class: "muted" }, hint),
+    ] : []),
+    ...(org.permissions.includes("edit_reference") && !org.restricted ? [
+      el("button", { type: "button", class: "secondary push-right", onclick: () => addCashDesk() }, "Добавить кассу"),
+      ...(selected?.kind === "cash" && ![selected.opening, selected.inflow, selected.outflow, selected.closing].some(Number)
+        ? [el("button", { type: "button", class: "secondary danger", onclick: () => removeCashDesk() }, "Убрать кассу")] : []),
     ] : []));
+  }
+
+  function addCashDesk() {
+    const present = new Set(accountsTable.getData().filter((r) => r.kind === "cash").map((r) => r.cfo_id));
+    const options = ref.cfos.filter((c) => !present.has(c.id))
+      .map((c) => [String(c.id), ref.cfoLabel.get(c.id)]).sort((a, b) => a[1].localeCompare(b[1]));
+    if (!options.length) {
+      toast("Касса есть у всех ЦФО", "error");
+      return;
+    }
+    openForm({
+      title: "Добавить кассу",
+      fields: [{ name: "cfo_id", label: "ЦФО (магазин, офис)", type: "select", options,
+        hint: "Касса — счёт 50 с этим ЦФО; остаток на начало вносится на вкладке «Начальные остатки»" }],
+      submitText: "Добавить",
+      onSubmit: async (v) => {
+        await api.post(`/api/organizations/${org.id}/cash-desks`, { cfo_id: Number(v.cfo_id) });
+        toast("Касса добавлена");
+        selected = { key: `c${v.cfo_id}` };
+        await reload();
+      },
+    });
+  }
+
+  async function removeCashDesk() {
+    try {
+      await api.delete(`/api/organizations/${org.id}/cash-desks/${selected.cfo_id}`);
+      selected = null;
+      await reload();
+    } catch (err) {
+      toast(err.message, "error");
+    }
   }
 
   function openPreset(kind) {
     const side = moneySide(selected);
     let preset;
+    const transfer = articleId("Перевод между своими счетами");
+    // касса ↔ расчётный счёт — перевод между своими счетами (в ДДС гасится); счёт выбирается в форме
+    if (kind === "deposit") {
+      preset = { article_id: transfer, posting: { debit_account_id: accountId("51"), debit: { cash_flow_item: transfer },
+        credit_account_id: side.account, credit: { ...side.analytics, cash_flow_item: transfer } } };
+    }
+    if (kind === "withdraw") {
+      preset = { article_id: transfer, posting: { debit_account_id: side.account, debit: { ...side.analytics, cash_flow_item: transfer },
+        credit_account_id: accountId("51"), credit: { cash_flow_item: transfer } } };
+    }
+    if (kind === "advance") {
+      const art = articleId("Выдача под отчёт");
+      preset = { article_id: art, posting: { debit_account_id: accountId("71"),
+        credit_account_id: side.account, credit: { ...side.analytics, cash_flow_item: art } } };
+    }
     if (kind === "in") preset = { posting: { debit_account_id: side.account, debit: side.analytics } };
     if (kind === "out") preset = { posting: { credit_account_id: side.account, credit: side.analytics } };
     if (kind === "transfer") {
