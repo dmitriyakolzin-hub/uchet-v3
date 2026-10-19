@@ -200,8 +200,21 @@ with sync_playwright() as p:
     d = dialog_fill(page, {"full_name": "Иванов Иван", "personnel_number": "0001", "position": "Продавец",
                            "hired_on": "2026-01-10"})
     d.locator("[name=cfo_id]").select_option(label="АВМВ / Торговля / Филиал Юг")
+    d.locator("[name=pl_item_id]").select_option(label="Оплата труда — коммерческий персонал")
     d.locator("button[type=submit]").click()
-    expect(page.locator(".tabulator-row", has_text="Иванов Иван")).to_contain_text("АВМВ / Торговля / Филиал Юг")
+    emp = page.locator(".tabulator-row", has_text="Иванов Иван")
+    expect(emp).to_contain_text("АВМВ / Торговля / Филиал Юг")
+    expect(emp).to_contain_text("Оплата труда — коммерческий персонал")
+    # оклады: история с датами
+    emp.locator(".tabulator-cell[tabulator-field=_salary]").click()
+    sal = page.locator("dialog[open]", has_text="Оклады: Иванов Иван")
+    sal.locator("button", has_text="Новый оклад").click()
+    d = page.locator("dialog[open]", has_text="Действует с")
+    d.locator("[name=valid_from]").fill("2026-01-10")
+    d.locator("[name=amount]").fill("85 000")
+    d.locator("button[type=submit]").click()
+    expect(sal.locator(".tabulator-row")).to_contain_text("85 000,00")
+    sal.locator("button", has_text="Закрыть").click()
 
     # журнал: операция по статье с шаблоном, проведение, неполный черновик, массовое проведение
     page.click("#nav a[data-page=journal]")

@@ -1,7 +1,8 @@
 // «Справочники»: справочники выбранной организации, по вкладкам.
 import { api } from "../api.js";
 import { lookup, optionsOf, referenceTab } from "../reftab.js";
-import { el } from "../ui.js";
+import { money } from "../format.js";
+import { el, makeTable, openForm, toast } from "../ui.js";
 
 const ORG_KEY = "uchet3_org";
 const TAB_KEY = "uchet3_ref_tab";
@@ -22,6 +23,58 @@ const CONTRACT_KINDS = [
   ["customer", "С покупателем"],
   ["other", "Прочий"],
 ];
+// История окладов сотрудника: список и добавление нового оклада с даты
+async function openSalaries(employee) {
+  const url = `/api/employees/${employee.id}/salaries`;
+  const tableBox = el("div");
+  const addButton = el("button", { type: "button", onclick: () => add() }, "Новый оклад");
+  const dialog = el("dialog", { class: "dialog wide" },
+    el("div", { class: "page-head" }, el("h2", {}, `Оклады: ${employee.full_name}`), addButton),
+    el("p", { class: "muted" }, "На дату действует последний оклад с датой начала не позже этой даты."),
+    tableBox,
+    el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => dialog.close() }, "Закрыть")));
+  document.body.append(dialog);
+  dialog.addEventListener("close", () => dialog.remove());
+  dialog.showModal();
+  const table = makeTable(tableBox, {
+    columns: [
+      { title: "С даты", field: "valid_from", width: 130, formatter: (c) => c.getValue().split("-").reverse().join(".") },
+      { title: "Оклад в месяц", field: "amount", width: 160, hozAlign: "right", formatter: (c) => money(c.getValue()) },
+      { title: "Примечание", field: "note", widthGrow: 2 },
+      { title: "", field: "_delete", width: 48, hozAlign: "center", headerSort: false, formatter: () => "✕",
+        cellClick: async (_e, cell) => {
+          const r = cell.getRow().getData();
+          if (!confirm(`Удалить оклад с ${r.valid_from.split("-").reverse().join(".")}?`)) return;
+          try { await api.delete(`/api/employee-salaries/${r.id}`); await load(); } catch (err) { toast(err.message, "error"); }
+        } },
+    ],
+  });
+  async function load() {
+    try {
+      await table.setData(await api.get(url));
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+  function add() {
+    openForm({
+      title: "Новый оклад",
+      fields: [
+        { name: "valid_from", label: "Действует с", type: "date", required: true },
+        { name: "amount", label: "Оклад в месяц, ₽", required: true, placeholder: "например, 85 000" },
+        { name: "note", label: "Примечание", placeholder: "например, повышение" },
+      ],
+      onSubmit: async (values) => {
+        await api.post(url, { ...values, amount: values.amount.replace(/[\s ]/g, "").replace(",", ".") });
+        toast("Оклад сохранён");
+        await load();
+      },
+    });
+  }
+  await table.ready;
+  await load();
+}
+
 const CFO_LEVELS = { 1: "Компания", 2: "Направление", 3: "Филиал", 4: "Магазин", 5: "Подразделение учёта" };
 
 // «АВМВ / Торговля / Филиал Юг» — полный путь ЦФО по названиям
@@ -194,7 +247,7 @@ const TABS = [
     key: "employees",
     title: "Сотрудники",
     addText: "Добавить сотрудника",
-    columns: (d) => {
+    columns: (d, state) => {
       const labels = cfoPathLabels(d.cfos);
       const date = (c) => (c.getValue() ? c.getValue().split("-").reverse().join(".") : "");
       return [
@@ -204,6 +257,10 @@ const TABS = [
         { title: "ЦФО", field: "cfo_id", widthGrow: 3, formatter: (c) => labels.get(c.getValue()) ?? "", tooltip: (_e, c) => labels.get(c.getValue()) ?? "" },
         { title: "Принят", field: "hired_on", width: 110, formatter: date },
         { title: "Уволен", field: "fired_on", width: 110, formatter: date },
+        { title: "Юрлицо", field: "legal_entity_id", width: 110, formatter: (c) => d.entities.find((e) => e.id === c.getValue())?.short_name ?? "" },
+        { title: "Статья затрат", field: "pl_item_id", widthGrow: 2, formatter: (c) => d.articles.find((a) => a.id === c.getValue())?.name ?? "" },
+        ...(state.canEdit ? [{ title: "", field: "_salary", width: 90, hozAlign: "center", headerSort: false,
+          formatter: () => "оклады", cssClass: "link-like", cellClick: (_e, c) => openSalaries(c.getRow().getData()) }] : []),
       ];
     },
     fields: (d) => {
@@ -217,6 +274,10 @@ const TABS = [
           options: [["", "— не указан —"], ...d.cfos.map((c) => [String(c.id), labels.get(c.id) + (c.is_active ? "" : " (архив)")])] },
         { name: "hired_on", label: "Дата приёма", type: "date", nullable: true },
         { name: "fired_on", label: "Дата увольнения", type: "date", nullable: true },
+        { name: "legal_entity_id", label: "Работодатель (юрлицо)", type: "select", numeric: true,
+          options: optionsOf(d.entities, (e) => e.short_name, { empty: "— не указано —" }) },
+        { name: "pl_item_id", label: "Статья затрат на оплату труда (ОПиУ)", type: "select", numeric: true,
+          options: [["", "— не указана —"], ...d.articles.filter((a) => a.is_pl && a.is_active).map((a) => [String(a.id), a.name])] },
       ];
     },
   },
@@ -295,15 +356,16 @@ export async function renderReferences(view) {
     const tab = TABS.find((t) => t.key === tabKey);
     // заранее загружаем только то, что нужно этой вкладке
     const need = (keys, load) => (keys.includes(tab.key) ? load() : []);
-    const [entities, banks, currencies, counterparties, cfos, units] = await Promise.all([
+    const [entities, banks, currencies, counterparties, cfos, units, articles] = await Promise.all([
       api.get(`/api/organizations/${org.id}/legal-entities`),
       need(["bank-accounts", "salary-projects"], () => api.get("/api/banks")),
       need(["bank-accounts", "contracts"], () => api.get("/api/currencies")),
       need(["contracts"], () => api.get(`/api/organizations/${org.id}/counterparties`)),
       need(["cfos", "employees", "warehouses"], () => api.get(`/api/organizations/${org.id}/cfos`)),
       need(["nomenclature"], () => api.get("/api/units")),
+      need(["employees"], () => api.get("/api/articles")),
     ]);
-    const d = { entities, banks, currencies, counterparties, cfos, units, rub: currencies.find((c) => c.is_base) };
+    const d = { entities, banks, currencies, counterparties, cfos, units, articles, rub: currencies.find((c) => c.is_base) };
     const state = { canEdit: org.permissions.includes("edit_reference"), ref: null };
     state.ref = await referenceTab(tabBox, {
       title: tab.title,

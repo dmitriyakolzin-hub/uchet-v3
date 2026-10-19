@@ -6,6 +6,7 @@ from app.models.currency import Currency, ExchangeRate
 from app.models.journal import Operation, OperationEvent, Posting
 from app.models.membership import Membership
 from app.models.organization import LegalEntity, Organization
+from app.models.payroll import EmployeeSalary
 from app.models.reference import (
     Bank,
     BankAccount,
@@ -31,6 +32,7 @@ __all__ = [
     "Counterparty",
     "Currency",
     "Employee",
+    "EmployeeSalary",
     "ExchangeRate",
     "LegalEntity",
     "Membership",
