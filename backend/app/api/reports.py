@@ -2,6 +2,7 @@
 к организации). Расшифровка любой цифры — /reports/lines с теми же фильтрами."""
 
 import datetime as dt
+from dataclasses import replace
 from decimal import Decimal
 from typing import Annotated, Literal
 
@@ -13,7 +14,7 @@ from app.api.access import branch_ids, cfo_scope, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.analytics import ANALYTIC_TITLES, AnalyticKind
 from app.core.permissions import Perm
-from app.models import Account, Cfo, LegalEntity
+from app.models import Account, Budget, BudgetVersion, Cfo, LegalEntity
 from app.models.journal import ANALYTIC_COLUMNS
 from app.services import report_xlsx as xlsx
 from app.services import reports
@@ -172,8 +173,14 @@ def get_lines(
     a: Annotated[list[str] | None, Query(description="аналитика: kind:id или kind:none")] = None,
     exclude_corr_account_id: Annotated[list[int] | None, Query()] = None,
     opening: bool | None = None,
+    plan_version_id: int | None = None,
 ):
-    """Расшифровка: проводки, из которых сложилась цифра отчёта (те же условия отбора)."""
+    """Расшифровка: проводки, из которых сложилась цифра отчёта (те же условия отбора).
+    plan_version_id — плановые операции этой версии бюджета вместо факта."""
+    if plan_version_id is not None:
+        _check_version(db, f.organization_id, plan_version_id)
+        months = [c.key for c in reports.month_columns(f.date_from, f.date_to)[:-1]]
+        f = replace(f, plan_versions=tuple((m, plan_version_id) for m in months))
     result = reports.drill(db, f, period, account_ids=account_id, side=side, analytics=_analytics_param(a or []),
                            exclude_corr_account_ids=exclude_corr_account_id, opening=opening)
     return DrillOut(rows=result.rows, count=result.count, limit=reports.DRILL_LIMIT,
@@ -290,6 +297,52 @@ def get_debts(f: Filter, db: DbSession):
     return _debts(db, f)
 
 
+def _check_version(db: Session, organization_id: int, version_id: int) -> BudgetVersion:
+    version = db.get(BudgetVersion, version_id)
+    if version is None or db.get(Budget, version.budget_id).organization_id != organization_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Версия бюджета не найдена")
+    return version
+
+
+class PlanFactColumn(BaseModel):
+    key: str
+    title: str
+    date_from: dt.date
+    date_to: dt.date
+    version_id: int | None
+    version_title: str | None
+
+
+class PlanFactOut(BaseModel):
+    kind: str
+    columns: list[PlanFactColumn]
+    money_account_ids: list[int]
+    rows: list[dict]
+
+
+def _plan_fact(db: Session, f: ReportFilter, kind: str, version_id: int | None) -> PlanFactOut:
+    if version_id is not None:
+        _check_version(db, f.organization_id, version_id)
+    result = reports.plan_fact(db, f, kind, version_id)
+    titles = {}
+    for v_id in set(result.plan_versions.values()):
+        version = db.get(BudgetVersion, v_id)
+        titles[v_id] = f"{db.get(Budget, version.budget_id).title}: {version.name}"
+    columns = []
+    for c in result.columns:
+        v_id = result.plan_versions.get(c.key)
+        columns.append(PlanFactColumn(key=c.key, title=c.title, date_from=c.date_from, date_to=c.date_to,
+                                      version_id=v_id, version_title=titles.get(v_id)))
+    return PlanFactOut(kind=kind, columns=columns, money_account_ids=result.money_account_ids, rows=result.rows)
+
+
+@router.get("/plan-fact", response_model=PlanFactOut)
+def get_plan_fact(f: Filter, db: DbSession, kind: Literal["pl", "cf"] = "pl", version_id: int | None = None):
+    """План/факт по ОПиУ или ДДС. Без version_id — по каждому месяцу актуальный утверждённый бюджет
+    (месяц, иначе квартал, иначе год)."""
+    return _plan_fact(db, f, kind, version_id)
+
+
 @router.get("/dds", response_model=ColumnsReportOut)
 def get_dds(f: Filter, db: DbSession):
     return _dds(db, f)
@@ -382,3 +435,25 @@ def get_debts_xlsx(f: Filter, db: DbSession):
         rows, ["Итого", ""] + [data.total[k] for k, _ in DEBT_XLSX],
     )
     return _xlsx(content, f"debts_{f.date_to:%Y-%m-%d}.xlsx")
+
+
+@router.get("/plan-fact.xlsx")
+def get_plan_fact_xlsx(f: Filter, db: DbSession, kind: Literal["pl", "cf"] = "pl", version_id: int | None = None):
+    data = _plan_fact(db, f, kind, version_id)
+    columns = [xlsx.XlsxColumn("Статья", 45)]
+    for c in data.columns:
+        columns += [xlsx.XlsxColumn(f"{c.title}: план", 15, True), xlsx.XlsxColumn(f"{c.title}: факт", 15, True),
+                    xlsx.XlsxColumn(f"{c.title}: отклонение", 15, True)]
+    columns.append(xlsx.XlsxColumn("Итого: % выполнения", 12))
+    rows = []
+    for r in data.rows:
+        values = [r["title"]]
+        for c in data.columns:
+            v = r["values"].get(c.key) or {}
+            values += [v.get("plan"), v.get("fact"), v.get("dev")]
+        total = r["values"].get("total") or {}
+        values.append(total.get("pct"))
+        rows.append((r["level"], values, r["kind"] in ("section", "total", "title")))
+    title = "План/факт: " + ("ОПиУ" if kind == "pl" else "ДДС")
+    content = xlsx.build(title, _subtitle(db, f), columns, rows)
+    return _xlsx(content, f"plan_fact_{kind}_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")

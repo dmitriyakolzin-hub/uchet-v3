@@ -22,7 +22,7 @@ def build(title: str, subtitle: str, columns: list[XlsxColumn], rows: list[tuple
     """rows — (уровень вложенности, значения[, жирный]); уровень даёт отступ в первой колонке."""
     wb = Workbook()
     ws = wb.active
-    ws.title = title[:31]
+    ws.title = "".join("-" if ch in "[]:*?/\\" else ch for ch in title)[:31]  # запрещённые в имени листа
     ws.append([title])
     ws["A1"].font = Font(bold=True, size=14)
     ws.append([subtitle])
