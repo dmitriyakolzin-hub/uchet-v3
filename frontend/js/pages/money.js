@@ -158,6 +158,7 @@ export async function renderMoney(view) {
       r.skipped_duplicates ? `Пропущено — уже были загружены раньше: ${r.skipped_duplicates}` : null,
       r.skipped_before_opening ? `Пропущено — не позже даты начальных остатков: ${r.skipped_before_opening}` : null,
       r.new_counterparties.length ? `Новые контрагенты (${r.new_counterparties.length}): ${r.new_counterparties.join(", ")}` : null,
+      r.confirmed_sheets?.length ? `Подтверждена оплата ведомостей № ${r.confirmed_sheets.join(", ")} (проведено)` : null,
     ].filter(Boolean);
     const checks = r.accounts.map((a) => {
       const diff = (x, y) => (x === y ? "✓" : "≠");

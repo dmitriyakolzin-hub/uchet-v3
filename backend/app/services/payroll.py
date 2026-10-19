@@ -15,10 +15,14 @@ from app.core.money import round_money
 from app.models import (
     Account,
     Article,
+    BankAccount,
+    Currency,
     Employee,
     EmployeeSalary,
     LegalEntity,
     Operation,
+    PayoutLine,
+    PayoutSheet,
     PayrollLine,
     PayrollRun,
     User,
@@ -262,3 +266,140 @@ def import_lines(db: Session, run: PayrollRun, raw: bytes) -> tuple[int, int, li
     db.flush()
     recalc(db, run)
     return len(rows), changed, errors
+
+
+# --- Ведомости на выплату: аванс и зарплата, оплата через банк, подтверждение выпиской ---
+
+SALARY_PAYMENT_ARTICLE = "Выплата заработной платы"
+PAYMENT_WORDS = ("заработн", "зарплат", "аванс", "реестр", "оплата труда")
+
+
+def sheet_total(db: Session, sheet: PayoutSheet) -> Decimal:
+    return db.scalar(select(func.coalesce(func.sum(PayoutLine.amount), 0)).where(PayoutLine.sheet_id == sheet.id)) + ZERO
+
+
+def _advances_paid(db: Session, sheet: PayoutSheet, employee_id: int) -> Decimal:
+    """Авансы сотруднику за месяц по ведомостям, отправленным в банк или оплаченным."""
+    return db.scalar(
+        select(func.coalesce(func.sum(PayoutLine.amount), 0)).join(PayoutSheet, PayoutSheet.id == PayoutLine.sheet_id)
+        .where(PayoutSheet.legal_entity_id == sheet.legal_entity_id, PayoutSheet.year == sheet.year,
+               PayoutSheet.month == sheet.month, PayoutSheet.kind == "advance",
+               PayoutSheet.status.in_(("sent", "paid")), PayoutLine.employee_id == employee_id)
+    ) + ZERO
+
+
+def fill_sheet(db: Session, sheet: PayoutSheet, advance_percent: Decimal = Decimal(50)) -> int:
+    """Аванс — доля оклада сотрудников, работающих в месяце; зарплата — «к выплате» из проведённого
+    начисления минус авансы месяца."""
+    db.query(PayoutLine).filter(PayoutLine.sheet_id == sheet.id).delete()
+    amounts: dict[int, Decimal] = {}
+    if sheet.kind == "advance":
+        start, end = month_bounds(sheet.year, sheet.month)
+        employees = db.scalars(select(Employee).where(
+            Employee.organization_id == sheet.organization_id, Employee.legal_entity_id == sheet.legal_entity_id,
+            Employee.is_active, (Employee.hired_on.is_(None)) | (Employee.hired_on <= end),
+            (Employee.fired_on.is_(None)) | (Employee.fired_on >= start)))
+        for employee in employees:
+            salary = salary_on(db, employee.id, sheet.pay_date) or ZERO
+            amounts[employee.id] = round_money(salary * advance_percent / 100)
+    else:
+        run = db.scalar(select(PayrollRun).where(
+            PayrollRun.legal_entity_id == sheet.legal_entity_id, PayrollRun.year == sheet.year,
+            PayrollRun.month == sheet.month, PayrollRun.status == "posted"))
+        if run is None:
+            raise PayrollError("Сначала проведите начисление зарплаты за этот месяц")
+        for line in db.scalars(select(PayrollLine).where(PayrollLine.run_id == run.id)):
+            amounts[line.employee_id] = line.net - _advances_paid(db, sheet, line.employee_id)
+    count = 0
+    for employee_id, amount in amounts.items():
+        if amount > 0:
+            db.add(PayoutLine(sheet_id=sheet.id, employee_id=employee_id, amount=amount))
+            count += 1
+    db.flush()
+    return count
+
+
+def pay_sheet(db: Session, sheet: PayoutSheet, user: User, paid_on: dt.date, *, import_key: str | None = None,
+              confirmed: bool = False) -> Operation:
+    """Оплата: проведённая операция Дт 70 (сотрудник) — Кт 51 (расчётный счёт, статья выплаты)."""
+    if sheet.status != "sent":
+        raise PayrollError("Оплатить можно ведомость, отправленную в банк")
+    article = db.scalar(select(Article).where(Article.name == SALARY_PAYMENT_ARTICLE))
+    if article is None:
+        raise PayrollError(f"Нет статьи «{SALARY_PAYMENT_ARTICLE}» — восстановите её в справочнике статей")
+    bank = db.get(BankAccount, sheet.bank_account_id)
+    money_code = "51" if db.get(Currency, bank.currency_id).code == "RUB" else "52"
+    accounts = {a.code: a.id for a in db.scalars(select(Account).where(Account.code.in_(("70", money_code))))}
+    postings = [
+        _posting(accounts["70"], accounts[money_code], line.amount, AnalyticsIn(employee=line.employee_id),
+                 AnalyticsIn(bank_account=bank.id, cash_flow_item=article.id))
+        for line in db.scalars(select(PayoutLine).where(PayoutLine.sheet_id == sheet.id))
+    ]
+    kind = "аванса" if sheet.kind == "advance" else "зарплаты"
+    body = OperationIn(legal_entity_id=sheet.legal_entity_id, op_date=paid_on, article_id=article.id,
+                       description=f"Выплата {kind} за {MONTHS_GENITIVE[sheet.month - 1]} {sheet.year} "
+                                   f"по ведомости № {sheet.number}", postings=postings)
+    op = Operation(organization_id=sheet.organization_id, created_by=user.id, status="draft", import_key=import_key)
+    try:
+        journal.save_draft(db, op, body, user)
+        op.number = journal.next_number(db, sheet.organization_id)
+        db.add(op)
+        db.flush()
+        journal._event(db, op, user, "created")
+        journal.post(db, op, user)
+    except JournalError as exc:
+        raise PayrollError(f"Оплата не прошла проверку журнала: {exc}") from None
+    sheet.status, sheet.operation_id, sheet.paid_on, sheet.confirmed_by_statement = "paid", op.id, paid_on, confirmed
+    db.flush()
+    return op
+
+
+def unpay_sheet(db: Session, sheet: PayoutSheet) -> None:
+    if sheet.status != "paid":
+        raise PayrollError("Ведомость не оплачена")
+    if sheet.operation_id and (op := db.get(Operation, sheet.operation_id)) is not None:
+        db.delete(op)
+    sheet.status, sheet.operation_id, sheet.paid_on, sheet.confirmed_by_statement = "sent", None, None, False
+    db.flush()
+
+
+def match_sheet(db: Session, organization_id: int, bank_account_id: int, amount: Decimal,
+                purpose: str) -> PayoutSheet | None:
+    """Отправленная в банк ведомость, которую оплатил этот платёж: тот же счёт, та же сумма, назначение о зарплате."""
+    if not any(word in purpose.lower() for word in PAYMENT_WORDS):
+        return None
+    for sheet in db.scalars(select(PayoutSheet).where(
+            PayoutSheet.organization_id == organization_id, PayoutSheet.bank_account_id == bank_account_id,
+            PayoutSheet.status == "sent").order_by(PayoutSheet.pay_date, PayoutSheet.number)):
+        if sheet_total(db, sheet) == amount:
+            return sheet
+    return None
+
+
+def registry_xlsx(db: Session, sheet: PayoutSheet) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"Ведомость {sheet.number}"
+    kind = "Аванс" if sheet.kind == "advance" else "Зарплата"
+    ws.append([f"{kind} за {MONTHS_GENITIVE[sheet.month - 1]} {sheet.year}, ведомость № {sheet.number}, "
+               f"дата выплаты {sheet.pay_date:%d.%m.%Y}"])
+    ws.append([])
+    ws.append(["Таб. №", "ФИО", "ИНН", "Сумма"])
+    for i in range(1, 5):
+        ws.cell(row=3, column=i).font = Font(bold=True)
+        ws.cell(row=3, column=i).fill = PatternFill("solid", fgColor="E8EEF8")
+    ws.column_dimensions["B"].width = 36
+    ws.column_dimensions["C"].width = 16
+    ws.column_dimensions["D"].width = 16
+    rows = db.execute(select(PayoutLine, Employee).join(Employee, Employee.id == PayoutLine.employee_id)
+                      .where(PayoutLine.sheet_id == sheet.id).order_by(Employee.full_name)).all()
+    for line, employee in rows:
+        ws.append([employee.personnel_number or None, employee.full_name, employee.inn, line.amount])
+        ws.cell(row=ws.max_row, column=4).number_format = "#,##0.00"
+    ws.append([None, "Итого", None, sheet_total(db, sheet)])
+    ws.cell(row=ws.max_row, column=2).font = Font(bold=True)
+    ws.cell(row=ws.max_row, column=4).font = Font(bold=True)
+    ws.cell(row=ws.max_row, column=4).number_format = "#,##0.00"
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()

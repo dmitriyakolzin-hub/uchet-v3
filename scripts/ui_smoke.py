@@ -509,6 +509,23 @@ with sync_playwright() as p:
     page.click("text=← К списку")
     expect(page.locator("tr", has_text="Ромашка")).to_contain_text("Проведено")
 
+    # ведомость на зарплату: к выплате 87 000, отправка в банк, подтверждение оплаты вручную
+    page.click("text=Новая ведомость")
+    d = page.locator("dialog[open]")
+    d.locator("[name=kind]").select_option("salary")
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="Иванов Иван")).to_contain_text("87 000,00")
+    page.click("button:has-text('Отправить в банк')")
+    expect(page.locator("text=Статус: отправлена в банк")).to_be_visible()
+    page.click("button:has-text('Подтвердить оплату вручную')")
+    page.locator("dialog[open] button[type=submit]").click()
+    expect(page.locator("text=(вручную)")).to_be_visible()
+    page.screenshot(path=f"{OUT}/32_payout.png", full_page=True)
+    page.once("dialog", lambda dlg: dlg.accept())
+    page.click("button:has-text('Отменить оплату')")  # остатки денег ниже проверяются без этой выплаты
+    expect(page.locator("text=Статус: отправлена в банк")).to_be_visible()
+    page.click("text=← К списку")
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")

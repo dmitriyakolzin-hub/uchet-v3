@@ -90,3 +90,44 @@ class PayrollLine(Base):
     ndfl: Mapped[Decimal] = mapped_column(MONEY, default=0, server_default="0")
     insurance: Mapped[Decimal] = mapped_column(MONEY, default=0, server_default="0")
     net: Mapped[Decimal] = mapped_column(MONEY, default=0, server_default="0")
+
+
+class PayoutSheet(Base):
+    """Ведомость на выплату (аванс или зарплата): черновик → отправлена в банк → оплачена."""
+
+    __tablename__ = "payout_sheets"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "number", name="uq_payout_sheets_organization_number"),
+        CheckConstraint("kind IN ('advance', 'salary')", name="kind"),
+        CheckConstraint("status IN ('draft', 'sent', 'paid')", name="status"),
+        CheckConstraint("month BETWEEN 1 AND 12", name="month"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"), index=True)
+    legal_entity_id: Mapped[int] = mapped_column(ForeignKey("legal_entities.id", ondelete="RESTRICT"))
+    bank_account_id: Mapped[int] = mapped_column(ForeignKey("bank_accounts.id", ondelete="RESTRICT"))
+    number: Mapped[int] = mapped_column(BigInteger)
+    kind: Mapped[str] = mapped_column(String(10))
+    year: Mapped[int] = mapped_column(SmallInteger)
+    month: Mapped[int] = mapped_column(SmallInteger)
+    pay_date: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(10), default="draft", server_default="draft")
+    operation_id: Mapped[int | None] = mapped_column(ForeignKey("operations.id", ondelete="SET NULL"))
+    paid_on: Mapped[date | None] = mapped_column(Date)
+    confirmed_by_statement: Mapped[bool] = mapped_column(default=False, server_default="false")
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PayoutLine(Base):
+    __tablename__ = "payout_lines"
+    __table_args__ = (
+        UniqueConstraint("sheet_id", "employee_id", name="uq_payout_lines_sheet_employee"),
+        CheckConstraint("amount > 0", name="amount"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    sheet_id: Mapped[int] = mapped_column(ForeignKey("payout_sheets.id", ondelete="CASCADE"), index=True)
+    employee_id: Mapped[int] = mapped_column(ForeignKey("employees.id", ondelete="RESTRICT"))
+    amount: Mapped[Decimal] = mapped_column(MONEY)
