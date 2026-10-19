@@ -18,6 +18,7 @@ from app.api import (
     journal,
     money,
     organizations,
+    payment_requests,
     payroll,
     references,
     reports,
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(payroll.router)
     app.include_router(fixed_assets.router)
     app.include_router(closing.router)
+    app.include_router(payment_requests.router)
 
     # Запрет изменений в закрытом периоде срабатывает при записи в базу (app/services/period.py) —
     # из любого раздела; ответ — понятная ошибка, а не «внутренняя ошибка сервера»

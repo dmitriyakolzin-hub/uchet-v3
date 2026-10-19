@@ -37,7 +37,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(17)
+    expect(page.locator("#nav a")).to_have_count(18)
     expect(page.locator("#nav a.active")).to_have_text("Журнал операций")  # открывается первым
     page.click("#nav a[data-page=organizations]")
 
@@ -728,10 +728,31 @@ with sync_playwright() as p:
     d.locator("button[type=submit]").click()
     expect(page.locator(".tabulator-row", has_text="Руководитель ЦФО (Торговля)")).to_be_visible()
 
+    # платёжный календарь: заявка → согласование
+    page.click("#nav a[data-page=calendar]")
+    page.click("button:has-text('Новая заявка')")
+    d = dialog_fill(page, {"amount": "1 500,50", "description": "Оплата по счёту 77"})
+    d.locator("[name=counterparty_id]").select_option(label="Поставщик Плюс")
+    d.locator("[name=article_id]").select_option(label="Оплата поставщикам")
+    d.locator("button[type=submit]").click()
+    row = page.locator("table.requests tbody tr", has_text="Оплата по счёту 77")
+    expect(row).to_contain_text("1 500,50")
+    expect(row).to_contain_text("Черновик")
+    row.locator("button:has-text('На согласование')").click()
+    expect(row).to_contain_text("На согласовании")
+    row.locator("button:has-text('Согласовать')").click()
+    expect(row).to_contain_text("Согласована")
+    row.locator("button:has-text('Перенести')").click()
+    d = page.locator("dialog[open]")
+    d.locator("[name=source]").select_option(index=1)
+    d.locator("button[type=submit]").click()
+    expect(row).to_contain_text("··")
+    page.screenshot(path=f"{OUT}/27_requests.png", full_page=True)
+
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(16)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(17)  # нет «Пользователи»
     page.click("#nav a[data-page=organizations]")
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою
@@ -816,6 +837,18 @@ with sync_playwright() as p:
     expect(page.locator("select[aria-label='ЦФО'] option").first).to_have_text("Вся моя ветка")
     expect(page.locator(".tabulator-row", has_text="Расчётные счета")).to_have_count(0)
     page.screenshot(path=f"{OUT}/26_cfo_head.png", full_page=True)
+    # руководитель ЦФО подаёт заявку своей ветки; чужие заявки не видит
+    page.click("#nav a[data-page=calendar]")
+    expect(page.locator("table.requests tbody tr", has_text="Оплата по счёту 77")).to_have_count(0)
+    page.click("button:has-text('Новая заявка')")
+    d = dialog_fill(page, {"amount": "700", "description": "Ремонт витрины"})
+    expect(d.locator("[name=source] option", has_text="··")).to_have_count(0)
+    d.locator("button[type=submit]").click()
+    row = page.locator("table.requests tbody tr", has_text="Ремонт витрины")
+    expect(row).to_contain_text("Торговля")
+    row.locator("button:has-text('На согласование')").click()
+    expect(row).to_contain_text("На согласовании")
+    expect(row.locator("button:has-text('Согласовать')")).to_have_count(0)
     browser.close()
 
 print("ОШИБКИ В КОНСОЛИ:", errors or "нет")

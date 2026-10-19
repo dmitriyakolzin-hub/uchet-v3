@@ -1,6 +1,7 @@
 from app.models.account import Account, AccountAnalytic
 from app.models.article import Article
 from app.models.budget import Budget, BudgetVersion, InvestmentProject
+from app.models.calendar import PaymentRequest
 from app.models.cfo import Cfo, Employee, Executor
 from app.models.closing import PeriodClosing, ResultClosing, RoutineRule, RoutineRun
 from app.models.currency import Currency, ExchangeRate
@@ -46,6 +47,7 @@ __all__ = [
     "Operation",
     "OperationEvent",
     "Organization",
+    "PaymentRequest",
     "PeriodClosing",
     "PayoutLine",
     "PayoutSheet",

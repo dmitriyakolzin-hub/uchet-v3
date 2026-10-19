@@ -262,3 +262,11 @@ ul.checklist ul { margin: 2px 0 4px 28px; color: var(--muted); }
 .check-warn .check-mark { color: #b54708; }
 .calc-notes { margin: 4px 0 12px; padding-left: 20px; color: var(--muted); }
 .tabs.small-tabs { margin: 0; }
+.req-draft, .req-rejected { background: #fef0c7; color: #93370d; }
+.req-pending { background: #e8eef8; color: #2557a7; }
+.req-approved { background: #d1e9ff; color: #175cd3; }
+.req-paid { background: #d1fadf; color: #05603a; }
+.req-rejected { background: #fee4e2; color: #b42318; }
+.over-budget { color: #b42318; }
+.req-actions { text-align: left; }
+.req-actions button { margin: 0 4px 2px 0; display: block; }

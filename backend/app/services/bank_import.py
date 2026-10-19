@@ -21,12 +21,13 @@ from app.models import (
     Currency,
     Operation,
     Organization,
+    PaymentRequest,
     Posting,
     User,
 )
 from app.models.journal import analytic_column
 from app.schemas.journal import AnalyticsIn, OperationIn, PostingIn
-from app.services import journal, payroll
+from app.services import journal, payment_requests, payroll
 from app.services.bank_statement import Document, Statement, parse
 from app.services.journal import JournalError
 from app.services.money import bank_balance
@@ -72,6 +73,7 @@ class ImportResult:
     new_counterparties: list[str] = field(default_factory=list)
     accounts: list[AccountCheck] = field(default_factory=list)
     confirmed_sheets: list[int] = field(default_factory=list)  # № ведомостей, оплату которых подтвердил платёж
+    paid_requests: list[int] = field(default_factory=list)  # № заявок на оплату, подтверждённых платежом
 
 
 def _valid_inn(inn: str) -> bool:
@@ -211,12 +213,19 @@ class _Importer:
                     self.result.confirmed_sheets.append(sheet.number)
                     return
 
-        posting, article = self.build_posting(doc, transfer, inflow, own, payer, payee)
+        request = None
+        if not transfer:
+            # согласованная заявка на оплату (или ожидаемое поступление): платёж подтверждает её
+            request = payment_requests.find_for_payment(
+                self.db, self.org_id, own, "in" if inflow else "out", doc.amount,
+                doc.payer_inn if inflow else doc.payee_inn, op_date)
+        posting, article = self.build_posting(doc, transfer, inflow, own, payer, payee, request)
         other_name = _clean_name(doc.payer_name if inflow else doc.payee_name)
         body = OperationIn(
             legal_entity_id=own.legal_entity_id, op_date=op_date, article_id=article.id if article else None,
             description=f"{doc.purpose} ({doc.kind.lower()} № {doc.number} от {doc.doc_date:%d.%m.%Y}"
-                        f"{', ' + other_name if other_name and not transfer else ''})"[:2000],
+                        f"{', ' + other_name if other_name and not transfer else ''}"
+                        f"{f'; заявка № {request.number}' if request else ''})"[:2000],
             postings=[posting],
         )
         op = Operation(organization_id=self.org_id, created_by=self.user.id, status="draft", import_key=key)
@@ -228,8 +237,12 @@ class _Importer:
         self.result.created.append(op.number)
         if journal.posting_errors(self.db, op):
             self.result.incomplete.append(op.number)
+        if request is not None:
+            payment_requests.mark_paid(self.db, request, op_date, op.id, confirmed=True)
+            self.result.paid_requests.append(request.number)
 
-    def build_posting(self, doc, transfer, inflow, own, payer, payee) -> tuple[PostingIn, Article | None]:
+    def build_posting(self, doc, transfer, inflow, own, payer, payee,
+                      request: PaymentRequest | None = None) -> tuple[PostingIn, Article | None]:
         if transfer:
             article = self.articles.get(TRANSFER)
             item = {"cash_flow_item": article.id} if article else {}
@@ -242,6 +255,8 @@ class _Importer:
         other_inn, other_name = (doc.payer_inn, doc.payer_name) if inflow else (doc.payee_inn, doc.payee_name)
         known_cp = self.counterparty_for(other_inn, other_name, inflow, create=False)
         article = self.article_for(doc, inflow, known_cp)
+        if request is not None and request.article_id is not None:
+            article = self.db.get(Article, request.article_id)  # статья — из заявки
         template = None
         if article is not None:
             template = article.credit_account_id if inflow else article.debit_account_id
@@ -256,7 +271,11 @@ class _Importer:
                 if cp is not None:
                     other.counterparty = cp.id
                     if "contract" in required:
-                        other.contract = self.contract_for(cp, own.legal_entity_id)
+                        other.contract = (request.contract_id if request is not None and request.contract_id
+                                          else self.contract_for(cp, own.legal_entity_id))
+            if "cfo" in required and request is not None and request.cfo_id:
+                other.cfo = request.cfo_id
+                other.executor = request.executor_id
             if "cash_flow_item" in required and article.is_cash_flow:
                 other.cash_flow_item = article.id
             if "pl_item" in required and article.is_pl:
