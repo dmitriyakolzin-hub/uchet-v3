@@ -21,6 +21,7 @@ export function columnsReport({ box, ctx, path, hint, fileName }) {
     rowFormatter: (row) => {
       const r = row.getData();
       row.getElement().classList.toggle("row-total", BOLD.has(r.kind));
+      row.getElement().classList.toggle("row-key", r.kind === "total" || r.kind === "balance");
     },
   });
   table.on("cellClick", (_e, cell) => {

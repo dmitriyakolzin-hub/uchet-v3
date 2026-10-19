@@ -386,6 +386,10 @@ with sync_playwright() as p:
     expect(d).to_contain_text("кредит: 1 500,50")
     page.screenshot(path=f"{OUT}/19_dds.png", full_page=True)
     d.locator("button", has_text="Закрыть").click()
+    # ОПиУ: в стенде расходов с «Статьёй ОПиУ» нет — отчёт строится, итоговые строки на месте
+    page.click("button.tab:has-text('ОПиУ')")
+    expect(page.locator(".tabulator-row", has_text="Чистая прибыль")).to_be_visible()
+    expect(page.locator(".tabulator-row", has_text="Валовая прибыль")).to_be_visible()
     page.click("button.tab:has-text('ОСВ')")
 
     # пользователь CEO

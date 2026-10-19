@@ -281,7 +281,7 @@ class ReportRow:
 
 
 @dataclass
-class DdsResult:
+class ColumnsResult:
     columns: list[Column]
     money_account_ids: list[int]
     rows: list[ReportRow]
@@ -291,7 +291,7 @@ def money_account_ids(db: Session) -> list[int]:
     return list(db.scalars(select(Account.id).where(Account.code.in_(MONEY_ROOTS))))
 
 
-def dds(db: Session, f: ReportFilter) -> DdsResult:
+def dds(db: Session, f: ReportFilter) -> ColumnsResult:
     columns = month_columns(f.date_from, f.date_to)
     months = columns[:-1]
     money_ids = money_account_ids(db)
@@ -387,4 +387,75 @@ def dds(db: Session, f: ReportFilter) -> DdsResult:
     opening_row["total"], closing_row["total"] = before, balance
     rows.insert(0, ReportRow("opening", "Остаток денег на начало", 0, "balance", opening_row, {"period": "opening"}))
     rows.append(ReportRow("closing", "Остаток денег на конец", 0, "balance", closing_row, {"period": "closing"}))
-    return DdsResult(columns=columns, money_account_ids=money_ids, rows=rows)
+    return ColumnsResult(columns=columns, money_account_ids=money_ids, rows=rows)
+
+
+# --- ОПиУ ---
+
+PL_SECTIONS = [
+    ("revenue", "Выручка"),
+    ("cost", "Себестоимость продаж"),
+    ("gross", "Валовая прибыль"),
+    ("selling", "Коммерческие расходы"),
+    ("admin", "Управленческие расходы"),
+    ("operating", "Операционная прибыль"),
+    ("other_income", "Прочие доходы"),
+    ("other_expense", "Прочие расходы"),
+    ("before_tax", "Прибыль до налогообложения"),
+    ("income_tax", "Налог на прибыль"),
+    ("net", "Чистая прибыль"),
+]
+# Итоговые строки: сумма разделов, начиная сверху
+PL_TOTALS = {
+    "gross": ["revenue", "cost"],
+    "operating": ["revenue", "cost", "selling", "admin"],
+    "before_tax": ["revenue", "cost", "selling", "admin", "other_income", "other_expense"],
+    "net": ["revenue", "cost", "selling", "admin", "other_income", "other_expense", "income_tax"],
+}
+
+
+def pl(db: Session, f: ReportFilter) -> ColumnsResult:
+    """ОПиУ по аналитике «Статья ОПиУ»: по кредиту — доход (+), по дебету — расход (−).
+    Перенос затрат между счетами с этой аналитикой (20 → 90.02) взаимно гасится."""
+    columns = month_columns(f.date_from, f.date_to)
+    lines = f.lines(date_from=f.date_from, date_to=f.date_to, opening=False).subquery()
+    marked = select(
+        func.to_char(lines.c.op_date, "YYYY-MM").label("month"), lines.c.pl_item,
+        case((lines.c.side == "credit", lines.c.amount_rub), else_=-lines.c.amount_rub).label("signed"),
+    ).where(lines.c.pl_item.is_not(None)).subquery()
+    grouped = db.execute(
+        select(marked.c.month, marked.c.pl_item, func.coalesce(func.sum(marked.c.signed), 0))
+        .group_by(marked.c.month, marked.c.pl_item)
+    ).all()
+
+    def empty() -> dict[str, Decimal]:
+        return {c.key: ZERO for c in columns}
+
+    by_article: dict[int, dict[str, Decimal]] = {}
+    for key, article_id, amount in grouped:
+        values = by_article.setdefault(article_id, empty())
+        values[key] += Decimal(amount) + ZERO
+        values["total"] += Decimal(amount) + ZERO
+
+    articles = {a.id: a for a in db.scalars(select(Article).where(Article.id.in_(list(by_article))))}
+    sections = {key: empty() for key, _ in PL_SECTIONS}
+    items: dict[str, list[ReportRow]] = {key: [] for key, _ in PL_SECTIONS}
+    for article_id, values in by_article.items():
+        if not any(values.values()):
+            continue  # перенос затрат внутри статьи (20 → 90.02) погасился
+        article = articles[article_id]
+        section = article.pl_section or "other_expense"
+        items[section].append(ReportRow(f"art:{article_id}", article.name, 1, "item", values,
+                                        {"period": "turnover", "a": [f"pl_item:{article_id}"]}))
+        for k, v in values.items():
+            sections[section][k] += v
+
+    rows: list[ReportRow] = []
+    for key, title in PL_SECTIONS:
+        if key in PL_TOTALS:
+            values = {c.key: sum((sections[s][c.key] for s in PL_TOTALS[key]), ZERO) for c in columns}
+            rows.append(ReportRow(key, title, 0, "total", values))
+        else:
+            rows.append(ReportRow(key, title, 0, "section", sections[key]))
+            rows += sorted(items[key], key=lambda r: r.title.lower())
+    return ColumnsResult(columns=columns, money_account_ids=[], rows=rows)
