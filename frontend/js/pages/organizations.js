@@ -19,6 +19,8 @@ const ENTITY_FIELDS = [
   { name: "inn", label: "ИНН", required: true, hint: "10 цифр для организации, 12 — для ИП" },
   { name: "kpp", label: "КПП", hint: "9 цифр, для ИП не заполняется" },
   { name: "ogrn", label: "ОГРН / ОГРНИП", hint: "13 или 15 цифр" },
+  { name: "insurance_tariff", label: "Тариф страховых взносов", type: "select",
+    options: [["sme", "МСП: 30% до 1,5 МРОТ, 15% сверх"], ["general", "Общий: 30% до предельной базы, 15,1% сверх"]] },
 ];
 
 const can = (org, perm) => org?.permissions.includes(perm);

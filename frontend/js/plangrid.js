@@ -88,7 +88,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       { title: "Статья", field: "name", minWidth: 240, widthGrow: 3, frozen: true, headerSort: false },
       ...data.months.map((m) => ({
         title: m.title, field: m.key, hozAlign: "right", minWidth: 105, headerSort: false,
-        editor: data.editable ? "input" : false, mutatorEdit: normalizeInput, formatter: moneyOrEmpty,
+        editor: data.editable ? "input" : false, editorParams: { selectContents: true }, mutatorEdit: normalizeInput, formatter: moneyOrEmpty,
         bottomCalc: sumCalc, bottomCalcFormatter: moneyOrEmpty,
       })),
       { title: "Итого", field: "total", hozAlign: "right", minWidth: 120, headerSort: false, cssClass: "strong",
