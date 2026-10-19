@@ -23,7 +23,7 @@ from app.models import (
     Warehouse,
 )
 from app.models.journal import ANALYTIC_COLUMNS
-from app.services.ledger import select_lines
+from app.services.ledger import select_lines, subtree
 
 ZERO = Decimal("0.00")
 DRILL_LIMIT = 1000
@@ -201,7 +201,8 @@ class DrillResult:
 
 
 def drill(db: Session, f: ReportFilter, period: str, *, account_ids: list[int] | None = None,
-          side: str | None = None, analytics: dict[str, int | None] | None = None) -> DrillResult:
+          side: str | None = None, analytics: dict[str, int | None] | None = None,
+          exclude_corr_account_ids: list[int] | None = None, opening: bool | None = None) -> DrillResult:
     """period: opening — до начала периода, turnover — за период, closing — по конец периода."""
     bounds = {
         "opening": (None, f.date_from - dt.timedelta(days=1)),
@@ -209,7 +210,8 @@ def drill(db: Session, f: ReportFilter, period: str, *, account_ids: list[int] |
         "closing": (None, f.date_to),
     }[period]
     lines = f.lines(date_from=bounds[0], date_to=bounds[1], account_ids=account_ids or None, side=side,
-                    analytics=analytics).subquery()
+                    analytics=analytics, exclude_corr_account_ids=exclude_corr_account_ids,
+                    opening=opening).subquery()
     count, debit, credit = db.execute(select(
         func.count(),
         func.coalesce(func.sum(case((lines.c.side == "debit", lines.c.amount_rub))), 0),
@@ -236,3 +238,153 @@ def drill(db: Session, f: ReportFilter, period: str, *, account_ids: list[int] |
             "analytics": ", ".join(details),
         })
     return DrillResult(rows=rows, count=count, debit=Decimal(debit) + ZERO, credit=Decimal(credit) + ZERO)
+
+
+# --- ДДС ---
+
+MONEY_ROOTS = ("50", "51", "52", "55")
+ACTIVITIES = [("operating", "Операционная деятельность"), ("investing", "Инвестиционная деятельность"),
+              ("financing", "Финансовая деятельность")]
+MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь",
+          "Ноябрь", "Декабрь"]
+
+
+@dataclass
+class Column:
+    key: str
+    title: str
+    date_from: dt.date
+    date_to: dt.date
+
+
+def month_columns(date_from: dt.date, date_to: dt.date) -> list[Column]:
+    """Колонки по месяцам периода (первый и последний месяц — обрезаны границами периода) и «Итого»."""
+    columns = []
+    start = date_from
+    while start <= date_to:
+        next_month = (start.replace(day=1) + dt.timedelta(days=32)).replace(day=1)
+        end = min(next_month - dt.timedelta(days=1), date_to)
+        columns.append(Column(f"{start:%Y-%m}", f"{MONTHS[start.month - 1]} {start.year}", start, end))
+        start = next_month
+    columns.append(Column("total", "Итого", date_from, date_to))
+    return columns
+
+
+@dataclass
+class ReportRow:
+    key: str
+    title: str
+    level: int
+    kind: str  # balance / section / group / item / total
+    values: dict[str, Decimal]
+    drill: dict | None = None  # условия расшифровки ячейки (дополняются счетами и датами колонки)
+
+
+@dataclass
+class DdsResult:
+    columns: list[Column]
+    money_account_ids: list[int]
+    rows: list[ReportRow]
+
+
+def money_account_ids(db: Session) -> list[int]:
+    return list(db.scalars(select(Account.id).where(Account.code.in_(MONEY_ROOTS))))
+
+
+def dds(db: Session, f: ReportFilter) -> DdsResult:
+    columns = month_columns(f.date_from, f.date_to)
+    months = columns[:-1]
+    money_ids = money_account_ids(db)
+    lines = f.lines(date_to=f.date_to, account_ids=money_ids).subquery()
+    signed = case((lines.c.side == "debit", lines.c.amount_rub), else_=-lines.c.amount_rub)
+    marked = select(
+        case((lines.c.op_date >= f.date_from, func.to_char(lines.c.op_date, "YYYY-MM"))).label("month"),
+        lines.c.cash_flow_item, lines.c.is_opening,
+        # корреспондирующий счёт — тоже деньги: перемещение между своими счетами, не поток
+        func.coalesce(lines.c.corr_account_id.in_(subtree(money_ids)), False).label("internal"),
+        signed.label("signed"),
+    ).subquery()
+    grouped = db.execute(
+        select(marked.c.month, marked.c.cash_flow_item, marked.c.is_opening, marked.c.internal,
+               func.coalesce(func.sum(marked.c.signed), 0))
+        .group_by(marked.c.month, marked.c.cash_flow_item, marked.c.is_opening, marked.c.internal)
+    ).all()
+
+    def empty() -> dict[str, Decimal]:
+        return {c.key: ZERO for c in columns}
+
+    before = ZERO
+    by_article: dict[int | None, dict[str, Decimal]] = {}
+    moves, opening_entries = empty(), empty()
+    for key, article_id, is_opening, is_internal, amount in grouped:
+        amount = Decimal(amount) + ZERO
+        if key is None:
+            before += amount
+            continue
+        if is_internal:
+            target = moves
+        elif is_opening:
+            target = opening_entries
+        else:
+            target = by_article.setdefault(article_id, empty())
+        target[key] += amount
+        target["total"] += amount
+
+    articles = {a.id: a for a in db.scalars(select(Article).where(Article.id.in_([k for k in by_article if k])))}
+    flow_drill = {"period": "turnover", "exclude_corr": True, "opening": False}
+    rows: list[ReportRow] = []
+    net_flow = empty()
+
+    def add(target: dict, values: dict) -> None:
+        for k, v in values.items():
+            target[k] += v
+
+    for activity, title in ACTIVITIES:
+        in_section = [a for a in articles.values() if a.cash_flow_activity == activity]
+        if not in_section:
+            continue
+        section = ReportRow(f"act:{activity}", f"Сальдо: {title.lower()}", 0, "section", empty())
+        section_rows = []
+        for direction, group_title in (("inflow", "Поступления"), ("outflow", "Выплаты")):
+            items = sorted((a for a in in_section if a.cash_flow_direction == direction), key=lambda a: a.name.lower())
+            if not items:
+                continue
+            group = ReportRow(f"grp:{activity}:{direction}", group_title, 1, "group", empty())
+            item_rows = []
+            for a in items:
+                item_rows.append(ReportRow(f"art:{a.id}", a.name, 2, "item", by_article[a.id],
+                                           {**flow_drill, "a": [f"cash_flow_item:{a.id}"]}))
+                add(group.values, by_article[a.id])
+            section_rows += [group, *item_rows]
+        add(section.values, {k: sum((r.values[k] for r in section_rows if r.kind == "group"), ZERO) for k in section.values})
+        rows.append(ReportRow(f"title:{activity}", title, 0, "title", {}))
+        rows += section_rows
+        rows.append(section)
+        add(net_flow, section.values)
+
+    unknown = [k for k in by_article if k is None or k not in articles or not articles[k].cash_flow_activity]
+    for k in unknown:
+        name = "Статья ДДС не указана" if k is None else analytic_names(db, "cash_flow_item", [k]).get(k, "?")
+        a_value = "none" if k is None else str(k)
+        rows.append(ReportRow(f"art:{k}", name, 0, "item", by_article[k],
+                              {**flow_drill, "a": [f"cash_flow_item:{a_value}"]}))
+        add(net_flow, by_article[k])
+
+    rows.append(ReportRow("net", "Чистый денежный поток", 0, "total", net_flow))
+    if any(moves.values()):
+        rows.append(ReportRow("moves", "Перемещения между своими счетами", 0, "item", moves))
+    if any(opening_entries.values()):
+        rows.append(ReportRow("opening_entries", "Ввод начальных остатков", 0, "item", opening_entries,
+                              {"period": "turnover", "opening": True}))
+
+    # остатки на начало и конец каждого месяца
+    opening_row, closing_row = empty(), empty()
+    balance = before
+    for c in months:
+        opening_row[c.key] = balance
+        balance += net_flow[c.key] + moves[c.key] + opening_entries[c.key]
+        closing_row[c.key] = balance
+    opening_row["total"], closing_row["total"] = before, balance
+    rows.insert(0, ReportRow("opening", "Остаток денег на начало", 0, "balance", opening_row, {"period": "opening"}))
+    rows.append(ReportRow("closing", "Остаток денег на конец", 0, "balance", closing_row, {"period": "closing"}))
+    return DdsResult(columns=columns, money_account_ids=money_ids, rows=rows)

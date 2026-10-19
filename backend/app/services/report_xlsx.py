@@ -17,9 +17,9 @@ class XlsxColumn:
     money: bool = False
 
 
-def build(title: str, subtitle: str, columns: list[XlsxColumn], rows: list[tuple[int, list]],
+def build(title: str, subtitle: str, columns: list[XlsxColumn], rows: list[tuple],
           total: list | None = None) -> bytes:
-    """rows — (уровень вложенности, значения); уровень даёт отступ в первой колонке."""
+    """rows — (уровень вложенности, значения[, жирный]); уровень даёт отступ в первой колонке."""
     wb = Workbook()
     ws = wb.active
     ws.title = title[:31]
@@ -49,8 +49,8 @@ def build(title: str, subtitle: str, columns: list[XlsxColumn], rows: list[tuple
         if level:
             ws.cell(row=r, column=1).alignment = Alignment(indent=level)
 
-    for level, values in rows:
-        put(values, level)
+    for level, values, *bold in rows:
+        put(values, level, bool(bold and bold[0]))
     if total is not None:
         put(total, bold=True)
     out = io.BytesIO()

@@ -26,6 +26,7 @@ def _side(side: str, account_col, corr_col):
         Operation.legal_entity_id.label("legal_entity_id"),
         Operation.op_date.label("op_date"),
         Operation.status.label("status"),
+        Operation.is_opening.label("is_opening"),
         account_col.label("account_id"),
         corr_col.label("corr_account_id"),
         literal(side).label("side"),
@@ -46,6 +47,14 @@ def ledger_lines() -> Subquery:
     ).subquery("ledger_lines")
 
 
+def subtree(account_ids: list[int]) -> Select:
+    """id счетов вместе со всеми их субсчетами."""
+    root_codes = select(Account.code).where(Account.id.in_(account_ids)).subquery()
+    return select(Account.id).join(
+        root_codes, or_(Account.code == root_codes.c.code, Account.code.like(root_codes.c.code + ".%"))
+    )
+
+
 def select_lines(
     organization_id: int,
     *,
@@ -58,10 +67,14 @@ def select_lines(
     side: str | None = None,
     analytics: dict[str, int | None] | None = None,
     cfo_branch: int | None = None,
+    exclude_corr_account_ids: list[int] | None = None,
+    opening: bool | None = None,
 ) -> Select:
     """Строки проводок по условиям. Счёт (account_id или любой из account_ids) отбирается
     вместе со всеми своими субсчетами. Аналитика со значением None — «не указана».
     cfo_branch — ЦФО вместе со всеми подчинёнными (строки без ЦФО не попадают).
+    exclude_corr_account_ids — без строк, где корреспондирующий счёт — один из этих (с субсчетами).
+    opening — True: только ввод начальных остатков, False: без него, None: все.
 
     По умолчанию — только проведённые операции (так считают отчёты).
     """
@@ -75,13 +88,14 @@ def select_lines(
         query = query.where(lines.c.legal_entity_id == legal_entity_id)
     if side is not None:
         query = query.where(lines.c.side == side)
+    if opening is not None:
+        query = query.where(lines.c.is_opening == opening)
     roots = ([account_id] if account_id is not None else []) + list(account_ids or [])
     if roots:
-        root_codes = select(Account.code).where(Account.id.in_(roots)).subquery()
-        subtree = select(Account.id).join(
-            root_codes, or_(Account.code == root_codes.c.code, Account.code.like(root_codes.c.code + ".%"))
-        )
-        query = query.where(lines.c.account_id.in_(subtree))
+        query = query.where(lines.c.account_id.in_(subtree(roots)))
+    if exclude_corr_account_ids:
+        query = query.where(or_(lines.c.corr_account_id.is_(None),
+                                lines.c.corr_account_id.not_in(subtree(exclude_corr_account_ids))))
     for kind, value in (analytics or {}).items():
         column = getattr(lines.c, kind)
         query = query.where(column.is_(None) if value is None else and_(column == value))
