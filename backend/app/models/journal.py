@@ -57,10 +57,10 @@ class Operation(Base):
               postgresql_where=text("budget_version_id IS NULL")),
         CheckConstraint("status IN ('draft', 'posted', 'cancelled', 'plan')", name="status"),
         CheckConstraint("(status = 'plan') = (budget_version_id IS NOT NULL)", name="plan_has_version"),
-        CheckConstraint("plan_kind IS NULL OR plan_kind IN ('pl', 'cf')", name="plan_kind"),
+        CheckConstraint("plan_kind IS NULL OR plan_kind IN ('pl', 'cf', 'inv')", name="plan_kind"),
         # ячейка бюджета: версия + вид плана (ОПиУ / ДДС) + ЦФО + статья + месяц — одна плановая операция
         Index("uq_operations_plan_cell", "budget_version_id", "plan_kind", "plan_cfo_id", "plan_executor_id",
-              "article_id", "op_date",
+              "plan_project_id", "article_id", "op_date",
               unique=True, postgresql_nulls_not_distinct=True,
               postgresql_where=text("budget_version_id IS NOT NULL")),
         Index("ix_operations_organization_date", "organization_id", "op_date"),
@@ -89,9 +89,11 @@ class Operation(Base):
     budget_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("budget_versions.id", ondelete="CASCADE"), index=True
     )
-    plan_kind: Mapped[str | None] = mapped_column(String(2))
+    plan_kind: Mapped[str | None] = mapped_column(String(3))  # pl — ОПиУ, cf — ДДС, inv — инвестиции
     plan_cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"))
     plan_executor_id: Mapped[int | None] = mapped_column(ForeignKey("executors.id", ondelete="RESTRICT"))  # ЦФУ
+    # инвестпроект: план вложений (inv) и созданная по нему плановая оплата (cf)
+    plan_project_id: Mapped[int | None] = mapped_column(ForeignKey("investment_projects.id", ondelete="CASCADE"))
 
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

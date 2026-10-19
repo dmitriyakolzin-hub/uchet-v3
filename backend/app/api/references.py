@@ -18,6 +18,7 @@ from app.models import (
     Employee,
     Executor,
     FixedAsset,
+    InvestmentProject,
     LegalEntity,
     Nomenclature,
     SalaryProject,
@@ -26,6 +27,7 @@ from app.models import (
 )
 from app.models.cfo import CFO_LEVELS
 from app.schemas import reference as s
+from app.services import plan
 from app.services.fixed_assets import DEPRECIATION_ARTICLE
 
 router = APIRouter(prefix="/api", tags=["Справочники"])
@@ -100,6 +102,7 @@ def update_unit(unit_id: int, body: s.UnitUpdate, _: AdminUser, db: DbSession) -
 LEGAL_ENTITY = Ref(LegalEntity, "Юрлицо")
 BANK = Ref(Bank, "Банк", org_scoped=False)
 CURRENCY = Ref(Currency, "Валюта", org_scoped=False)
+PROJECT = Ref(InvestmentProject, "Инвестпроект")
 
 
 def _check_counterparty(_db, obj: Counterparty, _creating: bool) -> None:
@@ -191,6 +194,16 @@ def _check_executor(db, executor: Executor, _creating: bool) -> None:
         raise ValueError("У этого отдела есть исполнители — его нельзя сделать исполнителем другого отдела")
 
 
+def _check_project(db, project: InvestmentProject, creating: bool) -> None:
+    if project.start_on and project.finish_on and project.finish_on < project.start_on:
+        raise ValueError("Дата окончания раньше даты начала")
+    if not creating:
+        # ЦФО, ЦФУ или сдвиг оплаты изменились — план инвестиций и оплат в черновиках версий пересобирается
+        state = inspect(project)
+        if any(state.attrs[f].history.has_changes() for f in ("cfo_id", "executor_id", "payment_lag_months")):
+            plan.refresh_project(db, project)
+
+
 for resource in (
     OrgResource(
         path="bank-accounts", model=BankAccount, title="Расчётный счёт",
@@ -218,8 +231,8 @@ for resource in (
         conflict_message="Такой договор уже есть",
         order_by=lambda m: [m.contract_date.desc().nulls_last(), m.number],
         refs={"counterparty_id": Ref(Counterparty, "Контрагент"), "legal_entity_id": LEGAL_ENTITY,
-              "currency_id": CURRENCY},
-        nullable_fields={"contract_date"},
+              "currency_id": CURRENCY, "project_id": PROJECT},
+        nullable_fields={"contract_date", "project_id"},
     ),
     OrgResource(
         path="cfos", model=Cfo, title="ЦФО",
@@ -263,13 +276,21 @@ for resource in (
         nullable_fields={"parent_id", "employee_id"}, check=_check_executor,
     ),
     OrgResource(
+        path="investment-projects", model=InvestmentProject, title="Инвестпроект",
+        create_schema=s.ProjectCreate, update_schema=s.ProjectUpdate, out_schema=s.ProjectOut,
+        conflict_message="Такой инвестпроект уже есть",
+        order_by=lambda m: [m.name],
+        refs={"cfo_id": Ref(Cfo, "ЦФО"), "executor_id": Ref(Executor, "ЦФУ")},
+        nullable_fields={"executor_id", "start_on", "finish_on"}, check=_check_project,
+    ),
+    OrgResource(
         path="fixed-assets", model=FixedAsset, title="Основное средство",
         create_schema=s.FixedAssetCreate, update_schema=s.FixedAssetUpdate, out_schema=s.FixedAssetOut,
         conflict_message="Основное средство с таким инвентарным номером уже есть",
         order_by=lambda m: [m.name],
         refs={"cfo_id": Ref(Cfo, "ЦФО"), "legal_entity_id": LEGAL_ENTITY,
-              "pl_item_id": Ref(Article, "Статья амортизации", org_scoped=False)},
-        nullable_fields={"cfo_id", "pl_item_id"},
+              "pl_item_id": Ref(Article, "Статья амортизации", org_scoped=False), "project_id": PROJECT},
+        nullable_fields={"cfo_id", "pl_item_id", "project_id"},
         check=_check_fixed_asset,
     ),
 ):

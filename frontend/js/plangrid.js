@@ -3,7 +3,7 @@ import { api } from "./api.js";
 import { money, parseNumber, sumMoney } from "./format.js";
 import { el, makeTable, openForm, toast } from "./ui.js";
 
-const KINDS = { pl: "План ОПиУ (по ЦФО)", cf: "План ДДС" };
+const KINDS = { pl: "План ОПиУ (по ЦФО)", cf: "План ДДС", inv: "План инвестиций" };
 
 // Ввод «1 500,5» → «1500.5» до того, как значение попадёт в ячейку и итоги; неверный ввод — прежнее значение
 function normalizeInput(value, _data, _type, _params, cell) {
@@ -53,6 +53,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     ...executorChoices.map((e) => el("option", { value: e.id }, executorName.get(e.id))));
   const executorLabel = el("label", { class: "inline" }, "ЦФУ ", executorSelect);
   const fileInput = el("input", { type: "file", accept: ".xlsx", hidden: true, "aria-label": "Файл плана" });
+  const downloadButton = el("button", { type: "button", class: "secondary", onclick: () => download() }, "Скачать в Excel");
   const uploadButton = el("button", { type: "button", class: "secondary", onclick: () => { fileInput.value = ""; fileInput.click(); } }, "Загрузить из Excel");
   const status = el("p", { class: "muted" });
   const tableBox = el("div");
@@ -63,7 +64,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       el("button", { type: "button", class: "secondary", onclick: onBack }, "← К бюджетам")),
     kindTabs,
     el("div", { class: "filters" }, cfoLabel, executorLabel, modeTabs,
-      el("button", { type: "button", class: "secondary", onclick: () => download() }, "Скачать в Excel"),
+      downloadButton,
       uploadButton, fileInput),
     status,
     tableBox,
@@ -113,12 +114,18 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     }
     const branch = kind === "pl" && mode === "branch" && hasChildren(cfoId);
     const byExecutor = kind === "pl" && mode === "executor" && executorId;
-    const params = new URLSearchParams(byExecutor ? { kind, mode: "executor", executor_id: executorId }
+    const params = new URLSearchParams(kind === "inv" ? { kind } : byExecutor ? { kind, mode: "executor", executor_id: executorId }
       : { kind, ...(kind === "pl" ? { cfo_id: cfoId } : {}), mode: branch ? "branch" : "own" });
     data = await api.get(`/api/budget-versions/${version.id}/grid?${params}`);
     await newTable();
-    uploadButton.hidden = !data.editable;
-    status.textContent = data.mode === "executor"
+    uploadButton.hidden = !data.editable || kind === "inv";
+    downloadButton.hidden = kind === "inv";
+    status.textContent = kind === "inv"
+      ? "Строки — инвестпроекты (справочник «Инвестпроекты») и статьи вложений. Сумма в ячейке — вложения месяца "
+        + "(Дт 08); плановая оплата по статье «Покупка основных средств» сама появляется в плане ДДС "
+        + "со сдвигом оплаты проекта." + (data.rows.length ? "" : " Проектов пока нет — добавьте их в «Справочниках».")
+        + (data.editable ? "" : " Только просмотр.")
+      : data.mode === "executor"
       ? "План ЦФУ по всем ЦФО (у отдела — вместе с его исполнителями), только просмотр. Нажмите ⊞ у статьи — "
         + "увидите разбивку по ЦФО. Вводить план с ЦФУ — в сетке ЦФО: «+ ЦФУ» у статьи."
       : data.mode === "branch"
@@ -151,7 +158,8 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
         formatter: moneyOrEmpty, bottomCalc: sumCalc, bottomCalcFormatter: moneyOrEmpty },
     ]);
     const rows = data.rows.map((r) => ({
-      key: `${r.article_id}:${r.executor_id ?? 0}`, article_id: r.article_id, executor_id: r.executor_id ?? null,
+      key: `${r.project_id ?? 0}:${r.article_id}:${r.executor_id ?? 0}`, article_id: r.article_id,
+      executor_id: r.executor_id ?? null, project_id: r.project_id ?? null,
       executor_name: r.executor_name ?? "", name: r.name, group: r.group, ...r.values,
       total: sumMoney(Object.values(r.values)),
       ...(r.parts?.length ? { _children: r.parts.map((p) => ({ key: `${r.article_id}:${p.cfo_id}`, name: p.name,
@@ -189,6 +197,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     try {
       await api.put(`/api/budget-versions/${version.id}/cells`, {
         kind, cfo_id: kind === "pl" ? cfoId : null, executor_id: row.getData().executor_id ?? null,
+        project_id: row.getData().project_id ?? null,
         cells: [{ article_id: row.getData().article_id, month: month.month, amount: raw }],
       });
       const values = data.months.map((m) => (m.key === month.key ? raw : row.getData()[m.key]));

@@ -443,6 +443,14 @@ with sync_playwright() as p:
     dialog_fill(page, {"name": "Инженер Петров"}).locator("button[type=submit]").click()
     expect(page.locator(".tabulator-row", has_text="Инженер Петров")).to_be_visible()  # дерево раскрыто
 
+    # инвестпроект
+    page.click("button.tab:has-text('Инвестпроекты')")
+    page.click("text=Добавить инвестпроект")
+    d = dialog_fill(page, {"name": "Новый магазин", "limit_amount": "500 000", "payment_lag_months": "1"})
+    d.locator("[name=cfo_id]").select_option(index=1)
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="Новый магазин")).to_contain_text("500 000,00")
+
     page.click("#nav a[data-page=budgets]")
     page.click("text=Новый бюджет")
     d = page.locator("dialog[open]")
@@ -494,6 +502,16 @@ with sync_playwright() as p:
     expect(engineer.locator(".tabulator-cell[tabulator-field=total]")).to_have_text("700,00")
     expect(page.locator(".toast-error")).to_have_count(0)
     page.screenshot(path=f"{OUT}/28_plan_grid.png", full_page=True)
+    # план инвестиций
+    page.click("button.tab:has-text('План инвестиций')")
+    equipment = page.locator(".tabulator-row", has_text="Инвестиции: оборудование").first
+    equipment.locator(".tabulator-cell[tabulator-field='2027-01']").click()
+    page.keyboard.type("100 000")
+    page.keyboard.press("Enter")
+    expect(equipment.locator(".tabulator-cell[tabulator-field=total]")).to_have_text("100 000,00")
+    expect(page.locator(".tabulator-group", has_text="Новый магазин")).to_be_visible()
+    page.screenshot(path=f"{OUT}/28c_plan_investments.png", full_page=True)
+    page.click("button.tab:has-text('План ОПиУ')")
     page.click("button.tab:has-text('По ЦФУ')")
     page.locator("select[aria-label='ЦФУ плана']").select_option(label="Инженерный отдел")
     expect(page.locator(".tabulator-row", has_text="Коммунальные услуги").first).to_contain_text("700,00")
@@ -523,6 +541,9 @@ with sync_playwright() as p:
     expect(d).to_contain_text("Дебет: 1 500,50")
     page.screenshot(path=f"{OUT}/29_plan_fact.png", full_page=True)
     d.locator("button", has_text="Закрыть").click()
+    page.click("button.tab:has-text('Инвестиции')")
+    expect(page.locator(".tabulator-row", has_text="Новый магазин")).to_contain_text("100 000,00")
+    page.screenshot(path=f"{OUT}/29b_investments.png", full_page=True)
     page.click("button.tab:has-text('ОСВ')")
 
     # зарплата: начисление за текущий месяц, премия, проведение в журнал

@@ -52,6 +52,7 @@ class FixedAsset(OrgScoped, Base):
     disposed_on: Mapped[date | None] = mapped_column(Date)
     disposal_kind: Mapped[str | None] = mapped_column(String(10))
     disposal_operation_id: Mapped[int | None] = mapped_column(ForeignKey("operations.id", ondelete="SET NULL"))
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("investment_projects.id", ondelete="RESTRICT"))  # инвестпроект
 
 
 class DepreciationRun(Base):

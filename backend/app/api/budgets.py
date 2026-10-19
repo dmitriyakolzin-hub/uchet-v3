@@ -220,7 +220,7 @@ def delete_version(version_id: int, user: CurrentUser, db: DbSession) -> None:
 
 # --- Сетка ввода плана (шаг 3.3): ячейка = плановая операция ---
 
-PlanKind = Literal["pl", "cf"]
+PlanKind = Literal["pl", "cf", "inv"]
 
 
 class CellIn(BaseModel):
@@ -233,6 +233,7 @@ class CellsIn(BaseModel):
     kind: PlanKind
     cfo_id: int | None = None
     executor_id: int | None = None  # ЦФУ строки (исполнитель); не указан — строка статьи без ЦФУ
+    project_id: int | None = None  # инвестпроект (план инвестиций)
     cells: list[CellIn] = Field(min_length=1, max_length=2000)
 
 
@@ -271,6 +272,10 @@ def get_grid(version_id: int, user: CurrentUser, db: DbSession, kind: PlanKind =
         return GridOut(version=_version_out(version), budget_title=budget.title, kind="pl", cfo_id=None,
                        executor_id=executor.id, mode="executor", has_children=False, editable=False, **data)
     _check_plan_cfo(db, user, budget.organization_id, cfo_id)
+    editable = version.status == "draft" and Perm.DRAFT in org_permissions(db, user, budget.organization_id)
+    if kind == "inv":
+        return GridOut(version=_version_out(version), budget_title=budget.title, kind=kind, cfo_id=None,
+                       mode="own", has_children=False, editable=editable, **plan.investment_grid(db, version))
     branch = mode == "branch" and kind == "pl" and cfo_id is not None
     if cfo_id is not None:
         cfo = db.get(Cfo, cfo_id)
@@ -306,7 +311,7 @@ def put_cells(version_id: int, body: CellsIn, user: CurrentUser, db: DbSession) 
     try:
         changed = plan.set_cells(db, version, body.kind, body.cfo_id,
                                  [plan.Cell(c.article_id, c.month, c.amount) for c in body.cells], user,
-                                 body.executor_id)
+                                 body.executor_id, body.project_id)
     except (plan.PlanError, JournalError) as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
@@ -330,6 +335,8 @@ def download_plan(version_id: int, user: CurrentUser, db: DbSession, kind: PlanK
     version = _get_version(db, user, version_id, Perm.VIEW)
     budget = db.get(Budget, version.budget_id)
     branch = _branch_for(db, user, budget.organization_id)
+    if kind == "inv":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Excel для плана инвестиций пока не поддерживается")
     if kind == "cf":
         if branch is not None:
             raise _not_found("План ДДС")
@@ -350,6 +357,8 @@ async def upload_plan(version_id: int, request: Request, user: CurrentUser, db: 
     version = _get_version(db, user, version_id, Perm.DRAFT)
     budget = db.get(Budget, version.budget_id)
     branch = _branch_for(db, user, budget.organization_id)
+    if kind == "inv":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Excel для плана инвестиций пока не поддерживается")
     if kind == "cf" and branch is not None:
         raise _not_found("План ДДС")
     raw = await request.body()

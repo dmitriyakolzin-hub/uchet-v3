@@ -1,5 +1,6 @@
 // Общая вкладка справочника: таблица + кнопки «Добавить» / ✎ + форма в окне.
 import { api } from "./api.js";
+import { parseNumber } from "./format.js";
 import { el, makeTable, openForm, toast } from "./ui.js";
 
 /**
@@ -9,7 +10,8 @@ import { el, makeTable, openForm, toast } from "./ui.js";
  *   listUrl     — GET и POST списка; itemUrl(id) — PATCH записи
  *   columns     — колонки Tabulator (без кнопки изменения)
  *   fields(row) — поля формы; row = null при создании. Флаги поля:
- *                 numeric (select с id → число), nullable ("" → null), createOnly (только при создании)
+ *                 numeric (select с id → число), nullable ("" → null), createOnly (только при создании),
+ *                 money (сумма: «1 500,50» → «1500.50»)
  *   canEdit     — показывать ли кнопки изменения
  *   tree        — показывать деревом: prepare(list) должен вернуть корни с _children
  *   prepare     — преобразование списка перед показом
@@ -56,7 +58,8 @@ export async function referenceTab(box, options) {
     const body = {};
     for (const f of formFields) {
       let value = values[f.name];
-      if (f.numeric) value = value === "" ? null : Number(value);
+      if (f.money) value = parseNumber(value) ?? "0";
+      else if (f.numeric) value = value === "" ? null : Number(value);
       else if (f.nullable && value === "") value = null;
       body[f.name] = value;
     }

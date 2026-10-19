@@ -128,6 +128,7 @@ class Contract(OrgScoped, Base):
     number: Mapped[str] = mapped_column(String(100))
     contract_date: Mapped[date | None] = mapped_column(Date)
     name: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("investment_projects.id", ondelete="RESTRICT"))  # инвестпроект
 
 
 class Unit(Base):

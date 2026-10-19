@@ -161,6 +161,7 @@ class ContractCreate(BaseModel):
     number: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
     contract_date: dt.date | None = None
     name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=255)] = ""
+    project_id: int | None = None  # инвестпроект
 
 
 class ContractUpdate(BaseModel):
@@ -172,6 +173,7 @@ class ContractUpdate(BaseModel):
     contract_date: dt.date | None = None
     name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=255)] | None = None
     is_active: bool | None = None
+    project_id: int | None = None
 
 
 class ContractOut(_Out):
@@ -184,6 +186,7 @@ class ContractOut(_Out):
     number: str
     contract_date: dt.date | None
     name: str
+    project_id: int | None = None
     is_active: bool
 
 
@@ -370,6 +373,7 @@ class FixedAssetCreate(BaseModel):
     useful_life_months: UsefulLife
     cfo_id: int | None = None
     pl_item_id: int | None = None  # статья амортизации; не указана — «Амортизация основных средств»
+    project_id: int | None = None  # инвестпроект
 
 
 class FixedAssetUpdate(BaseModel):
@@ -380,6 +384,7 @@ class FixedAssetUpdate(BaseModel):
     useful_life_months: UsefulLife | None = None
     cfo_id: int | None = None
     pl_item_id: int | None = None
+    project_id: int | None = None
     is_active: bool | None = None
 
 
@@ -398,6 +403,7 @@ class FixedAssetOut(_Out):
     disposed_on: dt.date | None = None
     disposal_kind: str | None = None
     disposal_operation_id: int | None = None
+    project_id: int | None = None
     is_active: bool
 
 
@@ -424,3 +430,48 @@ class ExecutorOut(_Out):
     parent_id: int | None
     employee_id: int | None
     is_active: bool
+
+
+# --- Инвестпроекты ---
+
+ProjectStatus = Literal["planned", "active", "done"]
+Limit = Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=2)]
+Lag = Annotated[int, Field(ge=0, le=24)]
+
+
+class ProjectCreate(BaseModel):
+    name: Name
+    cfo_id: int
+    executor_id: int | None = None
+    start_on: dt.date | None = None
+    finish_on: dt.date | None = None
+    limit_amount: Limit = Decimal("0")
+    status: ProjectStatus = "planned"
+    payment_lag_months: Lag = 0
+
+
+class ProjectUpdate(BaseModel):
+    name: Name | None = None
+    cfo_id: int | None = None
+    executor_id: int | None = None
+    start_on: dt.date | None = None
+    finish_on: dt.date | None = None
+    limit_amount: Limit | None = None
+    status: ProjectStatus | None = None
+    payment_lag_months: Lag | None = None
+    is_active: bool | None = None
+
+
+class ProjectOut(_Out):
+    id: int
+    organization_id: int
+    name: str
+    cfo_id: int
+    executor_id: int | None
+    start_on: dt.date | None
+    finish_on: dt.date | None
+    limit_amount: Decimal
+    status: ProjectStatus
+    payment_lag_months: int
+    is_active: bool
+
