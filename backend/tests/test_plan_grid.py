@@ -191,3 +191,40 @@ def test_plan_excel_roundtrip(client, env):
     resp = client.post(f"/api/budget-versions/{env['version']['id']}/plan", headers={**env["head"], "Content-Type":
                        "application/octet-stream"}, content=out.getvalue())
     assert all("ветки" in e["error"] for e in resp.json()["errors"] if "Нет такого" not in e["error"])
+
+
+def branch(client, env, cfo, h=None):
+    return client.get(f"/api/budget-versions/{env['version']['id']}/grid", headers=h or env["h"],
+                      params={"kind": "pl", "cfo_id": env[cfo]["id"], "mode": "branch"})
+
+
+def test_branch_rollup(client, env):
+    rent = env["art"]["Аренда"]
+    put(client, env, [{"article_id": rent, "month": 1, "amount": "1000"}], cfo="shop")
+    put(client, env, [{"article_id": rent, "month": 1, "amount": "300"}], cfo="trade")  # свой план направления
+    put(client, env, [{"article_id": rent, "month": 2, "amount": "50"}], cfo="logistics")
+
+    data = branch(client, env, "company").json()
+    assert (data["mode"], data["has_children"], data["editable"]) == ("branch", True, False)
+    row = next(r for r in data["rows"] if r["article_id"] == rent)
+    assert row["values"] == {"2027-01": "1300.00", "2027-02": "50.00"}
+    assert [(p["name"], p["values"]) for p in row["parts"]] == [
+        ("Логистика", {"2027-02": "50.00"}), ("Торговля", {"2027-01": "1300.00"})]
+
+    row = next(r for r in branch(client, env, "trade").json()["rows"] if r["article_id"] == rent)
+    assert [(p["name"], p["values"]) for p in row["parts"]] == [
+        ("Торговля — свой план", {"2027-01": "300.00"}), ("Магазин 1", {"2027-01": "1000.00"})]
+
+    # свой план и лист без подчинённых — как раньше
+    own = grid(client, env, cfo="trade").json()
+    assert own["mode"] == "own" and own["editable"] and own["has_children"]
+    assert next(r for r in own["rows"] if r["article_id"] == rent)["values"] == {"2027-01": "300.00"}
+    assert grid(client, env, cfo="shop").json()["has_children"] is False
+
+    # руководитель ЦФО видит свод своей ветки, но не выше
+    assert branch(client, env, "trade", h=env["head"]).status_code == 200
+    assert branch(client, env, "company", h=env["head"]).status_code == 404
+
+    resp = client.get(f"/api/budget-versions/{env['version']['id']}/branch.xlsx", headers=env["h"],
+                      params={"cfo_id": env["company"]["id"]})
+    assert resp.status_code == 200 and resp.content[:2] == b"PK"

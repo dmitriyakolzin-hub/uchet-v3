@@ -21,6 +21,7 @@ from app.models import Account, Article, Budget, BudgetVersion, Cfo, LegalEntity
 from app.models.journal import ANALYTIC_COLUMNS, analytic_column
 from app.schemas.journal import AnalyticsIn, OperationIn, PostingIn
 from app.services import journal
+from app.services import report_xlsx as xlsx
 from app.services.excel_import import Column, RowError, RowProblem, _decimal, _read_rows, _text
 
 MONTH_TITLES = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь",
@@ -160,6 +161,46 @@ def grid(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None) -> 
     }
 
 
+def has_children(db: Session, cfo_id: int | None) -> bool:
+    return cfo_id is not None and db.scalar(select(Cfo.id).where(Cfo.parent_id == cfo_id).limit(1)) is not None
+
+
+def branch_grid(db: Session, version: BudgetVersion, kind: str, cfo_id: int) -> dict:
+    """Свод по ветке: план ЦФО вместе со всеми подчинёнными. В строке статьи — итог, в раскрытии —
+    «свой план» ЦФО и итог каждого непосредственно подчинённого ЦФО (с его подчинёнными)."""
+    budget = db.get(Budget, version.budget_id)
+    root = db.get(Cfo, cfo_id)
+    depth = len(str(root.path).split("."))
+    branch = {c.id: c for c in db.scalars(select(Cfo).where(Cfo.path.op("<@")(root.path)))}
+    query = select(Operation).where(Operation.budget_version_id == version.id, Operation.plan_kind == kind,
+                                    Operation.plan_cfo_id.in_(list(branch)))
+    totals: dict[int, dict[str, Decimal]] = {}
+    parts: dict[int, dict[int, dict[str, Decimal]]] = {}  # статья → (ЦФО свой / подчинённый) → месяцы
+    for op in db.scalars(query):
+        amount = sum((p.amount or Decimal(0) for p in op.postings), Decimal("0.00"))
+        key = month_key(op.op_date.year, op.op_date.month)
+        path = str(branch[op.plan_cfo_id].path).split(".")
+        bucket = cfo_id if len(path) == depth else int(path[depth])
+        row = totals.setdefault(op.article_id, {})
+        row[key] = row.get(key, Decimal("0.00")) + amount
+        part = parts.setdefault(op.article_id, {}).setdefault(bucket, {})
+        part[key] = part.get(key, Decimal("0.00")) + amount
+
+    def title(bucket: int) -> str:
+        return f"{root.name} — свой план" if bucket == cfo_id else branch[bucket].name
+
+    def order(bucket: int) -> tuple:
+        return (bucket != cfo_id, branch[bucket].name.lower())
+
+    return {
+        "months": [{"key": month_key(budget.year, m), "month": m, "title": MONTH_TITLES[m - 1]} for m in budget.months],
+        "rows": [{"article_id": a.id, "name": a.name, "group": group, "values": totals.get(a.id, {}),
+                  "parts": [{"cfo_id": b, "name": title(b), "values": v}
+                            for b, v in sorted(parts.get(a.id, {}).items(), key=lambda kv: order(kv[0]))]}
+                 for a, group in plan_articles(db, kind)],
+    }
+
+
 def copy_plan(db: Session, source: BudgetVersion, target: BudgetVersion, user: User) -> int:
     """Скопировать все плановые операции версии (ежемесячный пересмотр)."""
     count = 0
@@ -268,3 +309,26 @@ def import_plan(db: Session, version: BudgetVersion, kind: str, raw: bytes, user
         except (RowProblem, PlanError) as exc:
             result.errors.append(RowError(number, str(exc)))
     return result
+
+
+def branch_xlsx(db: Session, version: BudgetVersion, kind: str, cfo_id: int) -> bytes:
+    """Свод по ветке ЦФО в Excel: статья (итог) и под ней свой план и подчинённые ЦФО."""
+    budget = db.get(Budget, version.budget_id)
+    data = branch_grid(db, version, kind, cfo_id)
+    keys = [m["key"] for m in data["months"]]
+    rows = []
+    for row in data["rows"]:
+        if not row["values"]:
+            continue
+        values = [row["values"].get(k, Decimal("0.00")) for k in keys]
+        rows.append((0, [row["name"], *values, sum(values, Decimal("0.00"))], True))
+        for part in row["parts"]:
+            values = [part["values"].get(k, Decimal("0.00")) for k in keys]
+            rows.append((1, [part["name"], *values, sum(values, Decimal("0.00"))]))
+    totals = [sum((r["values"].get(k, Decimal("0.00")) for r in data["rows"]), Decimal("0.00")) for k in keys]
+    return xlsx.build(f"Свод плана ОПиУ: {db.get(Cfo, cfo_id).name}",
+                      f"{budget.title}, версия {version.number} «{version.name}»",
+                      [xlsx.XlsxColumn("Статья / ЦФО", 45)] + [xlsx.XlsxColumn(m["title"], 13, True) for m in data["months"]]
+                      + [xlsx.XlsxColumn("Итого", 14, True)],
+                      rows, ["Итого", *totals, sum(totals, Decimal("0.00"))])
+

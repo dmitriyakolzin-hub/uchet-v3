@@ -261,3 +261,4 @@ ul.checklist ul { margin: 2px 0 4px 28px; color: var(--muted); }
 .check-fail .check-mark { color: #b42318; }
 .check-warn .check-mark { color: #b54708; }
 .calc-notes { margin: 4px 0 12px; padding-left: 20px; color: var(--muted); }
+.tabs.small-tabs { margin: 0; }

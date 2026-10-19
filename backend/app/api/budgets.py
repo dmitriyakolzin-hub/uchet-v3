@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import Budget, BudgetVersion, User
+from app.models import Budget, BudgetVersion, Cfo, User
 from app.services import plan
 from app.services.journal import JournalError
 
@@ -240,6 +240,8 @@ class GridOut(BaseModel):
     budget_title: str
     kind: str
     cfo_id: int | None
+    mode: str  # own — план этого ЦФО (ввод); branch — свод с подчинёнными (просмотр)
+    has_children: bool
     editable: bool
     months: list[dict]
     rows: list[dict]
@@ -253,14 +255,36 @@ def _check_plan_cfo(db: Session, user: User, organization_id: int, cfo_id: int |
 
 
 @router.get("/budget-versions/{version_id}/grid", response_model=GridOut)
-def get_grid(version_id: int, user: CurrentUser, db: DbSession, kind: PlanKind = "pl", cfo_id: int | None = None):
+def get_grid(version_id: int, user: CurrentUser, db: DbSession, kind: PlanKind = "pl", cfo_id: int | None = None,
+             mode: Literal["own", "branch"] = "own"):
+    """Сетка плана: own — ячейки этого ЦФО (ввод); branch — свод ЦФО с подчинёнными (только просмотр)."""
     version = _get_version(db, user, version_id, Perm.VIEW)
     budget = db.get(Budget, version.budget_id)
     _check_plan_cfo(db, user, budget.organization_id, cfo_id)
-    data = plan.grid(db, version, kind, cfo_id)
+    branch = mode == "branch" and kind == "pl" and cfo_id is not None
+    if cfo_id is not None:
+        cfo = db.get(Cfo, cfo_id)
+        if cfo is None or cfo.organization_id != budget.organization_id:
+            raise _not_found("ЦФО")
+    data = plan.branch_grid(db, version, kind, cfo_id) if branch else plan.grid(db, version, kind, cfo_id)
     editable = version.status == "draft" and Perm.DRAFT in org_permissions(db, user, budget.organization_id)
     return GridOut(version=_version_out(version), budget_title=budget.title, kind=kind, cfo_id=cfo_id,
-                   editable=editable and (kind == "cf" or cfo_id is not None), **data)
+                   mode="branch" if branch else "own", has_children=plan.has_children(db, cfo_id),
+                   editable=editable and not branch and (kind == "cf" or cfo_id is not None), **data)
+
+
+@router.get("/budget-versions/{version_id}/branch.xlsx")
+def download_branch(version_id: int, cfo_id: int, user: CurrentUser, db: DbSession):
+    """Свод плана ОПиУ по ветке ЦФО в Excel."""
+    version = _get_version(db, user, version_id, Perm.VIEW)
+    budget = db.get(Budget, version.budget_id)
+    cfo = db.get(Cfo, cfo_id)
+    if cfo is None or cfo.organization_id != budget.organization_id:
+        raise _not_found("ЦФО")
+    _check_plan_cfo(db, user, budget.organization_id, cfo_id)
+    content = plan.branch_xlsx(db, version, "pl", cfo_id)
+    name = f"plan_svod_{budget.year}_v{version.number}_{cfo_id}.xlsx"
+    return Response(content, media_type=XLSX_TYPE, headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.put("/budget-versions/{version_id}/cells")
