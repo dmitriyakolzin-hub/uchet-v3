@@ -458,6 +458,24 @@ with sync_playwright() as p:
     page.click("text=← К бюджетам")
     page.locator("select[aria-label='Год']").select_option("2027")
     expect(page.locator(".budget-card", has_text="Бюджет 2027")).to_be_visible()
+    page.once("dialog", lambda dlg: dlg.accept())
+    card.locator("tr", has_text="Пересмотр за февраль").locator("button", has_text="Утвердить").click()
+    expect(card.locator("tr", has_text="Пересмотр за февраль")).to_contain_text("Утверждена")
+
+    # план/факт за январь 2027: план аренды из утверждённой версии, расшифровка плана
+    page.click("#nav a[data-page=reports]")
+    page.click("button.tab:has-text('План/факт')")
+    page.fill("input[aria-label='С даты']", "2027-01-01")
+    page.fill("input[aria-label='По дату']", "2027-01-31")
+    page.locator("input[aria-label='По дату']").dispatch_event("change")
+    rent = page.locator(".tabulator-row", has_text="Аренда")
+    expect(rent).to_contain_text("-1 500,50")
+    rent.locator(".tabulator-cell[tabulator-field='2027-01|plan'] .drill").click()
+    d = page.locator("dialog[open]", has_text="Расшифровка")
+    expect(d).to_contain_text("Дебет: 1 500,50")
+    page.screenshot(path=f"{OUT}/29_plan_fact.png", full_page=True)
+    d.locator("button", has_text="Закрыть").click()
+    page.click("button.tab:has-text('ОСВ')")
 
     # пользователь CEO
     page.click("#nav a[data-page=users]")

@@ -189,6 +189,7 @@ table.recon tfoot td { text-align: left; color: var(--muted); border-bottom: 0; 
 .check-inline { color: var(--text); }
 .filters input[type="checkbox"] { min-width: 0; margin: 0; }
 .push-right { margin-left: auto; }
+.inline-select.wide-select { min-width: 460px; max-width: 100%; }
 
 /* --- Бюджеты --- */
 

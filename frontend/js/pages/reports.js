@@ -4,6 +4,7 @@ import { balanceReport } from "../reports/balance.js";
 import { ddsReport } from "../reports/dds.js";
 import { debtsReport } from "../reports/debts.js";
 import { osvReport } from "../reports/osv.js";
+import { planFactReport } from "../reports/planfact.js";
 import { plReport } from "../reports/pl.js";
 import { reportFilters } from "../reports/common.js";
 import { el, toast } from "../ui.js";
@@ -25,6 +26,7 @@ const REPORTS = {
   pl: { title: "ОПиУ", make: plReport },
   balance: { title: "Баланс", make: balanceReport },
   debts: { title: "Дебиторка и кредиторка", make: debtsReport },
+  planfact: { title: "План/факт", make: planFactReport },
 };
 
 export async function renderReports(view) {

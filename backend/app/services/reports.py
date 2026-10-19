@@ -4,10 +4,10 @@
 """
 
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -39,17 +39,30 @@ class ReportFilter:
     legal_entity_id: int | None = None
     cfo_id: int | None = None  # ЦФО вместе с веткой подчинённых
     with_drafts: bool = False
+    # План вместо факта: месяц «ГГГГ-ММ» → версия бюджета, план которой берётся за этот месяц
+    plan_versions: tuple[tuple[str, int], ...] | None = None
 
     @property
     def statuses(self) -> tuple[str, ...]:
+        if self.plan_versions is not None:
+            return ("plan",)
         return ("posted", "draft") if self.with_drafts else ("posted",)
 
     def lines(self, *, date_from: dt.date | None = None, date_to: dt.date | None = None, **conditions):
         """select_lines с фильтрами отчёта; период задаёт вызывающий."""
-        return select_lines(
+        query = select_lines(
             self.organization_id, statuses=self.statuses, date_from=date_from, date_to=date_to,
-            legal_entity_id=self.legal_entity_id, cfo_branch=self.cfo_id, **conditions,
+            legal_entity_id=self.legal_entity_id, cfo_branch=self.cfo_id,
+            budget_version_ids=None if self.plan_versions is None else sorted({v for _, v in self.plan_versions}),
+            **conditions,
         )
+        if self.plan_versions is not None:
+            c = query.selected_columns
+            query = query.where(or_(false(), *(
+                and_(c.budget_version_id == version, func.to_char(c.op_date, "YYYY-MM") == month)
+                for month, version in self.plan_versions
+            )))
+        return query
 
 
 def _split(net: Decimal) -> tuple[Decimal, Decimal]:
@@ -291,7 +304,8 @@ def money_account_ids(db: Session) -> list[int]:
     return list(db.scalars(select(Account.id).where(Account.code.in_(MONEY_ROOTS))))
 
 
-def dds(db: Session, f: ReportFilter) -> ColumnsResult:
+def dds(db: Session, f: ReportFilter, include_all: bool = False) -> ColumnsResult:
+    """include_all — показать все статьи ДДС (для план/факта: одинаковые строки у плана и факта)."""
     columns = month_columns(f.date_from, f.date_to)
     months = columns[:-1]
     money_ids = money_account_ids(db)
@@ -331,6 +345,10 @@ def dds(db: Session, f: ReportFilter) -> ColumnsResult:
         target["total"] += amount
 
     articles = {a.id: a for a in db.scalars(select(Article).where(Article.id.in_([k for k in by_article if k])))}
+    if include_all:
+        for a in db.scalars(select(Article).where(Article.is_active, Article.is_cash_flow, ~Article.is_transfer)):
+            articles.setdefault(a.id, a)
+            by_article.setdefault(a.id, empty())
     flow_drill = {"period": "turnover", "exclude_corr": True, "opening": False}
     rows: list[ReportRow] = []
     net_flow = empty()
@@ -414,7 +432,7 @@ PL_TOTALS = {
 }
 
 
-def pl(db: Session, f: ReportFilter) -> ColumnsResult:
+def pl(db: Session, f: ReportFilter, include_all: bool = False) -> ColumnsResult:
     """ОПиУ по аналитике «Статья ОПиУ»: по кредиту — доход (+), по дебету — расход (−).
     Перенос затрат между счетами с этой аналитикой (20 → 90.02) взаимно гасится."""
     columns = month_columns(f.date_from, f.date_to)
@@ -437,11 +455,14 @@ def pl(db: Session, f: ReportFilter) -> ColumnsResult:
         values[key] += Decimal(amount) + ZERO
         values["total"] += Decimal(amount) + ZERO
 
+    if include_all:
+        for article_id in db.scalars(select(Article.id).where(Article.is_active, Article.is_pl)):
+            by_article.setdefault(article_id, {c.key: ZERO for c in columns})
     articles = {a.id: a for a in db.scalars(select(Article).where(Article.id.in_(list(by_article))))}
     sections = {key: empty() for key, _ in PL_SECTIONS}
     items: dict[str, list[ReportRow]] = {key: [] for key, _ in PL_SECTIONS}
     for article_id, values in by_article.items():
-        if not any(values.values()):
+        if not any(values.values()) and not include_all:
             continue  # перенос затрат внутри статьи (20 → 90.02) погасился
         article = articles[article_id]
         section = article.pl_section or "other_expense"
@@ -705,3 +726,108 @@ def debts(db: Session, f: ReportFilter) -> tuple[list[DebtRow], dict[str, Decima
         ordered.append(p)
         ordered += sorted((c for c in children if c.parent == p.key), key=lambda c: (c.account, c.title))
     return ordered, total
+
+
+# --- План / факт ---
+
+
+def actual_plan_versions(db: Session, organization_id: int, months: list[str], kind: str) -> dict[str, int]:
+    """Для каждого месяца — утверждённая версия самого подробного бюджета (месяц, иначе квартал, иначе год),
+    в которой есть план этого вида (ОПиУ или ДДС)."""
+    from app.models import Budget, BudgetVersion
+
+    with_plan = select(Operation.budget_version_id).where(Operation.plan_kind == kind).distinct()
+    approved = {
+        (b.kind, b.year, b.period): v.id
+        for b, v in db.execute(
+            select(Budget, BudgetVersion).join(BudgetVersion, BudgetVersion.budget_id == Budget.id)
+            .where(Budget.organization_id == organization_id, BudgetVersion.status == "approved",
+                   BudgetVersion.id.in_(with_plan))
+        ).all()
+    }
+    result = {}
+    for key in months:
+        year, month = int(key[:4]), int(key[5:])
+        for candidate in (("month", year, month), ("quarter", year, (month - 1) // 3 + 1), ("year", year, 1)):
+            if candidate in approved:
+                result[key] = approved[candidate]
+                break
+    return result
+
+
+def version_plan_months(db: Session, version_id: int, months: list[str]) -> dict[str, int]:
+    """Выбранная версия — на все месяцы её бюджета, попавшие в период."""
+    from app.models import Budget, BudgetVersion
+
+    budget = db.get(Budget, db.get(BudgetVersion, version_id).budget_id)
+    covered = {f"{budget.year}-{m:02d}" for m in budget.months}
+    return {k: version_id for k in months if k in covered}
+
+
+@dataclass
+class PlanFactResult:
+    columns: list[Column]
+    plan_versions: dict[str, int]
+    money_account_ids: list[int]
+    rows: list[dict]
+
+
+
+
+def plan_fact(db: Session, f: ReportFilter, kind: str, version_id: int | None = None) -> PlanFactResult:
+    """План и факт одними и теми же отчётами (ОПиУ или ДДС): факт — проведённые операции, план — плановые
+    операции выбранной версии (или актуального утверждённого бюджета по каждому месяцу)."""
+    columns = month_columns(f.date_from, f.date_to)
+    month_keys = [c.key for c in columns[:-1]]
+    versions = (version_plan_months(db, version_id, month_keys) if version_id
+                else actual_plan_versions(db, f.organization_id, month_keys, kind))
+    plan_filter = replace(f, with_drafts=False, plan_versions=tuple(sorted(versions.items())))
+    build = pl if kind == "pl" else dds
+    fact = build(db, f, include_all=True)
+    plan = build(db, plan_filter, include_all=True)
+    plan_rows = {r.key: r for r in plan.rows}
+
+    def cell(p: Decimal, fa: Decimal) -> dict:
+        pct = None if p == 0 else (fa / p * 100).quantize(Decimal("0.1")) + 0  # + 0: без «-0.0»
+        return {"plan": p, "fact": fa, "dev": fa - p, "pct": pct}
+
+    rows = []
+    for r in fact.rows:
+        if kind == "cf" and r.key in ("opening", "closing", "moves", "opening_entries"):
+            continue  # остатков и перемещений в плане ДДС нет
+        p = plan_rows.get(r.key)
+        values = {c.key: cell(p.values.get(c.key, ZERO) if p and p.values else ZERO,
+                              r.values.get(c.key, ZERO) if r.values else ZERO) for c in columns}
+        rows.append({"key": r.key, "title": r.title, "level": r.level, "kind": r.kind, "values": values,
+                     "drill": r.drill, "empty": r.kind == "item" and not any(
+                         v["plan"] or v["fact"] for v in values.values())})
+    # статьи без плана и факта не показываем; группы ДДС без статей — тоже
+    rows = [r for r in rows if not r["empty"]]
+    if kind == "cf":
+        rows = _prune_cash_sections(rows)
+    for r in rows:
+        r.pop("empty")
+    return PlanFactResult(columns=columns, plan_versions=versions, money_account_ids=fact.money_account_ids, rows=rows)
+
+
+def _prune_cash_sections(rows: list[dict]) -> list[dict]:
+    """ДДС: убрать группы «Поступления / Выплаты» и виды деятельности, в которых не осталось статей."""
+    def has_items(start: int, stop_kinds: tuple[str, ...]) -> bool:
+        for r in rows[start + 1:]:
+            if r["kind"] in stop_kinds:
+                return False
+            if r["kind"] == "item" and r["level"] == 2:
+                return True
+        return False
+
+    kept, dropped_activities = [], set()
+    for i, r in enumerate(rows):
+        if r["kind"] == "group" and not has_items(i, ("group", "section", "title")):
+            continue
+        if r["kind"] == "title" and not has_items(i, ("section",)):
+            dropped_activities.add(r["key"].split(":", 1)[1])
+            continue
+        if r["kind"] == "section" and r["key"].split(":", 1)[1] in dropped_activities:
+            continue
+        kept.append(r)
+    return kept
