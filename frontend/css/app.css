@@ -270,3 +270,4 @@ ul.checklist ul { margin: 2px 0 4px 28px; color: var(--muted); }
 .over-budget { color: #b42318; }
 .req-actions { text-align: left; }
 .req-actions button { margin: 0 4px 2px 0; display: block; }
+table.requests td.num, table.expected td.num { text-align: right; white-space: nowrap; }

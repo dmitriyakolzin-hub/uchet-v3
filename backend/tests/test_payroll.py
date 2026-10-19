@@ -238,6 +238,7 @@ def test_lines_ready_amounts(client, env, db):
 # --- Ведомости на выплату ---
 
 from tests.test_bank_import import BANK, OUR, statement  # noqa: E402
+from tests.test_calendar import expected as calendar_expected  # noqa: E402
 
 
 @pytest.fixture
@@ -384,3 +385,16 @@ def test_sick_by_average_earnings(client, env):
     assert resp.status_code == 422
     resp = client.post(f"/api/payroll-lines/{a['id']}/vacation", headers=env["ceo"], json={"days": 2})
     assert resp.status_code == 403
+
+
+def test_payout_sheets(client, bank_env):
+    env = bank_env
+    adv = sheet(client, env, "advance", advance_percent="40")
+    feb = {"date_from": "2026-02-01", "date_to": "2026-02-28"}
+    data = calendar_expected(client, env, **feb)
+    assert data["brief"] == [("payout", "2026-02-15", "out", "64000.00")]
+    assert data["rows"][0]["title"] == "Ведомость № 1 (аванс 02.2026)"
+    client.post(f"/api/payout-sheets/{adv['id']}/send", headers=env["h"])
+    assert len(calendar_expected(client, env, **feb)["rows"]) == 1
+    client.post(f"/api/payout-sheets/{adv['id']}/pay", headers=env["h"], json={"paid_on": "2026-02-15"})
+    assert calendar_expected(client, env, **feb)["rows"] == []

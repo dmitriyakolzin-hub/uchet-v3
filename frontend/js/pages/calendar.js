@@ -5,6 +5,7 @@ import { el, openForm, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
+const TAB_KEY = "uchet3_calendar_tab";
 const STATUS = { draft: "Черновик", pending: "На согласовании", approved: "Согласована", rejected: "Отклонена", paid: "Оплачена" };
 const DIRECTION = { out: "Выплата", in: "Поступление" };
 
@@ -34,7 +35,7 @@ export async function renderCalendar(view) {
     org = orgs.find((o) => String(o.id) === orgSelect.value);
     remember(ORG_KEY, org.id);
     ref = await loadReferences(org.id);
-    await load();
+    await openTab(tab);
   });
   const input = (type, key, label) => {
     const node = el("input", { type, value: filter[key], "aria-label": label });
@@ -51,8 +52,9 @@ export async function renderCalendar(view) {
   const can = (perm) => org.permissions.includes(perm);
   const query = () => new URLSearchParams(Object.entries(filter).filter(([, v]) => v)).toString();
 
-  view.replaceChildren(
-    el("div", { class: "page-head" }, el("h1", {}, "Платёжный календарь"), el("label", { class: "inline" }, "Организация ", orgSelect)),
+  const tabs = el("div", { class: "tabs" });
+  const content = el("div");
+  const requestsBox = el("div", {},
     el("p", { class: "muted" }, "Заявка на оплату: черновик → на согласовании → согласована → оплачена. Согласует финансовый директор. "
       + "Платёж из выписки на ту же сумму тому же контрагенту сам отметит согласованную заявку оплаченной. "
       + "Ожидаемые поступления согласования не требуют."),
@@ -68,6 +70,21 @@ export async function renderCalendar(view) {
           .catch((err) => toast(err.message, "error")) }, "Скачать в Excel")),
     listBox, totalsBox,
   );
+  const expectedBox = el("div");
+  view.replaceChildren(
+    el("div", { class: "page-head" }, el("h1", {}, "Платёжный календарь"), el("label", { class: "inline" }, "Организация ", orgSelect)),
+    tabs, content,
+  );
+  let tab = recall(TAB_KEY) === "expected" ? "expected" : "requests";
+  function openTab(key) {
+    tab = org.restricted ? "requests" : key;
+    remember(TAB_KEY, tab);
+    const list = [["requests", "Заявки"], ...(org.restricted ? [] : [["expected", "Ожидаемые платежи"]])];
+    tabs.replaceChildren(...list.map(([k, title]) =>
+      el("button", { type: "button", class: `tab${k === tab ? " active" : ""}`, onclick: () => openTab(k) }, title)));
+    content.replaceChildren(tab === "requests" ? requestsBox : expectedBox);
+    return tab === "requests" ? load() : loadExpected();
+  }
 
   function budgetCell(r) {
     const b = r.budget;
@@ -262,5 +279,56 @@ export async function renderCalendar(view) {
     cp.addEventListener("change", () => refill(contract, contractOptions(cp.value, entity.value), ""));
   }
 
-  await load();
+  // --- ожидаемые платежи: заявки, ведомости, регламентные операции, оплаты инвестпроектов ---
+  const expFilter = { date_from: from, date_to: to, legal_entity_id: "", include_pending: false };
+  const expList = el("div");
+  const expTotals = el("p", { class: "muted" });
+  const expInput = (key, label) => {
+    const node = el("input", { type: "date", value: expFilter[key], "aria-label": label });
+    node.addEventListener("change", () => { expFilter[key] = node.value; loadExpected(); });
+    return node;
+  };
+  const entitySelect = el("select", { "aria-label": "Юрлицо" });
+  entitySelect.addEventListener("change", () => { expFilter.legal_entity_id = entitySelect.value; loadExpected(); });
+  const pendingBox = el("input", { type: "checkbox", "aria-label": "С заявками на согласовании" });
+  pendingBox.addEventListener("change", () => { expFilter.include_pending = pendingBox.checked; loadExpected(); });
+  expectedBox.append(
+    el("p", { class: "muted" }, "Всё, что ещё не стало фактом в журнале: согласованные заявки, неоплаченные ведомости, "
+      + "невыполненные регламентные операции и плановые оплаты инвестпроектов из утверждённого бюджета. "
+      + "Платёж с прошедшей датой помечен «просрочен»."),
+    el("div", { class: "filters" },
+      el("label", { class: "inline" }, "С ", expInput("date_from", "С даты")),
+      el("label", { class: "inline" }, "по ", expInput("date_to", "По дату")),
+      entitySelect,
+      el("label", { class: "check" }, pendingBox, " с заявками на согласовании")),
+    expList, expTotals,
+  );
+
+  async function loadExpected() {
+    entitySelect.replaceChildren(...[["", "Все юрлица"], ...ref.entities.map((e) => [String(e.id), e.short_name])]
+      .map(([v, t]) => el("option", { value: v, selected: v === expFilter.legal_entity_id }, t)));
+    let data;
+    try {
+      const params = new URLSearchParams(Object.entries(expFilter).filter(([, v]) => v !== "" && v !== false));
+      data = await api.get(`/api/organizations/${org.id}/payment-calendar/expected?${params}`);
+    } catch (err) {
+      expList.replaceChildren(el("p", { class: "error" }, err.message));
+      return;
+    }
+    expList.replaceChildren(data.rows.length
+      ? el("table", { class: "recon versions expected" },
+        el("thead", {}, el("tr", {}, ...["Дата", "Источник", "Юрлицо", "Счёт / касса", "Контрагент", "Статья ДДС",
+          "Поступление", "Выплата"].map((t) => el("th", {}, t)))),
+        el("tbody", {}, ...data.rows.map((r) => el("tr", { "data-source": r.source },
+          el("td", {}, date(r.date), r.overdue ? el("div", { class: "over-budget" }, "просрочен") : null),
+          el("td", {}, r.title),
+          el("td", {}, r.legal_entity_name), el("td", {}, r.source_name), el("td", {}, r.counterparty_name),
+          el("td", {}, r.article_name),
+          el("td", { class: "num" }, r.direction === "in" ? money(r.amount) : ""),
+          el("td", { class: "num" }, r.direction === "out" ? money(r.amount) : "")))))
+      : el("p", { class: "muted" }, "За этот период ожидаемых платежей нет."));
+    expTotals.textContent = `Поступления: ${money(data.total_in)} · Выплаты: ${money(data.total_out)}`;
+  }
+
+  await openTab(tab);
 }
