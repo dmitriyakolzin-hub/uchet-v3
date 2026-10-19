@@ -215,6 +215,43 @@ def get_pl(f: Filter, db: DbSession):
     return _pl(db, f)
 
 
+def _balance(db: Session, f: ReportFilter) -> ColumnsReportOut:
+    result = reports.balance(db, f)
+    return ColumnsReportOut(columns=[c.__dict__ for c in result.columns], rows=[r.__dict__ for r in result.rows])
+
+
+@router.get("/balance", response_model=ColumnsReportOut)
+def get_balance(f: Filter, db: DbSession):
+    """Управленческий баланс на начало (день перед началом периода) и на конец периода."""
+    return _balance(db, f)
+
+
+class BalanceDetailOut(BaseModel):
+    account_id: int
+    account: str
+    analytics: dict[str, int | None]
+    name: str
+    amount: Decimal
+
+
+class BalanceDetailsOut(BaseModel):
+    line: str
+    title: str
+    date: dt.date
+    rows: list[BalanceDetailOut]
+    total: Decimal
+
+
+@router.get("/balance/details", response_model=BalanceDetailsOut)
+def get_balance_details(f: Filter, db: DbSession, line: str):
+    """Строка баланса с развёрнутым сальдо (дебиторка, кредиторка): по счетам и контрагентам на дату date_to."""
+    if line not in reports.BALANCE_LINES:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Нет такой строки баланса")
+    rows = reports.balance_details(db, f, line)
+    return BalanceDetailsOut(line=line, title=reports.BALANCE_LINES[line][1], date=f.date_to,
+                             rows=[r.__dict__ for r in rows], total=sum((r.amount for r in rows), reports.ZERO))
+
+
 @router.get("/dds", response_model=ColumnsReportOut)
 def get_dds(f: Filter, db: DbSession):
     return _dds(db, f)
@@ -265,10 +302,10 @@ def get_osv_xlsx(f: Filter, db: DbSession):
     return _xlsx(content, f"osv_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
 
 
-def _columns_xlsx(title: str, data: ColumnsReportOut, subtitle: str) -> bytes:
+def _columns_xlsx(title: str, data: ColumnsReportOut, subtitle: str, first_title: str = "Статья") -> bytes:
     rows = [(r.level, [r.title] + [r.values.get(c.key) if r.values else None for c in data.columns],
              r.kind in ("balance", "section", "total", "title")) for r in data.rows]
-    return xlsx.build(title, subtitle, [xlsx.XlsxColumn("Статья", 45)]
+    return xlsx.build(title, subtitle, [xlsx.XlsxColumn(first_title, 45)]
                       + [xlsx.XlsxColumn(c.title, 16, True) for c in data.columns], rows)
 
 
@@ -282,3 +319,9 @@ def get_dds_xlsx(f: Filter, db: DbSession):
 def get_pl_xlsx(f: Filter, db: DbSession):
     content = _columns_xlsx("Отчёт о прибылях и убытках", _pl(db, f), _subtitle(db, f))
     return _xlsx(content, f"pl_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
+
+
+@router.get("/balance.xlsx")
+def get_balance_xlsx(f: Filter, db: DbSession):
+    content = _columns_xlsx("Управленческий баланс", _balance(db, f), _subtitle(db, f), "Показатель")
+    return _xlsx(content, f"balance_{f.date_to:%Y-%m-%d}.xlsx")

@@ -459,3 +459,164 @@ def pl(db: Session, f: ReportFilter) -> ColumnsResult:
             rows.append(ReportRow(key, title, 0, "section", sections[key]))
             rows += sorted(items[key], key=lambda r: r.title.lower())
     return ColumnsResult(columns=columns, money_account_ids=[], rows=rows)
+
+
+# --- Управленческий баланс ---
+
+# Строки баланса: ключ → (раздел, название). Порядок — как в отчёте.
+BALANCE_LINES = {
+    "fixed": ("asset", "Основные средства и нематериальные активы"),
+    "investments": ("asset", "Финансовые вложения"),
+    "stock": ("asset", "Запасы"),
+    "vat": ("asset", "НДС по приобретённым ценностям"),
+    "money": ("asset", "Денежные средства"),
+    "customers_dr": ("asset", "Дебиторская задолженность покупателей"),
+    "suppliers_dr": ("asset", "Авансы, выданные поставщикам"),
+    "taxes_dr": ("asset", "Переплата по налогам и взносам"),
+    "staff_dr": ("asset", "Расчёты с персоналом (дебет)"),
+    "loans_dr": ("asset", "Переплата по кредитам и займам"),
+    "other_dr": ("asset", "Прочая дебиторская задолженность"),
+    "deferred": ("asset", "Расходы будущих периодов"),
+    "other_assets": ("asset", "Прочие активы"),
+    "share_capital": ("capital", "Уставный капитал"),
+    "reserves": ("capital", "Резервный и добавочный капитал"),
+    "retained": ("capital", "Нераспределённая прибыль прошлых лет"),
+    "current_profit": ("capital", "Прибыль (убыток) текущего периода"),
+    "loans_cr": ("liability", "Кредиты и займы"),
+    "suppliers_cr": ("liability", "Кредиторская задолженность поставщикам"),
+    "customers_cr": ("liability", "Авансы, полученные от покупателей"),
+    "taxes_cr": ("liability", "Задолженность по налогам и взносам"),
+    "staff_cr": ("liability", "Задолженность перед персоналом"),
+    "other_cr": ("liability", "Прочая кредиторская задолженность"),
+    "deferred_income": ("liability", "Доходы будущих периодов и резервы"),
+    "other_liabilities": ("liability", "Прочие обязательства"),
+    "unbalanced": ("liability", "Несведённые начальные остатки (счёт 00)"),
+}
+# Счета, сальдо которых целиком идёт в одну строку (по коду счёта верхнего уровня)
+WHOLE = {
+    **dict.fromkeys(["01", "02", "03", "04", "05", "07", "08"], "fixed"),
+    "58": "investments",
+    **dict.fromkeys(["10", "11", "15", "16", "41", "43", "45"], "stock"),
+    "19": "vat",
+    **dict.fromkeys(["50", "51", "52", "55", "57"], "money"),
+    "97": "deferred",
+    "80": "share_capital",
+    **dict.fromkeys(["82", "83"], "reserves"),
+    "84": "retained",
+    # счета затрат и финансового результата до закрытия периода — прибыль текущего периода
+    **dict.fromkeys(["20", "23", "25", "26", "28", "29", "44", "90", "91", "94", "99"], "current_profit"),
+    **dict.fromkeys(["96", "98"], "deferred_income"),
+    "00": "unbalanced",
+}
+# Расчётные счета: сальдо развёрнуто по контрагенту / договору / сотруднику; дебетовое — актив, кредитовое — пассив
+SPLIT = {
+    "62": ("customers_dr", "customers_cr"),
+    "60": ("suppliers_dr", "suppliers_cr"),
+    "66": ("loans_dr", "loans_cr"), "67": ("loans_dr", "loans_cr"),
+    "68": ("taxes_dr", "taxes_cr"), "69": ("taxes_dr", "taxes_cr"),
+    "70": ("staff_dr", "staff_cr"), "71": ("staff_dr", "staff_cr"), "73": ("staff_dr", "staff_cr"),
+}
+SPLIT_KINDS = ("counterparty", "contract", "employee")
+
+
+def _balance_line(account: Account, net: Decimal) -> str:
+    top = account.code.split(".")[0]
+    if top in WHOLE:
+        return WHOLE[top]
+    if top in SPLIT:
+        return SPLIT[top][0 if net > 0 else 1]
+    if account.account_type == "active":
+        return "other_assets"
+    if account.account_type == "passive":
+        return "other_liabilities"
+    return "other_dr" if net > 0 else "other_cr"
+
+
+def _balance_groups(db: Session, f: ReportFilter):
+    """Сальдо (дебет − кредит) на начало и на конец периода по счёту и аналитике расчётов."""
+    lines = f.lines(date_to=f.date_to).subquery()
+    signed = case((lines.c.side == "debit", lines.c.amount_rub), else_=-lines.c.amount_rub)
+    keys = [lines.c.account_id, *(getattr(lines.c, k) for k in SPLIT_KINDS)]
+    return db.execute(
+        select(*keys,
+               func.coalesce(func.sum(case((lines.c.op_date < f.date_from, signed))), 0),
+               func.coalesce(func.sum(signed), 0))
+        .group_by(*keys)
+    ).all()
+
+
+def balance_columns(f: ReportFilter) -> list[Column]:
+    start = f.date_from - dt.timedelta(days=1)
+    return [Column("opening", f"На {start:%d.%m.%Y}", start, start),
+            Column("closing", f"На {f.date_to:%d.%m.%Y}", f.date_to, f.date_to)]
+
+
+def balance(db: Session, f: ReportFilter) -> ColumnsResult:
+    columns = balance_columns(f)
+    accounts = {a.id: a for a in db.scalars(select(Account))}
+    values = {key: {"opening": ZERO, "closing": ZERO} for key in BALANCE_LINES}
+    whole_accounts: dict[str, set[int]] = {}
+    for account_id, _cp, _contract, _employee, opening, closing in _balance_groups(db, f):
+        account = accounts[account_id]
+        for col, net in (("opening", Decimal(opening) + ZERO), ("closing", Decimal(closing) + ZERO)):
+            if net == 0:
+                continue
+            line = _balance_line(account, net)
+            values[line][col] += net if BALANCE_LINES[line][0] == "asset" else -net
+            if line in WHOLE.values() or line in ("other_assets", "other_liabilities"):
+                whole_accounts.setdefault(line, set()).add(account_id)
+
+    def row(key: str) -> ReportRow:
+        title = BALANCE_LINES[key][1]
+        if key in whole_accounts:
+            # строка из целых счетов: расшифровка — проводки этих счетов на дату
+            drill = {"period": "closing", "account_id": sorted(whole_accounts[key])}
+        else:
+            drill = {"details": key}  # развёрнутое сальдо: сначала список контрагентов
+        return ReportRow(key, title, 1, "item", values[key], drill)
+
+    def total(key: str, title: str, keys: list[str], kind: str = "total") -> ReportRow:
+        return ReportRow(key, title, 0, kind, {c.key: sum((values[k][c.key] for k in keys), ZERO) for c in columns})
+
+    def section(name: str) -> list[str]:
+        return [k for k, (s, _) in BALANCE_LINES.items() if s == name and any(values[k].values())]
+
+    assets, capital, liabilities = section("asset"), section("capital"), section("liability")
+    rows = [ReportRow("title:asset", "АКТИВ", 0, "title", {}), *(row(k) for k in assets),
+            total("total_assets", "Итого актив", assets),
+            ReportRow("title:passive", "ПАССИВ", 0, "title", {}),
+            total("capital", "Капитал", capital, "section"), *(row(k) for k in capital),
+            total("liabilities", "Обязательства", liabilities, "section"), *(row(k) for k in liabilities),
+            total("total_passive", "Итого пассив", capital + liabilities)]
+    return ColumnsResult(columns=columns, money_account_ids=[], rows=rows)
+
+
+@dataclass
+class BalanceDetail:
+    account_id: int
+    account: str
+    analytics: dict[str, int | None]
+    name: str
+    amount: Decimal
+
+
+def balance_details(db: Session, f: ReportFilter, line: str) -> list[BalanceDetail]:
+    """Из чего сложилась строка с развёрнутым сальдо на конец периода: счёт + контрагент / договор / сотрудник."""
+    accounts = {a.id: a for a in db.scalars(select(Account))}
+    found = []
+    for account_id, cp, contract, employee, _opening, closing in _balance_groups(db, f):
+        net = Decimal(closing) + ZERO
+        if net == 0 or _balance_line(accounts[account_id], net) != line:
+            continue
+        found.append((accounts[account_id], {"counterparty": cp, "contract": contract, "employee": employee}, net))
+    names = {k: analytic_names(db, k, [a[k] for _, a, _ in found]) for k in SPLIT_KINDS}
+    sign = 1 if BALANCE_LINES[line][0] == "asset" else -1
+    result = [
+        BalanceDetail(
+            account.id, account.code, analytics,
+            ", ".join(names[k][v] for k, v in analytics.items() if v is not None) or "— без аналитики —",
+            net * sign,
+        )
+        for account, analytics, net in found
+    ]
+    return sorted(result, key=lambda d: (-d.amount, d.account, d.name))
