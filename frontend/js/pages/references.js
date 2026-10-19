@@ -282,6 +282,39 @@ const TABS = [
     },
   },
   {
+    key: "executors",
+    title: "ЦФУ (исполнители)",
+    addText: "Добавить отдел",
+    tree: true,
+    columns: (d, tab) => [
+      { title: "Отдел / исполнитель", field: "name", widthGrow: 3, headerSort: false },
+      { title: "Сотрудник", field: "employee_id", widthGrow: 2, headerSort: false,
+        formatter: lookup(d.employees, (e) => e.full_name) },
+      ...(tab.canEdit
+        ? [{ title: "", field: "_add", width: 150, headerSort: false,
+            formatter: (c) => (c.getRow().getData().parent_id ? "" : "+ исполнитель"),
+            cellClick: (_e, c) => {
+              const row = c.getRow().getData();
+              if (!row.parent_id) tab.ref.create({ parent_id: String(row.id) });
+            } }]
+        : []),
+    ],
+    fields: (d, row, preset) => {
+      const isMember = row ? Boolean(row.parent_id) : Boolean(preset.parent_id);
+      return [
+        { name: "name", label: isMember ? "Исполнитель" : "Отдел", required: true,
+          placeholder: isMember ? "Инженер Петров" : "Инженерный отдел" },
+        ...(isMember
+          ? [{ name: "parent_id", label: "Отдел", type: "select", required: true, numeric: true,
+               options: d.executors.filter((e) => !e.parent_id && e.id !== row?.id).map((e) => [String(e.id), e.name]) }]
+          : []),
+        { name: "employee_id", label: "Сотрудник (необязательно)", type: "select", numeric: true,
+          options: [["", "— не указан —"], ...d.employees.map((e) => [String(e.id), e.full_name])] },
+      ];
+    },
+    prepare: cfoTree,
+  },
+  {
     key: "nomenclature",
     title: "Номенклатура",
     addText: "Добавить номенклатуру",
@@ -356,7 +389,7 @@ export async function renderReferences(view) {
     const tab = TABS.find((t) => t.key === tabKey);
     // заранее загружаем только то, что нужно этой вкладке
     const need = (keys, load) => (keys.includes(tab.key) ? load() : []);
-    const [entities, banks, currencies, counterparties, cfos, units, articles] = await Promise.all([
+    const [entities, banks, currencies, counterparties, cfos, units, articles, employees, executors] = await Promise.all([
       api.get(`/api/organizations/${org.id}/legal-entities`),
       need(["bank-accounts", "salary-projects"], () => api.get("/api/banks")),
       need(["bank-accounts", "contracts"], () => api.get("/api/currencies")),
@@ -364,8 +397,11 @@ export async function renderReferences(view) {
       need(["cfos", "employees", "warehouses"], () => api.get(`/api/organizations/${org.id}/cfos`)),
       need(["nomenclature"], () => api.get("/api/units")),
       need(["employees"], () => api.get("/api/articles")),
+      need(["executors"], () => api.get(`/api/organizations/${org.id}/employees`)),
+      need(["executors"], () => api.get(`/api/organizations/${org.id}/executors`)),
     ]);
-    const d = { entities, banks, currencies, counterparties, cfos, units, articles, rub: currencies.find((c) => c.is_base) };
+    const d = { entities, banks, currencies, counterparties, cfos, units, articles, employees, executors,
+      rub: currencies.find((c) => c.is_base) };
     const state = { canEdit: org.permissions.includes("edit_reference"), ref: null };
     state.ref = await referenceTab(tabBox, {
       title: tab.title,
@@ -377,6 +413,7 @@ export async function renderReferences(view) {
       // дерево ЦФО нужно и формам — обновляем его вместе с таблицей
       prepare: (list) => {
         if (tab.key === "cfos") d.cfos = list;
+        if (tab.key === "executors") d.executors = list;
         return tab.prepare ? tab.prepare(list) : list;
       },
       columns: tab.columns(d, state),

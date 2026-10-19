@@ -12,6 +12,7 @@ const KIND_TITLES = {
   warehouse: "Склад",
   fixed_asset: "Основное средство",
   cfo: "ЦФО",
+  executor: "ЦФУ",
   cash_flow_item: "Статья ДДС",
   pl_item: "Статья ОПиУ",
 };
@@ -93,6 +94,9 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
           .map((a) => [String(a.id), a.inventory_number ? `${a.name} (${a.inventory_number})` : a.name]);
       case "cfo":
         return ref.cfos.map((c) => [String(c.id), ref.cfoLabel.get(c.id)]);
+      case "executor":
+        return ref.executors.map((e) => [String(e.id), ref.executorLabel.get(e.id)])
+          .sort((a, b) => a[1].localeCompare(b[1]));
       case "cash_flow_item":
         return active(ref.articles, null).filter((a) => a.is_cash_flow).map((a) => [String(a.id), a.name]);
       case "pl_item":
@@ -106,10 +110,12 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
     const box = posting.querySelector(`.analytics[data-side="${side}"]`);
     const accountId = Number(posting.querySelector(`[name="${side}_account"]`).value) || null;
     const account = accountsById.get(accountId);
-    const kinds = account ? account.analytics : [];
+    // ЦФУ (исполнитель) — необязательно, там, где ведётся ЦФО
+    const kinds = account ? [...account.analytics, ...(account.analytics.includes("cfo") ? ["executor"] : [])] : [];
     box.replaceChildren(
       ...kinds.map((kind) => {
-        const control = select([["", `— ${KIND_TITLES[kind].toLowerCase()} —`], ...optionsFor(kind, side, posting)], values[kind] ?? "", {
+        const empty = kind === "executor" ? "— без ЦФУ —" : `— ${KIND_TITLES[kind].toLowerCase()} —`;
+        const control = select([["", empty], ...optionsFor(kind, side, posting)], values[kind] ?? "", {
           "data-side": side, "data-kind": kind, "aria-label": `${KIND_TITLES[kind]} (${side === "debit" ? "дебет" : "кредит"})`,
         });
         // договоры зависят от контрагента — перерисовываем при его смене

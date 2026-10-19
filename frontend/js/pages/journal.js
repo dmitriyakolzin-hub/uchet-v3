@@ -27,12 +27,13 @@ function remember(key, value) {
 export async function loadReferences(orgId) {
   const o = `/api/organizations/${orgId}`;
   const [accounts, articles, currencies, entities, bankAccounts, counterparties, contracts, employees, nomenclature, warehouses, cfos,
-    fixedAssets] =
+    fixedAssets, executors] =
     await Promise.all([
       api.get("/api/accounts"), api.get("/api/articles"), api.get("/api/currencies"),
       api.get(`${o}/legal-entities`), api.get(`${o}/bank-accounts`), api.get(`${o}/counterparties`),
       api.get(`${o}/contracts`), api.get(`${o}/employees`), api.get(`${o}/nomenclature`),
       api.get(`${o}/warehouses`), api.get(`${o}/cfos`), api.get(`${o}/fixed-assets`),
+      api.get(`${o}/executors`),
     ]);
   const cfoNames = new Map(cfos.map((c) => [String(c.id), c.name]));
   const activeOnly = (items) => items.filter((i) => i.is_active);
@@ -40,7 +41,9 @@ export async function loadReferences(orgId) {
     accounts, articles, currencies, entities,
     bankAccounts: activeOnly(bankAccounts), counterparties: activeOnly(counterparties), contracts: activeOnly(contracts),
     employees: activeOnly(employees), nomenclature: activeOnly(nomenclature), warehouses: activeOnly(warehouses),
-    cfos: activeOnly(cfos), fixedAssets: activeOnly(fixedAssets),
+    cfos: activeOnly(cfos), fixedAssets: activeOnly(fixedAssets), executors: activeOnly(executors),
+    executorLabel: new Map(executors.map((e) => [e.id, e.parent_id
+      ? `${executors.find((x) => x.id === e.parent_id)?.name ?? ""} / ${e.name}` : e.name])),
     cfoLabel: new Map(cfos.map((c) => [c.id, c.path.split(".").map((id) => cfoNames.get(id)).join(" / ")])),
     counterpartyName: new Map(counterparties.map((c) => [c.id, c.name])),
     rubId: currencies.find((c) => c.is_base)?.id,

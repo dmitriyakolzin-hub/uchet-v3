@@ -18,6 +18,7 @@ from app.models import (
     Contract,
     Counterparty,
     Employee,
+    Executor,
     FixedAsset,
     Nomenclature,
     Operation,
@@ -43,6 +44,7 @@ class ReportFilter:
     with_drafts: bool = False
     # План вместо факта: месяц «ГГГГ-ММ» → версия бюджета, план которой берётся за этот месяц
     plan_versions: tuple[tuple[str, int], ...] | None = None
+    executor_ids: tuple[int, ...] | None = None  # ЦФУ (отдел — вместе с исполнителями)
 
     @property
     def statuses(self) -> tuple[str, ...]:
@@ -55,6 +57,7 @@ class ReportFilter:
         query = select_lines(
             self.organization_id, statuses=self.statuses, date_from=date_from, date_to=date_to,
             legal_entity_id=self.legal_entity_id, cfo_branch=self.cfo_id,
+            executor_ids=list(self.executor_ids) if self.executor_ids is not None else None,
             budget_version_ids=None if self.plan_versions is None else sorted({v for _, v in self.plan_versions}),
             **conditions,
         )
@@ -179,6 +182,7 @@ def analytic_names(db: Session, kind: str, ids) -> dict[int, str]:
         "warehouse": (Warehouse, Warehouse.name),
         "fixed_asset": (FixedAsset, FixedAsset.name),
         "cfo": (Cfo, Cfo.name),
+        "executor": (Executor, Executor.name),
         "cash_flow_item": (Article, Article.name),
         "pl_item": (Article, Article.name),
     }[kind]

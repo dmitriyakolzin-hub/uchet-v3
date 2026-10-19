@@ -16,6 +16,7 @@ class AnalyticKind(StrEnum):
     WAREHOUSE = "warehouse"
     FIXED_ASSET = "fixed_asset"
     CFO = "cfo"
+    EXECUTOR = "executor"
     CASH_FLOW_ITEM = "cash_flow_item"
     PL_ITEM = "pl_item"
 
@@ -29,9 +30,13 @@ ANALYTIC_TITLES: dict[AnalyticKind, str] = {
     AnalyticKind.WAREHOUSE: "Склад",
     AnalyticKind.FIXED_ASSET: "Основное средство",
     AnalyticKind.CFO: "ЦФО",
+    AnalyticKind.EXECUTOR: "ЦФУ",
     AnalyticKind.CASH_FLOW_ITEM: "Статья ДДС",
     AnalyticKind.PL_ITEM: "Статья ОПиУ",
 }
+
+# Необязательная аналитика: вид → при каком обязательном виде её можно указать (ЦФУ — там, где ведётся ЦФО)
+OPTIONAL_ANALYTICS: dict[str, str] = {AnalyticKind.EXECUTOR: AnalyticKind.CFO}
 
 ACCOUNT_TYPES = {
     "active": "Активный",

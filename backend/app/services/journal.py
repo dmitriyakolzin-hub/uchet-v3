@@ -11,7 +11,7 @@ from decimal import Decimal
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from app.core.analytics import ANALYTIC_TITLES, AnalyticKind
+from app.core.analytics import ANALYTIC_TITLES, OPTIONAL_ANALYTICS, AnalyticKind
 from app.core.money import BASE_CURRENCY, to_rub
 from app.models import (
     Account,
@@ -22,6 +22,7 @@ from app.models import (
     Counterparty,
     Currency,
     Employee,
+    Executor,
     FixedAsset,
     LegalEntity,
     Nomenclature,
@@ -45,6 +46,7 @@ REF_MODELS = {
     "warehouse": Warehouse,
     "fixed_asset": FixedAsset,
     "cfo": Cfo,
+    "executor": Executor,
     "cash_flow_item": Article,
     "pl_item": Article,
 }
@@ -200,7 +202,7 @@ def posting_errors(db: Session, op: Operation) -> list[str]:
                 title = ANALYTIC_TITLES[AnalyticKind(kind)]
                 if kind in required and value is None:
                     errors.append(f"{side_where} {account.code}: не заполнено «{title}»")
-                elif kind not in required and value is not None:
+                elif kind not in required and value is not None and OPTIONAL_ANALYTICS.get(kind) not in required:
                     errors.append(f"{side_where} {account.code}: «{title}» на этом счёте не ведётся")
 
             errors.extend(_entity_errors(db, op, p, side, side_where))

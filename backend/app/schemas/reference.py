@@ -399,3 +399,28 @@ class FixedAssetOut(_Out):
     disposal_kind: str | None = None
     disposal_operation_id: int | None = None
     is_active: bool
+
+
+# --- ЦФУ (исполнители): отдел → исполнитель ---
+
+
+class ExecutorCreate(BaseModel):
+    name: Name
+    parent_id: int | None = None  # отдел; не указан — это отдел
+    employee_id: int | None = None
+
+
+class ExecutorUpdate(BaseModel):
+    name: Name | None = None
+    parent_id: int | None = None
+    employee_id: int | None = None
+    is_active: bool | None = None
+
+
+class ExecutorOut(_Out):
+    id: int
+    organization_id: int
+    name: str
+    parent_id: int | None
+    employee_id: int | None
+    is_active: bool

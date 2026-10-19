@@ -68,3 +68,14 @@ class Employee(OrgScoped, Base):
     # Условия оплаты (docs/TZ.md, раздел 14): работодатель и статья затрат ОПиУ для начисленной зарплаты
     legal_entity_id: Mapped[int | None] = mapped_column(ForeignKey("legal_entities.id", ondelete="RESTRICT"))
     pl_item_id: Mapped[int | None] = mapped_column(ForeignKey("articles.id", ondelete="RESTRICT"))
+
+
+class Executor(OrgScoped, Base):
+    """ЦФУ — исполнитель расхода (кто делает), в отличие от ЦФО (где расход): два уровня —
+    отдел (без вышестоящего) → исполнитель (docs/TZ.md, раздел 16)."""
+
+    __tablename__ = "executors"
+
+    name: Mapped[str] = mapped_column(String(255))
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("executors.id", ondelete="RESTRICT"), index=True)
+    employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id", ondelete="RESTRICT"))

@@ -71,6 +71,7 @@ def select_lines(
     exclude_corr_account_ids: list[int] | None = None,
     opening: bool | None = None,
     budget_version_ids: list[int] | None = None,
+    executor_ids: list[int] | None = None,
 ) -> Select:
     """Строки проводок по условиям. Счёт (account_id или любой из account_ids) отбирается
     вместе со всеми своими субсчетами. Аналитика со значением None — «не указана».
@@ -78,6 +79,7 @@ def select_lines(
     exclude_corr_account_ids — без строк, где корреспондирующий счёт — один из этих (с субсчетами).
     opening — True: только ввод начальных остатков, False: без него, None: все.
     budget_version_ids — плановые операции этих версий бюджета (вместе со statuses=("plan",)).
+    executor_ids — только строки с одним из этих ЦФУ.
 
     По умолчанию — только проведённые операции (так считают отчёты).
     """
@@ -104,6 +106,8 @@ def select_lines(
     for kind, value in (analytics or {}).items():
         column = getattr(lines.c, kind)
         query = query.where(column.is_(None) if value is None else and_(column == value))
+    if executor_ids is not None:
+        query = query.where(lines.c.executor.in_(executor_ids))
     if cfo_branch is not None:
         root = select(Cfo.path).where(Cfo.id == cfo_branch).scalar_subquery()
         query = query.where(lines.c.cfo.in_(select(Cfo.id).where(Cfo.path.op("<@")(root))))

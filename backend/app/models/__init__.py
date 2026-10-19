@@ -1,7 +1,7 @@
 from app.models.account import Account, AccountAnalytic
 from app.models.article import Article
 from app.models.budget import Budget, BudgetVersion
-from app.models.cfo import Cfo, Employee
+from app.models.cfo import Cfo, Employee, Executor
 from app.models.closing import PeriodClosing, ResultClosing, RoutineRule, RoutineRun
 from app.models.currency import Currency, ExchangeRate
 from app.models.fixed_asset import DepreciationRun, FixedAsset
@@ -37,6 +37,7 @@ __all__ = [
     "Employee",
     "EmployeeSalary",
     "ExchangeRate",
+    "Executor",
     "FixedAsset",
     "LegalEntity",
     "Membership",
