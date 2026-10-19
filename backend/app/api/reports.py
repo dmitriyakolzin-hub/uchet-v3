@@ -205,6 +205,16 @@ def _dds(db: Session, f: ReportFilter) -> ColumnsReportOut:
     )
 
 
+def _pl(db: Session, f: ReportFilter) -> ColumnsReportOut:
+    result = reports.pl(db, f)
+    return ColumnsReportOut(columns=[c.__dict__ for c in result.columns], rows=[r.__dict__ for r in result.rows])
+
+
+@router.get("/pl", response_model=ColumnsReportOut)
+def get_pl(f: Filter, db: DbSession):
+    return _pl(db, f)
+
+
 @router.get("/dds", response_model=ColumnsReportOut)
 def get_dds(f: Filter, db: DbSession):
     return _dds(db, f)
@@ -266,3 +276,9 @@ def _columns_xlsx(title: str, data: ColumnsReportOut, subtitle: str) -> bytes:
 def get_dds_xlsx(f: Filter, db: DbSession):
     content = _columns_xlsx("Движение денежных средств", _dds(db, f), _subtitle(db, f))
     return _xlsx(content, f"dds_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
+
+
+@router.get("/pl.xlsx")
+def get_pl_xlsx(f: Filter, db: DbSession):
+    content = _columns_xlsx("Отчёт о прибылях и убытках", _pl(db, f), _subtitle(db, f))
+    return _xlsx(content, f"pl_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")

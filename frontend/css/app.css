@@ -181,6 +181,7 @@ table.recon tfoot td { text-align: left; color: var(--muted); border-bottom: 0; 
 
 /* --- Отчёты --- */
 
+.tabulator .tabulator-row.row-key { background: var(--accent-soft); }
 .tabulator-cell .drill { cursor: pointer; color: var(--accent); }
 .tabulator-cell .drill:hover { text-decoration: underline; }
 .link-like { cursor: pointer; color: var(--accent); }

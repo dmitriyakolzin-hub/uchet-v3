@@ -2,6 +2,7 @@
 import { api } from "../api.js";
 import { ddsReport } from "../reports/dds.js";
 import { osvReport } from "../reports/osv.js";
+import { plReport } from "../reports/pl.js";
 import { reportFilters } from "../reports/common.js";
 import { el, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
@@ -19,6 +20,7 @@ function remember(key, value) {
 const REPORTS = {
   osv: { title: "ОСВ", make: osvReport },
   dds: { title: "ДДС", make: ddsReport },
+  pl: { title: "ОПиУ", make: plReport },
 };
 
 export async function renderReports(view) {
