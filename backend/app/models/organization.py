@@ -47,6 +47,7 @@ class LegalEntity(Base):
         CheckConstraint("inn ~ '^([0-9]{10}|[0-9]{12})$'", name="inn"),
         CheckConstraint("kpp IS NULL OR kpp ~ '^[0-9]{9}$'", name="kpp"),
         CheckConstraint("ogrn IS NULL OR ogrn ~ '^([0-9]{13}|[0-9]{15})$'", name="ogrn"),
+        CheckConstraint("insurance_tariff IN ('sme', 'general')", name="insurance_tariff"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -58,6 +59,8 @@ class LegalEntity(Base):
     inn: Mapped[str] = mapped_column(String(12))
     kpp: Mapped[str | None] = mapped_column(String(9))
     ogrn: Mapped[str | None] = mapped_column(String(15))
+    # тариф страховых взносов: sme — МСП (по умолчанию), general — общий (docs/TZ.md, раздел 14)
+    insurance_tariff: Mapped[str] = mapped_column(String(10), default="sme", server_default="sme")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

@@ -41,12 +41,16 @@ class OrganizationOut(BaseModel):
     restricted: bool = False  # доступ ограничен веткой ЦФО
 
 
+InsuranceTariff = Literal["sme", "general"]  # тариф страховых взносов: МСП или общий
+
+
 class LegalEntityCreate(BaseModel):
     full_name: LongName
     short_name: Name
     inn: Inn
     kpp: Kpp | None = None
     ogrn: Ogrn | None = None
+    insurance_tariff: InsuranceTariff = "sme"
 
 
 class LegalEntityUpdate(BaseModel):
@@ -55,6 +59,7 @@ class LegalEntityUpdate(BaseModel):
     inn: Inn | None = None
     kpp: Kpp | None = None
     ogrn: Ogrn | None = None
+    insurance_tariff: InsuranceTariff | None = None
     is_active: bool | None = None
 
 
@@ -68,4 +73,5 @@ class LegalEntityOut(BaseModel):
     inn: str
     kpp: str | None
     ogrn: str | None
+    insurance_tariff: str
     is_active: bool

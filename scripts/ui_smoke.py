@@ -36,7 +36,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(14)
+    expect(page.locator("#nav a")).to_have_count(15)
     expect(page.locator("#nav a.active")).to_have_text("Журнал операций")  # открывается первым
     page.click("#nav a[data-page=organizations]")
 
@@ -201,6 +201,7 @@ with sync_playwright() as p:
                            "hired_on": "2026-01-10"})
     d.locator("[name=cfo_id]").select_option(label="АВМВ / Торговля / Филиал Юг")
     d.locator("[name=pl_item_id]").select_option(label="Оплата труда — коммерческий персонал")
+    d.locator("[name=legal_entity_id]").select_option(label="Ромашка")
     d.locator("button[type=submit]").click()
     emp = page.locator(".tabulator-row", has_text="Иванов Иван")
     expect(emp).to_contain_text("АВМВ / Торговля / Филиал Юг")
@@ -490,6 +491,24 @@ with sync_playwright() as p:
     d.locator("button", has_text="Закрыть").click()
     page.click("button.tab:has-text('ОСВ')")
 
+    # зарплата: начисление за текущий месяц, премия, проведение в журнал
+    page.click("#nav a[data-page=payroll]")
+    page.click("text=Новое начисление")
+    d = page.locator("dialog[open]")
+    d.locator("button[type=submit]").click()
+    row = page.locator(".tabulator-row", has_text="Иванов Иван")
+    expect(row).to_contain_text("85 000,00")
+    row.locator(".tabulator-cell[tabulator-field=bonus]").click()
+    page.keyboard.type("15 000")
+    page.keyboard.press("Enter")
+    expect(row.locator(".tabulator-cell[tabulator-field=accrued]")).to_have_text("100 000,00")
+    expect(row.locator(".tabulator-cell[tabulator-field=ndfl]")).to_have_text("13 000,00")
+    page.click("button:has-text('Провести')")
+    expect(page.locator("text=Статус: проведено")).to_be_visible()
+    page.screenshot(path=f"{OUT}/31_payroll.png", full_page=True)
+    page.click("text=← К списку")
+    expect(page.locator("tr", has_text="Ромашка")).to_contain_text("Проведено")
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")
@@ -514,7 +533,7 @@ with sync_playwright() as p:
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(13)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(14)  # нет «Пользователи»
     page.click("#nav a[data-page=organizations]")
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою
