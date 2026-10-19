@@ -8,6 +8,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 MONEY_FORMAT = "#,##0.00;-#,##0.00;"  # ноль — пустая ячейка, как в отчёте на экране
+QUANTITY_FORMAT = "#,##0.###;-#,##0.###;"
 
 
 @dataclass
@@ -15,6 +16,7 @@ class XlsxColumn:
     title: str
     width: int = 16
     money: bool = False
+    quantity: bool = False
 
 
 def build(title: str, subtitle: str, columns: list[XlsxColumn], rows: list[tuple],
@@ -44,6 +46,8 @@ def build(title: str, subtitle: str, columns: list[XlsxColumn], rows: list[tuple
             cell = ws.cell(row=r, column=i)
             if col.money:
                 cell.number_format = MONEY_FORMAT
+            elif col.quantity:
+                cell.number_format = QUANTITY_FORMAT
             if bold:
                 cell.font = Font(bold=True)
         if level:

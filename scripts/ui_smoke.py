@@ -661,6 +661,10 @@ with sync_playwright() as p:
     # CEO видит отчёты
     page.click("#nav a[data-page=reports]")
     expect(page.locator(".tabulator-row", has_text="Расчётные счета")).to_contain_text("8 499,50")
+    page.click("button.tab:has-text('Склад')")
+    expect(page.locator(".tabulator-col-title", has_text="Остаток на конец")).to_be_visible()
+    expect(page.locator(".tabulator-row", has_text="Итого")).to_be_visible()
+    page.click("button.tab:has-text('ОСВ')")
 
     # CEO видит деньги без кнопок ввода
     page.click("#nav a[data-page=money]")

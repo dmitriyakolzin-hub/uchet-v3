@@ -7,6 +7,7 @@ import { osvReport } from "../reports/osv.js";
 import { planFactReport } from "../reports/planfact.js";
 import { plReport } from "../reports/pl.js";
 import { reportFilters } from "../reports/common.js";
+import { stockReport } from "../reports/stock.js";
 import { el, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
 
@@ -26,6 +27,7 @@ const REPORTS = {
   pl: { title: "ОПиУ", make: plReport },
   balance: { title: "Баланс", make: balanceReport },
   debts: { title: "Дебиторка и кредиторка", make: debtsReport },
+  stock: { title: "Склад", make: stockReport },
   planfact: { title: "План/факт", make: planFactReport },
 };
 
