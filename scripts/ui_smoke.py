@@ -36,7 +36,9 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(8)
+    expect(page.locator("#nav a")).to_have_count(9)
+    expect(page.locator("#nav a.active")).to_have_text("Журнал операций")  # открывается первым
+    page.click("#nav a[data-page=organizations]")
 
     # организация
     page.click("text=Добавить организацию")
@@ -201,6 +203,52 @@ with sync_playwright() as p:
     d.locator("button[type=submit]").click()
     expect(page.locator(".tabulator-row", has_text="Иванов Иван")).to_contain_text("АВМВ / Торговля / Филиал Юг")
 
+    # журнал: операция по статье с шаблоном, проведение, неполный черновик, массовое проведение
+    page.click("#nav a[data-page=journal]")
+    page.locator(".inline-select").select_option(label="Группа АВМВ")
+    page.click("text=Новая операция")
+    d = page.locator("dialog[open]")
+    d.locator("[name=article_id]").select_option(label="Оплата поставщикам")
+    expect(d.locator("[name=debit_account] option:checked")).to_have_text("60.01 Расчёты с поставщиками и подрядчиками")
+    expect(d.locator("[name=credit_account] option:checked")).to_have_text("51 Расчётные счета")
+    d.locator("[name=amount]").fill("1 500,50")
+    d.locator("[aria-label='Контрагент (дебет)']").select_option(label="Поставщик Плюс (7701111111)")
+    d.locator("[aria-label='Договор (дебет)']").select_option(index=1)
+    d.locator("[aria-label='Расчётный счёт (кредит)']").select_option(index=1)
+    expect(d.locator("[aria-label='Статья ДДС (кредит)'] option:checked")).to_have_text("Оплата поставщикам")
+    d.locator("[name=description]").fill("Оплата по счёту 15")
+    page.screenshot(path=f"{OUT}/10_operation_form.png", full_page=True)
+    d.locator("button", has_text="Сохранить и провести").click()
+    row = page.locator(".tabulator-row", has_text="Оплата по счёту 15")
+    expect(row).to_contain_text("Проведена")
+    expect(row).to_contain_text("1 500,50")
+    expect(row).to_contain_text("60.01 → 51")
+
+    page.click("text=Новая операция")
+    d = page.locator("dialog[open]")
+    d.locator("[name=debit_account]").select_option(label="60.01 Расчёты с поставщиками и подрядчиками")
+    d.locator("[name=description]").fill("Неполный черновик")
+    d.locator("button", has_text="Сохранить черновик").click()
+    expect(page.locator(".tabulator-row", has_text="Неполный черновик")).to_contain_text("Черновик")
+
+    page.locator(".tabulator-row", has_text="Неполный черновик").locator("input[type=checkbox]").check()
+    page.locator(".bulk-bar button", has_text="Провести").click()
+    bulk_dialog = page.locator("dialog[open]")
+    expect(bulk_dialog).to_contain_text("выполнено 0, не выполнено 1")
+    expect(bulk_dialog).to_contain_text("не указана сумма")
+    page.screenshot(path=f"{OUT}/11_bulk_errors.png", full_page=True)
+    bulk_dialog.locator("button", has_text="Понятно").click()
+
+    page.locator(".tabulator-row", has_text="Оплата по счёту 15").locator(".tabulator-cell[tabulator-field=description]").click()
+    d = page.locator("dialog[open]")
+    expect(d.locator("h2")).to_contain_text("Проведена")
+    expect(d.locator("[name=amount]")).to_be_disabled()
+    d.locator("button", has_text="История").click()
+    expect(d.locator(".history")).to_contain_text("провёл(а)")
+    d.locator("button", has_text="Закрыть").click()
+    expect(page.locator(".bulk-bar")).to_be_hidden()  # открытие операции не отмечает строку
+    page.screenshot(path=f"{OUT}/12_journal.png", full_page=True)
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")
@@ -215,17 +263,26 @@ with sync_playwright() as p:
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(7)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(8)  # нет «Пользователи»
+    page.click("#nav a[data-page=organizations]")
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою
     expect(page.locator("h2", has_text="Юрлица: Группа АВМВ")).to_be_visible()  # выбрана автоматически
     expect(page.locator(".tabulator-row", has_text="Ромашка")).to_be_visible()
     expect(page.locator("text=Добавить юрлицо")).to_be_hidden()
     page.goto(BASE + "/#/users")  # прямой переход в чужой раздел
-    expect(page.locator("#nav a.active")).to_have_text("Организации")
+    expect(page.locator("#nav a.active")).to_have_text("Журнал операций")
+    page.click("#nav a[data-page=organizations]")
     expect(page.locator(".tabulator-row", has_text="Ромашка")).to_be_visible()
     expect(page.locator(".tabulator-cell[tabulator-field=_edit]", has_text="✎")).to_have_count(0)
     page.screenshot(path=f"{OUT}/4_ceo.png", full_page=True)
+
+    # CEO видит журнал, но не вводит и не проводит
+    page.click("#nav a[data-page=journal]")
+    expect(page.locator(".tabulator-row", has_text="Оплата по счёту 15")).to_be_visible()
+    expect(page.locator("text=Новая операция")).to_be_hidden()
+    page.locator(".tabulator-row", has_text="Оплата по счёту 15").locator("input[type=checkbox]").check()
+    expect(page.locator(".bulk-bar")).to_be_hidden()
 
     # CEO видит справочники организации без кнопок изменения
     page.click("#nav a[data-page=references]")
