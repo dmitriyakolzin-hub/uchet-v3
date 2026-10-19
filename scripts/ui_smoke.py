@@ -588,6 +588,13 @@ with sync_playwright() as p:
     # октябрь: черновик мешает закрыть
     expect(page.locator("select[aria-label='Месяц'] option:checked")).to_have_text("Октябрь")
     expect(page.locator("li.check-fail", has_text="Нет черновиков")).to_be_visible()
+    expect(page.locator("li.check-fail", has_text="Финансовый результат определён")).to_be_visible()  # зарплата на 44
+    page.click("button:has-text('Определить финансовый результат')")
+    expect(page.locator("tr", has_text="Закрытие 26, 44, 90, 91 на 99")).to_be_visible()
+    expect(page.locator("li.check-ok", has_text="Финансовый результат определён")).to_be_visible()
+    page.once("dialog", lambda dlg: dlg.accept())
+    page.locator("button.danger", has_text="Отменить").first.click()
+    expect(page.locator("text=За этот месяц финансовый результат ещё не определяли.")).to_be_visible()
     expect(page.locator("button:has-text('Закрыть месяц')")).to_be_disabled()
     # ноябрь: регламентная операция ждёт выполнения
     page.locator("select[aria-label='Месяц']").select_option(label="Ноябрь")

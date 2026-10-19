@@ -51,7 +51,10 @@ def operation(client, env, op_date, post=True, description="Аренда офи�
     return resp.json()
 
 
-def close(client, env, month, year=2026):
+def close(client, env, month, year=2026, with_result=True):
+    """Закрыть месяц; with_result — сначала определить финансовый результат (26, 44, 90, 91 → 99)."""
+    if with_result:
+        client.post(f"{env['o']}/closing/result", headers=env["h"], json={"year": year, "month": month})
     return client.post(f"{env['o']}/closing/close", headers=env["h"], json={"year": year, "month": month})
 
 
@@ -138,6 +141,8 @@ def test_checks_and_order(client, env):
     assert data["by_code"]["payroll"]["ok"] and not data["can_close"]
     client.post(f"{env['o']}/routine-runs", headers=env["h"], json={"year": 2026, "month": 3})
     depreciate(client, env, 3)
+    assert state(client, env, 3)["by_code"]["result"]["ok"] is False  # аренда и амортизация на 26
+    client.post(f"{env['o']}/closing/result", headers=env["h"], json={"year": 2026, "month": 3})
     assert state(client, env, 3)["can_close"]
 
 

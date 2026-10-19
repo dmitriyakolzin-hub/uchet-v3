@@ -38,6 +38,7 @@ export function columnsReport({ box, ctx, path, hint, fileName, onDetails, first
       date_from: col.date_from, date_to: col.date_to,
       ...(money.length ? { account_id: money } : {}),
       ...(r.drill.exclude_corr ? { exclude_corr_account_id: money } : {}),
+      ...(r.drill.exclude_corr_ids?.length ? { exclude_corr_account_id: r.drill.exclude_corr_ids } : {}),
       ...(r.drill.account_id ? { account_id: r.drill.account_id } : {}),
       ...(r.drill.side ? { side: r.drill.side } : {}),
     };

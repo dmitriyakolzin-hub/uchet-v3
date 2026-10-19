@@ -27,7 +27,7 @@ from app.models import (
     Posting,
     User,
 )
-from app.services import fixed_assets, money, routines
+from app.services import fixed_assets, money, result, routines
 from app.services.journal import JournalError
 
 MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь",
@@ -109,17 +109,17 @@ def _next_open_month(organization: Organization) -> dt.date | None:
 def checks(db: Session, organization_id: int, year: int, month: int) -> list[Check]:
     organization = db.get(Organization, organization_id)
     start, end = month_bounds(year, month)
-    result = []
+    found_checks: list[Check] = []
 
     closed = organization.closed_through
     expected = _next_open_month(organization)
     if closed is not None and end <= closed:
-        result.append(Check("order", "Месяц ещё открыт", False, True, [f"Период уже закрыт по {closed:%d.%m.%Y}"]))
+        found_checks.append(Check("order", "Месяц ещё открыт", False, True, [f"Период уже закрыт по {closed:%d.%m.%Y}"]))
     elif expected is not None and start != expected:
-        result.append(Check("order", "Предыдущие месяцы закрыты", False, True,
+        found_checks.append(Check("order", "Предыдущие месяцы закрыты", False, True,
                             [f"Сначала закройте {month_title(expected)} — месяцы закрываются по порядку"]))
     else:
-        result.append(Check("order", "Предыдущие месяцы закрыты", True, True))
+        found_checks.append(Check("order", "Предыдущие месяцы закрыты", True, True))
 
     # черновики — после закрытия их не провести
     drafts = select(Operation.number, Operation.op_date).where(
@@ -128,14 +128,14 @@ def checks(db: Session, organization_id: int, year: int, month: int) -> list[Che
     if closed is not None:
         drafts = drafts.where(Operation.op_date > closed)
     found = db.execute(drafts.order_by(Operation.op_date, Operation.number)).all()
-    result.append(Check("drafts", "Нет черновиков", not found, True,
+    found_checks.append(Check("drafts", "Нет черновиков", not found, True,
                         [f"Черновиков: {len(found)} — проведите, удалите или аннулируйте. Номера: "
                          + ", ".join(str(n) for n, _ in found[:30]) + (" …" if len(found) > 30 else "")]
                         if found else []))
 
     pending = [r for r in routines.due(db, organization_id, year, month)
                if routines.run_of(db, r.id, year, month) is None]
-    result.append(Check("routines", "Регламентные операции выполнены", not pending, True,
+    found_checks.append(Check("routines", "Регламентные операции выполнены", not pending, True,
                         [f"Не выполнено: {r.name}" for r in pending]))
 
     entities = list(db.scalars(select(LegalEntity).where(LegalEntity.organization_id == organization_id)
@@ -145,8 +145,14 @@ def checks(db: Session, organization_id: int, year: int, month: int) -> list[Che
         if fixed_assets.preview(db, organization_id, e.id, year, month)
         and not db.scalar(select(DepreciationRun.id).where(
             DepreciationRun.legal_entity_id == e.id, DepreciationRun.year == year, DepreciationRun.month == month))]
-    result.append(Check("depreciation", "Амортизация начислена", not no_depreciation, True,
+    found_checks.append(Check("depreciation", "Амортизация начислена", not no_depreciation, True,
                         [f"Не начислена: {name}" for name in no_depreciation]))
+
+    not_closed = result.pending(db, organization_id, year, month)
+    result_title = "Финансовый результат определён (26, 44, 90, 91 закрыты на 99" + (
+        ", реформация 99 → 84)" if month == 12 else ")")
+    found_checks.append(Check("result", result_title, not not_closed, True,
+                              [f"Не закрыты: {name}" for name in not_closed]))
 
     no_payroll = []
     for e in entities:
@@ -159,18 +165,18 @@ def checks(db: Session, organization_id: int, year: int, month: int) -> list[Che
             PayrollRun.status == "posted"))
         if staff and not posted:
             no_payroll.append(e.short_name)
-    result.append(Check("payroll", "Зарплата начислена", not no_payroll, False,
+    found_checks.append(Check("payroll", "Зарплата начислена", not no_payroll, False,
                         [f"Нет проведённого начисления: {name}" for name in no_payroll]))
 
     negative = [f"{r['name']}: {r['closing']:.2f}".replace(".", ",") for r in money.money_overview(db, organization_id, start, end)
                 if r["closing"] < 0]
-    result.append(Check("money", "Нет отрицательных остатков денег", not negative, False,
+    found_checks.append(Check("money", "Нет отрицательных остатков денег", not negative, False,
                         [f"Остаток на конец месяца: {x}" for x in negative]))
 
     opening = money.opening_balance_check(db, organization_id)
-    result.append(Check("opening", "Начальные остатки сведены (счёт 00 = 0)", opening == 0, False,
+    found_checks.append(Check("opening", "Начальные остатки сведены (счёт 00 = 0)", opening == 0, False,
                         [f"Сальдо счёта 00: {opening:.2f}".replace(".", ",")] if opening else []))
-    return result
+    return found_checks
 
 
 def close(db: Session, organization_id: int, year: int, month: int, user: User) -> dt.date:
