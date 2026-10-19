@@ -190,6 +190,18 @@ table.recon tfoot td { text-align: left; color: var(--muted); border-bottom: 0; 
 .filters input[type="checkbox"] { min-width: 0; margin: 0; }
 .push-right { margin-left: auto; }
 
+/* --- Бюджеты --- */
+
+.budget-card { margin-bottom: 16px; }
+.budget-card .page-head { margin-bottom: 4px; }
+table.versions th, table.versions td { text-align: left; }
+table.versions td.actions { white-space: nowrap; }
+table.versions td.actions button.link { margin-right: 12px; }
+tr.version-archived td { color: var(--muted); }
+.budget-draft { background: #fef0c7; color: #93370d; }
+.budget-approved { background: #d1fadf; color: #05603a; }
+.budget-archived { background: #eaecf0; color: #475467; }
+
 /* --- Формы --- */
 
 .form label { display: block; margin-top: 12px; color: var(--muted); }

@@ -1,5 +1,6 @@
 from app.models.account import Account, AccountAnalytic
 from app.models.article import Article
+from app.models.budget import Budget, BudgetVersion
 from app.models.cfo import Cfo, Employee
 from app.models.currency import Currency, ExchangeRate
 from app.models.journal import Operation, OperationEvent, Posting
@@ -23,6 +24,8 @@ __all__ = [
     "Article",
     "Bank",
     "BankAccount",
+    "Budget",
+    "BudgetVersion",
     "Cfo",
     "Contract",
     "Counterparty",
