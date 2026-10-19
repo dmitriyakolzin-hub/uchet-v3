@@ -15,6 +15,7 @@ from app.api import (
     money,
     organizations,
     references,
+    reports,
     users,
 )
 from app.core.config import SettingsError, get_settings
@@ -47,6 +48,7 @@ def create_app() -> FastAPI:
     app.include_router(journal.router)
     app.include_router(money.router)
     app.include_router(imports.router)
+    app.include_router(reports.router)
 
     frontend = next((p for p in _FRONTEND_CANDIDATES if p.is_dir()), None)
     if frontend is not None:

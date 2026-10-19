@@ -10,6 +10,7 @@ import { renderOpening } from "./pages/opening.js";
 import { renderOrganizations } from "./pages/organizations.js";
 import { renderPassword } from "./pages/password.js";
 import { renderReferences } from "./pages/references.js";
+import { renderReports } from "./pages/reports.js";
 import { renderUsers } from "./pages/users.js";
 import { el } from "./ui.js";
 
@@ -17,6 +18,7 @@ const PAGES = {
   journal: { title: "Журнал операций", render: renderJournal },
   money: { title: "Деньги", render: renderMoney },
   opening: { title: "Начальные остатки", render: renderOpening },
+  reports: { title: "Отчёты", render: renderReports },
   import: { title: "Загрузка из Excel", render: renderImport },
   organizations: { title: "Организации", render: renderOrganizations },
   references: { title: "Справочники", render: renderReferences },

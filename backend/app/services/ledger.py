@@ -14,7 +14,7 @@ import datetime as dt
 from sqlalchemy import Select, and_, literal, or_, select, union_all
 from sqlalchemy.sql import Subquery
 
-from app.models import Account, Operation, Posting
+from app.models import Account, Cfo, Operation, Posting
 from app.models.journal import ANALYTIC_COLUMNS, analytic_column
 
 
@@ -56,10 +56,12 @@ def select_lines(
     account_id: int | None = None,
     account_ids: list[int] | None = None,
     side: str | None = None,
-    analytics: dict[str, int] | None = None,
+    analytics: dict[str, int | None] | None = None,
+    cfo_branch: int | None = None,
 ) -> Select:
     """Строки проводок по условиям. Счёт (account_id или любой из account_ids) отбирается
-    вместе со всеми своими субсчетами.
+    вместе со всеми своими субсчетами. Аналитика со значением None — «не указана».
+    cfo_branch — ЦФО вместе со всеми подчинёнными (строки без ЦФО не попадают).
 
     По умолчанию — только проведённые операции (так считают отчёты).
     """
@@ -81,5 +83,9 @@ def select_lines(
         )
         query = query.where(lines.c.account_id.in_(subtree))
     for kind, value in (analytics or {}).items():
-        query = query.where(and_(getattr(lines.c, kind) == value))
+        column = getattr(lines.c, kind)
+        query = query.where(column.is_(None) if value is None else and_(column == value))
+    if cfo_branch is not None:
+        root = select(Cfo.path).where(Cfo.id == cfo_branch).scalar_subquery()
+        query = query.where(lines.c.cfo.in_(select(Cfo.id).where(Cfo.path.op("<@")(root))))
     return query
