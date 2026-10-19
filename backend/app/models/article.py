@@ -52,4 +52,6 @@ class Article(Base):
     # Шаблон проводки: подставляется при вводе операции, можно поменять вручную
     debit_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="RESTRICT"))
     credit_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id", ondelete="RESTRICT"))
+    # Перевод между своими счетами: в отчёте ДДС поступление и выплата по ней взаимно гасятся
+    is_transfer: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")

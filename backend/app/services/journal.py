@@ -26,6 +26,7 @@ from app.models import (
     Nomenclature,
     Operation,
     OperationEvent,
+    Organization,
     Posting,
     User,
     Warehouse,
@@ -46,6 +47,7 @@ REF_MODELS = {
     "pl_item": Article,
 }
 SIDE_TITLES = {"debit": "дебет", "credit": "кредит"}
+OPENING_ACCOUNT = "00"  # вспомогательный счёт ввода начальных остатков
 
 
 class JournalError(ValueError):
@@ -93,6 +95,12 @@ def save_draft(db: Session, op: Operation, body: OperationIn, user: User) -> Non
     rub_id = base_currency_id(db)
     op.legal_entity_id = body.legal_entity_id
     op.op_date = body.op_date
+    if op.is_opening:
+        # остатки вводятся строго на дату начальных остатков организации
+        opening_date = db.get(Organization, op.organization_id).opening_balance_date
+        if opening_date is None:
+            raise JournalError("Сначала задайте дату начальных остатков организации")
+        op.op_date = opening_date
     op.article_id = body.article_id
     op.description = body.description
     if op.id is not None:
@@ -151,6 +159,11 @@ def posting_errors(db: Session, op: Operation) -> list[str]:
     if not op.postings:
         return ["Нет ни одной проводки"]
     parents = set(db.scalars(select(Account.parent_id).where(Account.parent_id.is_not(None))))
+    opening_date = db.get(Organization, op.organization_id).opening_balance_date
+    if not op.is_opening and opening_date is not None and op.op_date <= opening_date:
+        errors.append(
+            f"Дата операции должна быть позже даты начальных остатков ({opening_date:%d.%m.%Y})"
+        )
 
     for p in op.postings:
         where = f"Проводка {p.line_no}"
@@ -159,6 +172,12 @@ def posting_errors(db: Session, op: Operation) -> list[str]:
         elif p.amount_rub is None:
             currency = db.get(Currency, p.currency_id)
             errors.append(f"{where}: нет курса {currency.code} на {op.op_date:%d.%m.%Y} — введите курс или сумму в рублях")
+
+        codes = [db.get(Account, a).code for a in (p.debit_account_id, p.credit_account_id) if a is not None]
+        if op.is_opening and len(codes) == 2 and codes.count(OPENING_ACCOUNT) != 1:
+            errors.append(f"{where}: в проводке ввода остатков одна из сторон — счёт 00")
+        if not op.is_opening and OPENING_ACCOUNT in codes:
+            errors.append(f"{where}: счёт 00 используется только для ввода начальных остатков")
 
         quantitative = False
         for side, account_id in (("debit", p.debit_account_id), ("credit", p.credit_account_id)):
