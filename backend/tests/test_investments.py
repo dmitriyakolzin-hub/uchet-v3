@@ -2,6 +2,7 @@
 
 import pytest
 
+from tests.test_calendar import expected as calendar_expected
 from tests.test_plan_grid import env, grid  # noqa: F401
 from tests.test_users import admin  # noqa: F401
 
@@ -144,3 +145,26 @@ def test_project_checks(client, inv):
         "kind": "inv", "project_id": env["project"]["id"],
         "cells": [{"article_id": env["art"]["Аренда"], "month": 1, "amount": "1"}]})
     assert resp.status_code == 422
+
+
+def test_investment_payments(client, inv):
+    env = inv
+    assert cells(client, env, [("Инвестиции: оборудование", 1, "100000")]).status_code == 200
+    feb = {"date_from": "2027-02-01", "date_to": "2027-02-28"}
+    assert calendar_expected(client, env, **feb)["rows"] == []  # версия ещё не утверждена
+    assert client.post(f"/api/budget-versions/{env['version']['id']}/approve", headers=env["h"]).status_code == 200
+    data = calendar_expected(client, env, **feb)
+    assert data["brief"] == [("investment", "2027-02-01", "out", "100000.00")]
+    assert data["rows"][0]["title"] == "Инвестпроект: Новый магазин"
+    # период начинается позже 1-го числа — оплата на первый день периода
+    assert calendar_expected(client, env, date_from="2027-02-10", date_to="2027-02-28")["brief"][0][1] == "2027-02-10"
+
+    # заявка по договору проекта уменьшает плановую оплату месяца
+    resp = client.post(f"{env['o']}/payment-requests", headers=env["h"], json={
+        "pay_date": "2027-02-12", "legal_entity_id": env["le"].id, "counterparty_id": env["cp"]["id"],
+        "contract_id": env["contract"]["id"], "amount": "40000"})
+    assert resp.status_code == 201, resp.text
+    client.post(f"/api/payment-requests/{resp.json()['id']}/submit", headers=env["h"])
+    assert calendar_expected(client, env, **feb)["brief"] == [("investment", "2027-02-01", "out", "60000.00")]
+    assert calendar_expected(client, env, include_pending=True, **feb)["brief"] == [
+        ("investment", "2027-02-01", "out", "60000.00"), ("request", "2027-02-12", "out", "40000.00")]

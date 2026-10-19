@@ -748,6 +748,11 @@ with sync_playwright() as p:
     d.locator("button[type=submit]").click()
     expect(row).to_contain_text("··")
     page.screenshot(path=f"{OUT}/27_requests.png", full_page=True)
+    page.click("button.tab:has-text('Ожидаемые платежи')")
+    expected_row = page.locator("table.expected tbody tr", has_text="Заявка № 1")
+    expect(expected_row).to_contain_text("1 500,50")
+    page.screenshot(path=f"{OUT}/28_expected.png", full_page=True)
+    page.click("button.tab:has-text('Заявки')")
 
     # вход под CEO
     page.click("#logout")
@@ -840,6 +845,7 @@ with sync_playwright() as p:
     # руководитель ЦФО подаёт заявку своей ветки; чужие заявки не видит
     page.click("#nav a[data-page=calendar]")
     expect(page.locator("table.requests tbody tr", has_text="Оплата по счёту 77")).to_have_count(0)
+    expect(page.locator("button.tab:has-text('Ожидаемые платежи')")).to_have_count(0)
     page.click("button:has-text('Новая заявка')")
     d = dialog_fill(page, {"amount": "700", "description": "Ремонт витрины"})
     expect(d.locator("[name=source] option", has_text="··")).to_have_count(0)
