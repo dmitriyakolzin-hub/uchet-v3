@@ -126,6 +126,7 @@ class LineOut(BaseModel):
     net: Decimal
     vacation_note: str = ""
     sick_note: str = ""
+    manual_totals: bool = False  # готовые суммы из файла
 
 
 class RunOut(BaseModel):
@@ -156,7 +157,7 @@ def _run_out(db: Session, run: PayrollRun, with_lines: bool = True) -> RunOut:
     totals = {f: sum((getattr(line, f) for line, _ in rows), Decimal("0.00")) for f in TOTAL_FIELDS}
     if with_lines:
         lines = [LineOut(id=line.id, employee_id=e.id, employee_name=e.full_name, personnel_number=e.personnel_number,
-                         vacation_note=line.vacation_note, sick_note=line.sick_note,
+                         vacation_note=line.vacation_note, sick_note=line.sick_note, manual_totals=line.manual_totals,
                          **{f: getattr(line, f) for f in ["salary", "work_days", *TOTAL_FIELDS]}) for line, e in rows]
     return RunOut(id=run.id, organization_id=run.organization_id, legal_entity_id=run.legal_entity_id,
                   legal_entity_name=entity.short_name, insurance_tariff=entity.insurance_tariff, year=run.year,
@@ -263,6 +264,7 @@ def update_line(line_id: int, body: LineUpdate, user: CurrentUser, db: DbSession
             setattr(line, field, value)
             if field in ("vacation", "sick"):
                 setattr(line, f"{field}_note", "")  # сумма введена вручную — прежний расчёт не действует
+    line.manual_totals = False  # правка вручную — строку снова считает программа
     payroll.recalc(db, run)
     db.commit()
     return _run_out(db, run)
@@ -344,9 +346,10 @@ XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 @router.get("/payroll-runs/{run_id}/lines.xlsx")
-def download_lines(run_id: int, user: CurrentUser, db: DbSession):
+def download_lines(run_id: int, user: CurrentUser, db: DbSession, ready: bool = False):
+    """Строки начисления в Excel; ready=true — с колонками готовых сумм (начислено, НДФЛ, взносы, к выплате)."""
     run = _run(db, user, run_id)
-    return Response(payroll.lines_xlsx(db, run), media_type=XLSX_TYPE, headers={
+    return Response(payroll.lines_xlsx(db, run, ready), media_type=XLSX_TYPE, headers={
         "Content-Disposition": f'attachment; filename="payroll_{run.year}_{run.month:02d}.xlsx"'})
 
 

@@ -107,6 +107,9 @@ def _ytd_before(db: Session, run: PayrollRun, employee_id: int) -> tuple[Decimal
 def recalc(db: Session, run: PayrollRun) -> None:
     tariff = db.get(LegalEntity, run.legal_entity_id).insurance_tariff
     for line in db.scalars(select(PayrollLine).where(PayrollLine.run_id == run.id)):
+        if line.manual_totals:  # готовые суммы из файла — не пересчитываются
+            line.net = line.accrued - line.ndfl - line.other_deduction
+            continue
         line.salary_amount = round_money(line.salary * line.work_days / run.norm_days)
         line.accrued = line.salary_amount + line.bonus + line.vacation + line.sick + line.other_accrual
         income_before, tax_before = _ytd_before(db, run, line.employee_id)
@@ -197,61 +200,93 @@ def unpost(db: Session, run: PayrollRun) -> None:
 # --- Начисление в Excel: скачать строки, поправить дни и суммы, загрузить ---
 
 LINE_COLUMNS = [
-    ("personnel_number", "Таб. №"), ("employee", "Сотрудник"), ("work_days", "Отработано дней"),
-    ("bonus", "Премия"), ("vacation", "Отпускные"), ("sick", "Больничные"),
+    ("personnel_number", "Таб. №"), ("internal_number", "Вн. №"), ("employee", "Сотрудник"),
+    ("work_days", "Отработано дней"), ("bonus", "Премия"), ("vacation", "Отпускные"), ("sick", "Больничные"),
     ("other_accrual", "Прочие начисления"), ("other_deduction", "Прочие удержания"),
 ]
+# Готовые суммы (из другой программы): наличие колонки «НДФЛ» включает этот режим
+READY_COLUMNS = [("accrued", "Начислено"), ("ndfl", "НДФЛ"), ("insurance", "Взносы"), ("net", "К выплате")]
+AMOUNT_KEYS = ["bonus", "vacation", "sick", "other_accrual", "other_deduction"]
 
 
-def lines_xlsx(db: Session, run: PayrollRun) -> bytes:
+def lines_xlsx(db: Session, run: PayrollRun, ready: bool = False) -> bytes:
+    """Строки начисления в Excel; ready — с колонками готовых сумм (начислено, НДФЛ, взносы, к выплате)."""
+    columns = LINE_COLUMNS + (READY_COLUMNS if ready else [])
     wb = Workbook()
     ws = wb.active
     ws.title = f"Зарплата {run.month:02d}.{run.year}"
-    ws.append([title for _, title in LINE_COLUMNS])
-    for i in range(1, len(LINE_COLUMNS) + 1):
+    ws.append([title for _, title in columns])
+    for i in range(1, len(columns) + 1):
         ws.cell(row=1, column=i).font = Font(bold=True)
         ws.cell(row=1, column=i).fill = PatternFill("solid", fgColor="E8EEF8")
-        ws.column_dimensions[chr(64 + i)].width = 30 if i == 2 else 16
+        ws.column_dimensions[chr(64 + i)].width = 30 if i == 3 else 16
     rows = db.execute(select(PayrollLine, Employee).join(Employee, Employee.id == PayrollLine.employee_id)
                       .where(PayrollLine.run_id == run.id).order_by(Employee.full_name)).all()
     for line, employee in rows:
-        ws.append([employee.personnel_number or None, employee.full_name, line.work_days, line.bonus, line.vacation,
-                   line.sick, line.other_accrual, line.other_deduction])
+        ws.append([employee.personnel_number or None, employee.internal_number or None, employee.full_name,
+                   line.work_days, line.bonus, line.vacation, line.sick, line.other_accrual, line.other_deduction]
+                  + ([line.accrued, line.ndfl, line.insurance, line.net] if ready else []))
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()
 
 
+def _find_employee(employees: list[Employee], tab: str, internal: str, name: str) -> Employee:
+    found = ([e for e in employees if tab and e.personnel_number == tab]
+             or [e for e in employees if internal and e.internal_number == internal]
+             or ([e for e in employees if e.full_name.strip().lower() == name.lower()] if name else []))
+    if len(found) != 1:
+        who = name or tab or internal
+        raise RowProblem(f"Сотрудник «{who}» юрлица не найден" if not found
+                         else f"«{who}»: несколько сотрудников — укажите табельный или внутренний №")
+    return found[0]
+
+
+def _amount(row: dict, key: str, title: str) -> Decimal:
+    value = row.get(key)
+    return ZERO if _text(value) in ("", "0") else _decimal(value, title, 2)
+
+
 def import_lines(db: Session, run: PayrollRun, raw: bytes) -> tuple[int, int, list]:
-    """Строка файла: сотрудник (таб. № или ФИО) + дни и суммы; пустая сумма — 0. Сотрудник юрлица,
-    которого нет в начислении, добавляется. Возвращает (строк, изменено, ошибки)."""
-    columns = [Column(title, key, key == "employee") for key, title in LINE_COLUMNS]
+    """Строка файла: сотрудник (таб. №, внутр. № или ФИО) + дни и суммы; пустая сумма — 0. Есть колонка
+    «НДФЛ» — суммы готовые (начислено, НДФЛ, взносы) и не пересчитываются; иначе считает программа.
+    Сотрудник юрлица, которого нет в начислении, добавляется. Возвращает (строк, изменено, ошибки)."""
+    columns = [Column(title, key) for key, title in LINE_COLUMNS + READY_COLUMNS]
     rows = _read_rows(raw, columns)
+    ready = bool(rows) and "ndfl" in rows[0][1]
     employees = list(db.scalars(select(Employee).where(Employee.organization_id == run.organization_id,
                                                        Employee.legal_entity_id == run.legal_entity_id)))
     lines = {line.employee_id: line for line in db.scalars(select(PayrollLine).where(PayrollLine.run_id == run.id))}
+    tariff = db.get(LegalEntity, run.legal_entity_id).insurance_tariff
+    titles = dict(LINE_COLUMNS + READY_COLUMNS)
     changed, errors = 0, []
     for number, row in rows:
         try:
-            tab, name = _text(row.get("personnel_number")), _text(row.get("employee"))
-            found = [e for e in employees if tab and e.personnel_number == tab] or \
-                [e for e in employees if e.full_name.strip().lower() == name.lower()]
-            if len(found) != 1:
-                raise RowProblem(f"Сотрудник «{name or tab}» юрлица не найден" if not found
-                                 else f"«{name}»: несколько сотрудников — укажите табельный №")
-            employee = found[0]
-            values = {}
-            for key, title in LINE_COLUMNS[2:]:
-                value = row.get(key)
-                if key == "work_days":
-                    if _text(value) == "":
-                        continue
-                    days = _decimal(value, title, 2) if _text(value) != "0" else ZERO
-                    if days > 31:
-                        raise RowProblem("«Отработано дней»: не больше 31")
-                    values[key] = days
+            tab, internal = _text(row.get("personnel_number")), _text(row.get("internal_number"))
+            employee = _find_employee(employees, tab, internal, _text(row.get("employee")))
+            values = {key: _amount(row, key, titles[key]) for key in AMOUNT_KEYS}
+            days = row.get("work_days")
+            if _text(days) != "":
+                values["work_days"] = _decimal(days, "Отработано дней", 2) if _text(days) != "0" else ZERO
+                if values["work_days"] > 31:
+                    raise RowProblem("«Отработано дней»: не больше 31")
+            if ready:
+                if _text(row.get("accrued")) == "" or _text(row.get("ndfl")) == "":
+                    raise RowProblem("Для готовых сумм заполните «Начислено» и «НДФЛ»")
+                accrued, ndfl = _amount(row, "accrued", "Начислено"), _amount(row, "ndfl", "НДФЛ")
+                parts = values["bonus"] + values["vacation"] + values["sick"] + values["other_accrual"]
+                if parts > accrued:
+                    raise RowProblem("Премия, отпускные, больничные и прочие начисления больше «Начислено»")
+                net = accrued - ndfl - values["other_deduction"]
+                if _text(row.get("net")) != "" and _amount(row, "net", "К выплате") != net:
+                    raise RowProblem(f"«К выплате» не сходится: в файле {_amount(row, 'net', 'К выплате')}, "
+                                     f"а начислено − НДФЛ − удержания = {net}")
+                if _text(row.get("insurance")) != "":
+                    insurance = _amount(row, "insurance", "Взносы")
                 else:
-                    values[key] = ZERO if _text(value) in ("", "0") else _decimal(value, title, 2)
+                    income_before, _ = _ytd_before(db, run, employee.id)
+                    insurance = rates.insurance(tariff, run.year, accrued - values["sick"], income_before)
+                values.update(salary_amount=accrued - parts, accrued=accrued, ndfl=ndfl, insurance=insurance, net=net)
             line = lines.get(employee.id)
             if line is None:
                 line = PayrollLine(run_id=run.id, employee_id=employee.id,
@@ -261,6 +296,7 @@ def import_lines(db: Session, run: PayrollRun, raw: bytes) -> tuple[int, int, li
                 lines[employee.id] = line
             for key, value in values.items():
                 setattr(line, key, value)
+            line.manual_totals = ready
             changed += 1
         except RowProblem as exc:
             errors.append(RowError(number, str(exc)))
@@ -444,6 +480,7 @@ def calc_vacation(db: Session, line: PayrollLine, days: int) -> None:
         average = round_money(line.salary / DAYS_PER_MONTH)
         how = f"истории начислений нет — оклад {_ru(line.salary)} ₽ / 29,3"
     line.vacation = round_money(average * days)
+    line.manual_totals = False  # расчёт программой — строка снова пересчитывается
     line.vacation_note = f"Отпуск {days} дн. × средний {_ru(average)} ₽ ({how}) = {_ru(line.vacation)} ₽"
     recalc(db, run)
 
@@ -472,6 +509,7 @@ def calc_sick(db: Session, line: PayrollLine, days: int, experience: str,
     employer_days = min(days, EMPLOYER_SICK_DAYS)
     line.sick = round_money(daily * employer_days)
     fund = round_money(daily * (days - employer_days))
+    line.manual_totals = False  # расчёт программой — строка снова пересчитывается
     line.sick_note = (f"Больничный {days} дн.: средний {_ru(average)} ₽ ({'; '.join(parts)}; / 730, "
                       f"мин. {_ru(minimum)}) × {SICK_PERCENT[experience]}% = {_ru(daily)} ₽ в день; "
                       f"работодатель {employer_days} дн. = {_ru(line.sick)} ₽, СФР {days - employer_days} дн. = {_ru(fund)} ₽")
