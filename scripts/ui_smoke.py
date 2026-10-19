@@ -36,7 +36,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(13)
+    expect(page.locator("#nav a")).to_have_count(14)
     expect(page.locator("#nav a.active")).to_have_text("Журнал операций")  # открывается первым
     page.click("#nav a[data-page=organizations]")
 
@@ -418,6 +418,29 @@ with sync_playwright() as p:
     d.locator("button", has_text="Закрыть").click()
     page.click("button.tab:has-text('ОСВ')")
 
+    # бюджеты: годовой бюджет, утверждение, пересмотр новой версией
+    page.click("#nav a[data-page=budgets]")
+    page.click("text=Новый бюджет")
+    d = page.locator("dialog[open]")
+    d.locator("[name=year]").fill("2027")
+    d.locator("[name=period]").select_option("year:1")
+    d.locator("button[type=submit]").click()
+    page.locator("select[aria-label='Год']").select_option("2027")
+    card = page.locator(".budget-card", has_text="Бюджет 2027")
+    expect(card).to_contain_text("Версия 1")
+    page.once("dialog", lambda dlg: dlg.accept())
+    card.locator("button", has_text="Утвердить").click()
+    expect(card.locator("tr", has_text="Версия 1")).to_contain_text("Утверждена")
+    card.locator("button", has_text="Новая версия").click()
+    d = page.locator("dialog[open]")
+    d.locator("[name=name]").fill("Пересмотр за январь")
+    d.locator("button[type=submit]").click()
+    expect(card.locator("tr", has_text="Пересмотр за январь")).to_contain_text("Черновик")
+    page.once("dialog", lambda dlg: dlg.accept())
+    card.locator("tr", has_text="Пересмотр за январь").locator("button", has_text="Утвердить").click()
+    expect(card.locator("tr", has_text="Версия 1")).to_contain_text("Архив")
+    page.screenshot(path=f"{OUT}/27_budgets.png", full_page=True)
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")
@@ -442,7 +465,7 @@ with sync_playwright() as p:
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(12)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(13)  # нет «Пользователи»
     page.click("#nav a[data-page=organizations]")
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою

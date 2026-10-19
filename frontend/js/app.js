@@ -1,6 +1,7 @@
 import { api, clearSession, hasSession, login } from "./api.js";
 import { renderAccounts } from "./pages/accounts.js";
 import { renderArticles } from "./pages/articles.js";
+import { renderBudgets } from "./pages/budgets.js";
 import { renderCommon } from "./pages/common.js";
 import { renderCurrencies } from "./pages/currencies.js";
 import { renderImport } from "./pages/import.js";
@@ -19,6 +20,7 @@ const PAGES = {
   money: { title: "Деньги", render: renderMoney },
   opening: { title: "Начальные остатки", render: renderOpening },
   reports: { title: "Отчёты", render: renderReports },
+  budgets: { title: "Бюджеты", render: renderBudgets },
   import: { title: "Загрузка из Excel", render: renderImport },
   organizations: { title: "Организации", render: renderOrganizations },
   references: { title: "Справочники", render: renderReferences },
