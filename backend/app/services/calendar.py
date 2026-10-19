@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    Account,
     Contract,
     InvestmentProject,
     Operation,
@@ -18,11 +19,12 @@ from app.models import (
     RoutineRun,
 )
 from app.services import reports, routines
-from app.services.ledger import subtree
+from app.services.ledger import select_lines, subtree
 from app.services.payroll import sheet_total
 
 ZERO = Decimal("0.00")
 SHEET_KINDS = {"advance": "аванс", "salary": "зарплата"}
+CASH_CODE = "50"
 
 
 @dataclass
@@ -146,3 +148,151 @@ def expected(db: Session, organization_id: int, date_from: dt.date, date_to: dt.
     for item in items:
         item.overdue = item.date < today
     return sorted(items, key=lambda i: (i.date, order[i.source], i.source_id))
+
+
+# --- календарь по дням (docs/TZ.md, раздел 18, «Детали 8.3») ---
+
+LOOKBACK_DAYS = 366  # просроченные ожидаемые платежи ищутся не дальше года назад
+
+
+@dataclass
+class Scope:
+    """Чьи деньги: вся организация, юрлицо, один расчётный счёт или одна касса."""
+
+    legal_entity_id: int | None = None
+    bank_account_id: int | None = None
+    cash_cfo_id: int | None = None
+
+    @property
+    def one_source(self) -> bool:
+        return self.bank_account_id is not None or self.cash_cfo_id is not None
+
+    def accepts(self, item: Item) -> bool:
+        if self.legal_entity_id is not None and item.legal_entity_id != self.legal_entity_id:
+            return False
+        if self.bank_account_id is not None:
+            return item.bank_account_id == self.bank_account_id
+        if self.cash_cfo_id is not None:
+            return item.cash_cfo_id == self.cash_cfo_id
+        return True
+
+
+@dataclass
+class FactEntry:
+    operation_id: int
+    number: int
+    description: str
+    inflow: Decimal
+    outflow: Decimal
+
+
+@dataclass
+class Day:
+    date: dt.date
+    opening: Decimal
+    fact_in: Decimal = ZERO
+    fact_out: Decimal = ZERO
+    expected_in: Decimal = ZERO
+    expected_out: Decimal = ZERO
+    closing: Decimal = ZERO
+    fact: list[FactEntry] | None = None
+    expected: list[Item] | None = None
+
+    @property
+    def inflow(self) -> Decimal:
+        return self.fact_in + self.expected_in
+
+    @property
+    def outflow(self) -> Decimal:
+        return self.fact_out + self.expected_out
+
+
+@dataclass
+class Grid:
+    opening: Decimal
+    days: list[Day]
+    first_gap: Day | None
+
+
+def _money_lines(db: Session, organization_id: int, scope: Scope, **conditions):
+    """Строки по счетам денег (50, 51, 52, 55) в пределах scope — те же, что в «Деньгах» и ДДС."""
+    roots = reports.money_account_ids(db)
+    analytics = {}
+    if scope.bank_account_id is not None:
+        analytics["bank_account"] = scope.bank_account_id
+    if scope.cash_cfo_id is not None:
+        analytics["cfo"] = scope.cash_cfo_id
+        roots = list(db.scalars(select(Account.id).where(Account.code == CASH_CODE)))
+    if not scope.one_source:
+        # переводы между своими счетами внутри организации или юрлица — не поток
+        conditions["exclude_corr_account_ids"] = roots
+    return select_lines(organization_id, account_ids=roots, legal_entity_id=scope.legal_entity_id,
+                        analytics=analytics or None, **conditions)
+
+
+def _balance(db: Session, organization_id: int, scope: Scope, on: dt.date) -> Decimal:
+    """Остаток по журналу на конец дня on (переводы внутри scope на остаток не влияют)."""
+    lines = _money_lines(db, organization_id, scope, date_to=on).subquery()
+    rows = db.execute(select(lines.c.side, func.coalesce(func.sum(lines.c.amount_rub), 0)).group_by(lines.c.side)).all()
+    return sum((Decimal(v) if side == "debit" else -Decimal(v) for side, v in rows), ZERO) + ZERO
+
+
+def _fact(db: Session, organization_id: int, scope: Scope, date_from: dt.date, date_to: dt.date) -> dict:
+    """Факт по дням: {дата: [FactEntry по операциям]}."""
+    lines = _money_lines(db, organization_id, scope, date_from=date_from, date_to=date_to).subquery()
+    rows = db.execute(
+        select(lines.c.op_date, lines.c.operation_id, Operation.number, Operation.description, lines.c.side,
+               func.sum(lines.c.amount_rub))
+        .join(Operation, Operation.id == lines.c.operation_id)
+        .group_by(lines.c.op_date, lines.c.operation_id, Operation.number, Operation.description, lines.c.side)
+        .order_by(lines.c.op_date, Operation.number)).all()
+    result: dict[dt.date, dict[int, FactEntry]] = {}
+    for day, op_id, number, description, side, amount in rows:
+        entry = result.setdefault(day, {}).setdefault(op_id, FactEntry(op_id, number, description, ZERO, ZERO))
+        if side == "debit":
+            entry.inflow += Decimal(amount)
+        else:
+            entry.outflow += Decimal(amount)
+    return {day: list(entries.values()) for day, entries in result.items()}
+
+
+def grid(db: Session, organization_id: int, date_from: dt.date, date_to: dt.date, scope: Scope, *,
+         include_pending: bool = False, today: dt.date | None = None) -> Grid:
+    """Дни периода: факт за прошедшие дни и сегодня, ожидаемые платежи — с сегодняшнего дня;
+    просроченные ожидаемые — на сегодня (или на первый день будущего периода)."""
+    today = today or dt.date.today()
+    forecast_from = max(today, date_from)
+    items = []
+    if forecast_from <= date_to:
+        found = expected(db, organization_id, today - dt.timedelta(days=LOOKBACK_DAYS), date_to,
+                         include_pending=include_pending, today=today)
+        items = [i for i in found if scope.accepts(i)]
+    for item in items:
+        item.overdue = item.date < today
+    if date_from <= today:
+        opening = _balance(db, organization_id, scope, date_from - dt.timedelta(days=1))
+    else:  # будущий период: остаток сегодня плюс ожидаемое до начала периода
+        opening = _balance(db, organization_id, scope, today)
+        opening += sum((i.amount if i.direction == "in" else -i.amount
+                        for i in items if i.date < date_from), ZERO)
+    fact = _fact(db, organization_id, scope, date_from, min(date_to, today)) if date_from <= today else {}
+
+    days, balance, first_gap = [], opening, None
+    day = date_from
+    by_day: dict[dt.date, list[Item]] = {}
+    for item in items:
+        effective = max(item.date, forecast_from)
+        if effective >= date_from:
+            by_day.setdefault(effective, []).append(item)
+    while day <= date_to:
+        row = Day(day, balance, fact=fact.get(day, []), expected=by_day.get(day, []))
+        row.fact_in = sum((e.inflow for e in row.fact), ZERO)
+        row.fact_out = sum((e.outflow for e in row.fact), ZERO)
+        row.expected_in = sum((i.amount for i in row.expected if i.direction == "in"), ZERO)
+        row.expected_out = sum((i.amount for i in row.expected if i.direction == "out"), ZERO)
+        balance = row.closing = balance + row.inflow - row.outflow
+        if first_gap is None and balance < 0:
+            first_gap = row
+        days.append(row)
+        day += dt.timedelta(days=1)
+    return Grid(opening, days, first_gap)

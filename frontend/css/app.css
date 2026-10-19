@@ -271,3 +271,12 @@ ul.checklist ul { margin: 2px 0 4px 28px; color: var(--muted); }
 .req-actions { text-align: left; }
 .req-actions button { margin: 0 4px 2px 0; display: block; }
 table.requests td.num, table.expected td.num { text-align: right; white-space: nowrap; }
+table.calendar-grid td.num { text-align: right; white-space: nowrap; }
+table.calendar-grid td.strong { font-weight: 600; }
+table.calendar-grid tr.day-row { cursor: pointer; }
+table.calendar-grid tr.day-row:hover { background: var(--accent-soft); }
+table.calendar-grid tr.week-row td { font-weight: 600; background: #f9fafb; }
+table.calendar-grid tr.gap-row td { background: #fee4e2; color: #b42318; }
+table.calendar-grid tr.today-row td:first-child { font-weight: 600; }
+.small { font-size: 12px; }
+.gap-note { color: #b42318; font-weight: 600; }
