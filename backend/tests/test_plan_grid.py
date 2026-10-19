@@ -160,17 +160,17 @@ def test_plan_excel_roundtrip(client, env):
     assert resp.status_code == 200
     wb = load_workbook(io.BytesIO(resp.content))
     ws = wb.active
-    assert [c.value for c in ws[1]][:4] == ["ЦФО", "Статья", "Январь", "Февраль"]
+    assert [c.value for c in ws[1]][:5] == ["ЦФО", "Статья", "ЦФУ", "Январь", "Февраль"]
     rows = {(r[0], r[1]): r for r in ws.iter_rows(min_row=2, values_only=True)}
-    assert rows[("Компания / Торговля / Магазин 1", "Аренда")][2] == 1000
+    assert rows[("Компания / Торговля / Магазин 1", "Аренда")][3] == 1000
     assert ("Компания / Логистика", "Аренда") in rows
 
     # правим файл: январь очищаем, февраль и март ставим; строка с ошибкой не грузится
     for row in ws.iter_rows(min_row=2):
         if (row[0].value, row[1].value) == ("Компания / Торговля / Магазин 1", "Аренда"):
-            row[2].value, row[3].value, row[4].value = None, 2000, "1 500,50"
-    ws.append(["Нет такого", "Аренда", 5])
-    ws.append(["Логистика", "Аренда", 0, 300])  # ЦФО можно указать и просто названием
+            row[3].value, row[4].value, row[5].value = None, 2000, "1 500,50"
+    ws.append(["Нет такого", "Аренда", None, 5])
+    ws.append(["Логистика", "Аренда", None, 0, 300])  # ЦФО можно указать и просто названием
     out = io.BytesIO()
     wb.save(out)
     resp = client.post(f"/api/budget-versions/{env['version']['id']}/plan", headers={**env["h"], "Content-Type":

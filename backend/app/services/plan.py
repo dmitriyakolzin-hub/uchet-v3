@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.money import round_money
-from app.models import Account, Article, Budget, BudgetVersion, Cfo, LegalEntity, Operation, Posting, User
+from app.models import Account, Article, Budget, BudgetVersion, Cfo, Executor, LegalEntity, Operation, Posting, User
 from app.models.journal import ANALYTIC_COLUMNS, analytic_column
 from app.schemas.journal import AnalyticsIn, OperationIn, PostingIn
 from app.services import journal
@@ -78,13 +78,15 @@ def _legal_entity(db: Session, organization_id: int, cfo: Cfo | None) -> int:
     return entity_id
 
 
-def _posting(db: Session, kind: str, article: Article, cfo_id: int | None, amount: Decimal) -> PostingIn:
+def _posting(db: Session, kind: str, article: Article, cfo_id: int | None, amount: Decimal,
+             executor_id: int | None = None) -> PostingIn:
     sides = {}
     for side, account_id in (("debit", article.debit_account_id), ("credit", article.credit_account_id)):
         required = {a.kind for a in db.get(Account, account_id).analytics}
         analytics = AnalyticsIn()
         if "cfo" in required and cfo_id is not None:
             analytics.cfo = cfo_id
+            analytics.executor = executor_id  # ЦФУ — там же, где ЦФО
         if "pl_item" in required and article.is_pl:
             analytics.pl_item = article.id
         if "cash_flow_item" in required and article.is_cash_flow:
@@ -94,15 +96,20 @@ def _posting(db: Session, kind: str, article: Article, cfo_id: int | None, amoun
                      amount=amount, debit=sides["debit"], credit=sides["credit"])
 
 
-def _cell_op(db: Session, version_id: int, kind: str, cfo_id: int | None, article_id: int, op_date: dt.date):
+def _cell_op(db: Session, version_id: int, kind: str, cfo_id: int | None, article_id: int, op_date: dt.date,
+             executor_id: int | None = None):
     query = select(Operation).where(Operation.budget_version_id == version_id, Operation.plan_kind == kind,
                                     Operation.article_id == article_id, Operation.op_date == op_date)
     query = query.where(Operation.plan_cfo_id.is_(None) if cfo_id is None else Operation.plan_cfo_id == cfo_id)
+    query = query.where(Operation.plan_executor_id.is_(None) if executor_id is None
+                        else Operation.plan_executor_id == executor_id)
     return db.scalar(query)
 
 
-def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None, cells: list[Cell], user: User) -> int:
-    """Записать ячейки сетки; возвращает число изменённых ячеек. Версия — только черновик."""
+def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None, cells: list[Cell], user: User,
+              executor_id: int | None = None) -> int:
+    """Записать ячейки сетки (строка: статья + ЦФУ, если указан); возвращает число изменённых ячеек.
+    Версия — только черновик."""
     if version.status != "draft":
         raise PlanError("Менять можно только черновик версии; для пересмотра создайте новую версию")
     budget = db.get(Budget, version.budget_id)
@@ -113,6 +120,12 @@ def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None
             raise PlanError("ЦФО не найден в этой организации")
     if kind == "pl" and cfo is None:
         raise PlanError("План ОПиУ вводится по ЦФО — выберите ЦФО")
+    if executor_id is not None:
+        executor = db.get(Executor, executor_id)
+        if executor is None or executor.organization_id != budget.organization_id:
+            raise PlanError("ЦФУ не найден в этой организации")
+        if kind != "pl":
+            raise PlanError("ЦФУ указывается в плане ОПиУ")
     allowed = {a.id: a for a, _ in plan_articles(db, kind)}
     entity_id = None
     changed = 0
@@ -126,7 +139,7 @@ def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None
         if amount is not None and amount < 0:
             raise PlanError(f"«{article.name}»: сумма плана не может быть отрицательной")
         op_date = dt.date(budget.year, cell.month, 1)
-        op = _cell_op(db, version.id, kind, cfo_id, article.id, op_date)
+        op = _cell_op(db, version.id, kind, cfo_id, article.id, op_date, executor_id)
         if not amount:
             if op is not None:
                 db.delete(op)
@@ -136,9 +149,11 @@ def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None
             entity_id = _legal_entity(db, budget.organization_id, cfo)
         if op is None:
             op = Operation(organization_id=budget.organization_id, number=0, status="plan", created_by=user.id,
-                           budget_version_id=version.id, plan_kind=kind, plan_cfo_id=cfo_id)
+                           budget_version_id=version.id, plan_kind=kind, plan_cfo_id=cfo_id,
+                           plan_executor_id=executor_id)
         body = OperationIn(legal_entity_id=entity_id, op_date=op_date, article_id=article.id,
-                           description=f"План: {article.name}", postings=[_posting(db, kind, article, cfo_id, amount)])
+                           description=f"План: {article.name}",
+                           postings=[_posting(db, kind, article, cfo_id, amount, executor_id)])
         journal.save_draft(db, op, body, user)
         db.add(op)
         changed += 1
@@ -146,18 +161,63 @@ def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None
     return changed
 
 
+def executor_labels(db: Session, organization_id: int) -> dict[int, str]:
+    """ЦФУ → «Отдел / Исполнитель»."""
+    items = list(db.scalars(select(Executor).where(Executor.organization_id == organization_id)))
+    names = {e.id: e.name for e in items}
+    return {e.id: f"{names[e.parent_id]} / {e.name}" if e.parent_id else e.name for e in items}
+
+
+def _months(budget: Budget) -> list[dict]:
+    return [{"key": month_key(budget.year, m), "month": m, "title": MONTH_TITLES[m - 1]} for m in budget.months]
+
+
 def grid(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None) -> dict:
+    """Ячейки ЦФО: по строке на статью и ещё по строке на каждый ЦФУ, у которого есть план по статье."""
     budget = db.get(Budget, version.budget_id)
     query = select(Operation).where(Operation.budget_version_id == version.id, Operation.plan_kind == kind)
     query = query.where(Operation.plan_cfo_id.is_(None) if cfo_id is None else Operation.plan_cfo_id == cfo_id)
-    values: dict[int, dict[str, Decimal]] = {}
+    values: dict[tuple[int, int | None], dict[str, Decimal]] = {}
     for op in db.scalars(query):
         amount = sum((p.amount or Decimal(0) for p in op.postings), Decimal("0.00"))
-        values.setdefault(op.article_id, {})[month_key(op.op_date.year, op.op_date.month)] = amount
+        values.setdefault((op.article_id, op.plan_executor_id), {})[month_key(op.op_date.year, op.op_date.month)] = amount
+    labels = executor_labels(db, budget.organization_id) if any(e for _, e in values) else {}
+    rows = []
+    for a, group in plan_articles(db, kind):
+        rows.append({"article_id": a.id, "executor_id": None, "executor_name": "", "name": a.name, "group": group,
+                     "values": values.get((a.id, None), {})})
+        for (article_id, executor_id), v in sorted(values.items(), key=lambda kv: labels.get(kv[0][1] or 0, "").lower()):
+            if article_id == a.id and executor_id is not None:
+                rows.append({"article_id": a.id, "executor_id": executor_id, "executor_name": labels[executor_id],
+                             "name": a.name, "group": group, "values": v})
+    return {"months": _months(budget), "rows": rows}
+
+
+def executor_grid(db: Session, version: BudgetVersion, executor_id: int, branch: set[int] | None = None) -> dict:
+    """План ЦФУ (отдел — вместе с его исполнителями) по всем ЦФО: строка — статья (итог), раскрытие — ЦФО.
+    branch — ограничение ветки ЦФО (руководитель ЦФО)."""
+    budget = db.get(Budget, version.budget_id)
+    ids = [executor_id, *db.scalars(select(Executor.id).where(Executor.parent_id == executor_id))]
+    query = select(Operation).where(Operation.budget_version_id == version.id, Operation.plan_kind == "pl",
+                                    Operation.plan_executor_id.in_(ids))
+    if branch is not None:
+        query = query.where(Operation.plan_cfo_id.in_(branch))
+    totals: dict[int, dict[str, Decimal]] = {}
+    parts: dict[int, dict[int, dict[str, Decimal]]] = {}
+    for op in db.scalars(query):
+        amount = sum((p.amount or Decimal(0) for p in op.postings), Decimal("0.00"))
+        key = month_key(op.op_date.year, op.op_date.month)
+        row = totals.setdefault(op.article_id, {})
+        row[key] = row.get(key, Decimal("0.00")) + amount
+        part = parts.setdefault(op.article_id, {}).setdefault(op.plan_cfo_id, {})
+        part[key] = part.get(key, Decimal("0.00")) + amount
+    labels = cfo_labels(db, budget.organization_id)
     return {
-        "months": [{"key": month_key(budget.year, m), "month": m, "title": MONTH_TITLES[m - 1]} for m in budget.months],
-        "rows": [{"article_id": a.id, "name": a.name, "group": group, "values": values.get(a.id, {})}
-                 for a, group in plan_articles(db, kind)],
+        "months": _months(budget),
+        "rows": [{"article_id": a.id, "name": a.name, "group": group, "values": totals.get(a.id, {}),
+                  "parts": [{"cfo_id": c, "name": labels.get(c, "?"), "values": v}
+                            for c, v in sorted(parts.get(a.id, {}).items(), key=lambda kv: labels.get(kv[0], "").lower())]}
+                 for a, group in plan_articles(db, "pl")],
     }
 
 
@@ -193,7 +253,7 @@ def branch_grid(db: Session, version: BudgetVersion, kind: str, cfo_id: int) -> 
         return (bucket != cfo_id, branch[bucket].name.lower())
 
     return {
-        "months": [{"key": month_key(budget.year, m), "month": m, "title": MONTH_TITLES[m - 1]} for m in budget.months],
+        "months": _months(budget),
         "rows": [{"article_id": a.id, "name": a.name, "group": group, "values": totals.get(a.id, {}),
                   "parts": [{"cfo_id": b, "name": title(b), "values": v}
                             for b, v in sorted(parts.get(a.id, {}).items(), key=lambda kv: order(kv[0]))]}
@@ -209,6 +269,7 @@ def copy_plan(db: Session, source: BudgetVersion, target: BudgetVersion, user: U
             organization_id=op.organization_id, legal_entity_id=op.legal_entity_id, number=0, op_date=op.op_date,
             article_id=op.article_id, description=op.description, status="plan", created_by=user.id,
             budget_version_id=target.id, plan_kind=op.plan_kind, plan_cfo_id=op.plan_cfo_id,
+            plan_executor_id=op.plan_executor_id,
         )
         columns = ["line_no", "debit_account_id", "credit_account_id", "amount", "currency_id", "amount_rub",
                    "amount_rub_manual", "quantity"]
@@ -237,19 +298,19 @@ def plan_xlsx(db: Session, version: BudgetVersion, kind: str, cfo_ids: list[int 
     wb = Workbook()
     ws = wb.active
     ws.title = "План ОПиУ" if kind == "pl" else "План ДДС"
-    header = ["ЦФО", "Статья", *(MONTH_TITLES[m - 1] for m in budget.months)]
+    header = ["ЦФО", "Статья", "ЦФУ", *(MONTH_TITLES[m - 1] for m in budget.months)]
     ws.append(header)
     for i, title in enumerate(header, start=1):
         cell = ws.cell(row=1, column=i)
         cell.font, cell.fill = Font(bold=True), PatternFill("solid", fgColor="E8EEF8")
-        ws.column_dimensions[get_column_letter(i)].width = 40 if i <= 2 else 14
-    ws.freeze_panes = "C2"
+        ws.column_dimensions[get_column_letter(i)].width = 40 if i <= 2 else 24 if i == 3 else 14
+    ws.freeze_panes = "D2"
     for cfo_id in cfo_ids:
         data = grid(db, version, kind, cfo_id)
         for row in data["rows"]:
-            ws.append([labels.get(cfo_id, "") if cfo_id else "", row["name"],
+            ws.append([labels.get(cfo_id, "") if cfo_id else "", row["name"], row.get("executor_name", ""),
                        *(row["values"].get(m["key"]) for m in data["months"])])
-            for i in range(3, len(header) + 1):
+            for i in range(4, len(header) + 1):
                 ws.cell(row=ws.max_row, column=i).number_format = "#,##0.00"
     out = io.BytesIO()
     wb.save(out)
@@ -270,7 +331,7 @@ def import_plan(db: Session, version: BudgetVersion, kind: str, raw: bytes, user
     budget = db.get(Budget, version.budget_id)
     if version.status != "draft":
         raise PlanError("Загружать план можно только в черновик версии")
-    columns = [Column("ЦФО", "cfo"), Column("Статья", "article", True)]
+    columns = [Column("ЦФО", "cfo"), Column("Статья", "article", True), Column("ЦФУ", "executor")]
     columns += [Column(MONTH_TITLES[m - 1], f"m{m}") for m in budget.months]
     rows = _read_rows(raw, columns)
     labels = cfo_labels(db, budget.organization_id)
@@ -279,6 +340,8 @@ def import_plan(db: Session, version: BudgetVersion, kind: str, raw: bytes, user
     for cfo_id, label in labels.items():
         by_name.setdefault(label.split(" / ")[-1].lower(), []).append(cfo_id)
     articles = {a.name.lower(): a for a, _ in plan_articles(db, kind)}
+    executors = executor_labels(db, budget.organization_id)
+    executor_by_label = {v.lower(): k for k, v in executors.items()}
     result = PlanImportResult(rows=len(rows))
     for number, row in rows:
         try:
@@ -299,13 +362,19 @@ def import_plan(db: Session, version: BudgetVersion, kind: str, raw: bytes, user
             article = articles.get(_text(row.get("article")).lower())
             if article is None:
                 raise RowProblem(f"Статьи «{_text(row.get('article'))}» нет в плане {'ОПиУ' if kind == 'pl' else 'ДДС'}")
+            executor_text = _text(row.get("executor"))
+            executor_id = None
+            if executor_text:
+                executor_id = executor_by_label.get(executor_text.lower())
+                if executor_id is None:
+                    raise RowProblem(f"ЦФУ «{executor_text}» не найден (укажите «Отдел / Исполнитель» или отдел)")
             cells = []
             for m in budget.months:
                 value = row.get(f"m{m}")
                 amount = None if _text(value) in ("", "0") else _decimal(value, MONTH_TITLES[m - 1], 2)
                 cells.append(Cell(article.id, m, amount))
             with db.begin_nested():
-                result.changed += set_cells(db, version, kind, cfo_id, cells, user)
+                result.changed += set_cells(db, version, kind, cfo_id, cells, user, executor_id)
         except (RowProblem, PlanError) as exc:
             result.errors.append(RowError(number, str(exc)))
     return result

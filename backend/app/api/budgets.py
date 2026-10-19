@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import Budget, BudgetVersion, Cfo, User
+from app.models import Budget, BudgetVersion, Cfo, Executor, User
 from app.services import plan
 from app.services.journal import JournalError
 
@@ -232,6 +232,7 @@ class CellIn(BaseModel):
 class CellsIn(BaseModel):
     kind: PlanKind
     cfo_id: int | None = None
+    executor_id: int | None = None  # ЦФУ строки (исполнитель); не указан — строка статьи без ЦФУ
     cells: list[CellIn] = Field(min_length=1, max_length=2000)
 
 
@@ -240,7 +241,8 @@ class GridOut(BaseModel):
     budget_title: str
     kind: str
     cfo_id: int | None
-    mode: str  # own — план этого ЦФО (ввод); branch — свод с подчинёнными (просмотр)
+    executor_id: int | None = None
+    mode: str  # own — план ЦФО (ввод); branch — свод с подчинёнными; executor — план ЦФУ по всем ЦФО (просмотр)
     has_children: bool
     editable: bool
     months: list[dict]
@@ -256,10 +258,18 @@ def _check_plan_cfo(db: Session, user: User, organization_id: int, cfo_id: int |
 
 @router.get("/budget-versions/{version_id}/grid", response_model=GridOut)
 def get_grid(version_id: int, user: CurrentUser, db: DbSession, kind: PlanKind = "pl", cfo_id: int | None = None,
-             mode: Literal["own", "branch"] = "own"):
-    """Сетка плана: own — ячейки этого ЦФО (ввод); branch — свод ЦФО с подчинёнными (только просмотр)."""
+             mode: Literal["own", "branch", "executor"] = "own", executor_id: int | None = None):
+    """Сетка плана: own — ячейки этого ЦФО (ввод); branch — свод ЦФО с подчинёнными; executor — план ЦФУ
+    (отдел — с исполнителями) по всем ЦФО (руководителю ЦФО — по его ветке). Свод и ЦФУ — только просмотр."""
     version = _get_version(db, user, version_id, Perm.VIEW)
     budget = db.get(Budget, version.budget_id)
+    if mode == "executor":
+        executor = db.get(Executor, executor_id) if executor_id is not None else None
+        if executor is None or executor.organization_id != budget.organization_id:
+            raise _not_found("ЦФУ")
+        data = plan.executor_grid(db, version, executor.id, _branch_for(db, user, budget.organization_id))
+        return GridOut(version=_version_out(version), budget_title=budget.title, kind="pl", cfo_id=None,
+                       executor_id=executor.id, mode="executor", has_children=False, editable=False, **data)
     _check_plan_cfo(db, user, budget.organization_id, cfo_id)
     branch = mode == "branch" and kind == "pl" and cfo_id is not None
     if cfo_id is not None:
@@ -295,7 +305,8 @@ def put_cells(version_id: int, body: CellsIn, user: CurrentUser, db: DbSession) 
     _check_plan_cfo(db, user, budget.organization_id, body.cfo_id)
     try:
         changed = plan.set_cells(db, version, body.kind, body.cfo_id,
-                                 [plan.Cell(c.article_id, c.month, c.amount) for c in body.cells], user)
+                                 [plan.Cell(c.article_id, c.month, c.amount) for c in body.cells], user,
+                                 body.executor_id)
     except (plan.PlanError, JournalError) as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None

@@ -1,7 +1,7 @@
 // Сетка ввода плана версии бюджета: строки — статьи, колонки — месяцы; ячейка = плановая операция.
 import { api } from "./api.js";
 import { money, parseNumber, sumMoney } from "./format.js";
-import { el, makeTable, toast } from "./ui.js";
+import { el, makeTable, openForm, toast } from "./ui.js";
 
 const KINDS = { pl: "План ОПиУ (по ЦФО)", cf: "План ДДС" };
 
@@ -14,13 +14,23 @@ function normalizeInput(value, _data, _type, _params, cell) {
   return cell ? cell.getValue() : null;
 }
 
+function escapeHtml(text) {
+  return String(text ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+}
+
 function moneyOrEmpty(cell) {
   const v = cell.getValue();
   return v === null || v === undefined || v === "" || Number(v) === 0 ? "" : money(v);
 }
 
 export async function openPlanGrid(view, { org, budget, version, onBack }) {
-  const cfos = await api.get(`/api/organizations/${org.id}/cfos`);
+  const [cfos, executors] = await Promise.all([
+    api.get(`/api/organizations/${org.id}/cfos`), api.get(`/api/organizations/${org.id}/executors`)]);
+  const executorName = new Map(executors.map((e) => [e.id, e.parent_id
+    ? `${executors.find((x) => x.id === e.parent_id)?.name ?? ""} / ${e.name}` : e.name]));
+  const executorChoices = executors.filter((e) => e.is_active)
+    .sort((a, b) => executorName.get(a.id).localeCompare(executorName.get(b.id)));
+  let executorId = executorChoices[0]?.id ?? null;
   const names = new Map(cfos.map((c) => [String(c.id), c.name]));
   const label = (c) => c.path.split(".").map((id) => names.get(id)).join(" / ");
   // руководителю ЦФО — только его ветка
@@ -39,6 +49,9 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   const cfoSelect = el("select", { class: "inline-select", "aria-label": "ЦФО плана" },
     ...choices.map((c) => el("option", { value: c.id }, label(c))));
   const cfoLabel = el("label", { class: "inline" }, "ЦФО ", cfoSelect);
+  const executorSelect = el("select", { class: "inline-select", "aria-label": "ЦФУ плана" },
+    ...executorChoices.map((e) => el("option", { value: e.id }, executorName.get(e.id))));
+  const executorLabel = el("label", { class: "inline" }, "ЦФУ ", executorSelect);
   const fileInput = el("input", { type: "file", accept: ".xlsx", hidden: true, "aria-label": "Файл плана" });
   const uploadButton = el("button", { type: "button", class: "secondary", onclick: () => { fileInput.value = ""; fileInput.click(); } }, "Загрузить из Excel");
   const status = el("p", { class: "muted" });
@@ -49,7 +62,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       el("h1", {}, `${budget.title} — ${version.name}`),
       el("button", { type: "button", class: "secondary", onclick: onBack }, "← К бюджетам")),
     kindTabs,
-    el("div", { class: "filters" }, cfoLabel, modeTabs,
+    el("div", { class: "filters" }, cfoLabel, executorLabel, modeTabs,
       el("button", { type: "button", class: "secondary", onclick: () => download() }, "Скачать в Excel"),
       uploadButton, fileInput),
     status,
@@ -66,7 +79,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       groupBy: "group",
       groupHeader: (value) => value,
       columnCalcs: "group",
-      ...(mode === "branch" ? { dataTree: true, dataTreeStartExpanded: false, dataTreeChildIndent: 18 } : {}),
+      ...(mode !== "own" ? { dataTree: true, dataTreeStartExpanded: false, dataTreeChildIndent: 18 } : {}),
       columns: [{ title: "Статья", field: "name" }],
     });
     table.on("cellEdited", onEdited);
@@ -77,10 +90,16 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     const tabs = Object.entries(KINDS).filter(([k]) => k === "pl" || !org.restricted);
     kindTabs.replaceChildren(...tabs.map(([k, title]) =>
       el("button", { type: "button", class: `tab${k === kind ? " active" : ""}`, onclick: () => { kind = k; renderTabs(); load(); } }, title)));
-    cfoLabel.hidden = kind !== "pl";
-    const showModes = kind === "pl" && hasChildren(cfoId);
+    cfoLabel.hidden = kind !== "pl" || mode === "executor";
+    executorLabel.hidden = kind !== "pl" || mode !== "executor";
+    const modes = [
+      ...(hasChildren(cfoId) ? [["branch", "Свод по ветке"]] : []),
+      ["own", hasChildren(cfoId) ? "Свой план" : "План ЦФО"],
+      ...(executorChoices.length ? [["executor", "По ЦФУ"]] : []),
+    ];
+    const showModes = kind === "pl" && modes.length > 1;
     modeTabs.hidden = !showModes;
-    modeTabs.replaceChildren(...(showModes ? [["branch", "Свод по ветке"], ["own", "Свой план"]].map(([m, title]) =>
+    modeTabs.replaceChildren(...(showModes ? modes.map(([m, title]) =>
       el("button", { type: "button", class: `tab${m === mode ? " active" : ""}`, onclick: () => { mode = m; renderTabs(); load(); } }, title)) : []));
   }
 
@@ -93,21 +112,36 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       return;
     }
     const branch = kind === "pl" && mode === "branch" && hasChildren(cfoId);
-    const params = new URLSearchParams({ kind, ...(kind === "pl" ? { cfo_id: cfoId } : {}), mode: branch ? "branch" : "own" });
+    const byExecutor = kind === "pl" && mode === "executor" && executorId;
+    const params = new URLSearchParams(byExecutor ? { kind, mode: "executor", executor_id: executorId }
+      : { kind, ...(kind === "pl" ? { cfo_id: cfoId } : {}), mode: branch ? "branch" : "own" });
     data = await api.get(`/api/budget-versions/${version.id}/grid?${params}`);
     await newTable();
     uploadButton.hidden = !data.editable;
-    status.textContent = data.mode === "branch"
+    status.textContent = data.mode === "executor"
+      ? "План ЦФУ по всем ЦФО (у отдела — вместе с его исполнителями), только просмотр. Нажмите ⊞ у статьи — "
+        + "увидите разбивку по ЦФО. Вводить план с ЦФУ — в сетке ЦФО: «+ ЦФУ» у статьи."
+      : data.mode === "branch"
       ? "Свод по ветке: план этого ЦФО вместе со всеми подчинёнными — только просмотр. Нажмите ⊞ у статьи, "
         + "чтобы увидеть, из каких ЦФО сложилась сумма. Вводить план — в «Свой план» или в сетке нижестоящего ЦФО."
       : data.editable
       ? "Введите сумму в ячейку и нажмите Enter — она сразу сохраняется. Пустая ячейка или 0 — плана нет. "
         + "Суммы — положительные: доход или расход определяется статьёй."
+        + (kind === "pl" && executorChoices.length ? " «+ ЦФУ» — строка статьи с исполнителем (кто делает расход)." : "")
       : version.status === "draft"
         ? "Только просмотр: недостаточно прав."
         : "Только просмотр: версия утверждена или в архиве. Для пересмотра создайте новую версию.";
+    const addExecutor = data.editable && kind === "pl" && executorChoices.length;
     table.setColumns([
-      { title: "Статья", field: "name", minWidth: 240, widthGrow: 3, frozen: true, headerSort: false },
+      { title: "Статья", field: "name", minWidth: 240, widthGrow: 3, frozen: true, headerSort: false,
+        tooltip: (_e, c) => { const r = c.getRow().getData(); return r.executor_id ? `${r.name}: ${r.executor_name}` : r.name; },
+        formatter: (c) => {
+          const r = c.getRow().getData();
+          return r.executor_id ? `<span class="muted">↳ ${escapeHtml(r.executor_name)}</span>` : escapeHtml(c.getValue());
+        } },
+      ...(addExecutor ? [{ title: "", field: "_executor", width: 80, headerSort: false, frozen: true,
+        formatter: (c) => (c.getRow().getData().executor_id ? "" : '<span class="link-like">+ ЦФУ</span>'),
+        cellClick: (_e, c) => { if (!c.getRow().getData().executor_id) addExecutorRow(c.getRow()); } }] : []),
       ...data.months.map((m) => ({
         title: m.title, field: m.key, hozAlign: "right", minWidth: 105, headerSort: false,
         editor: data.editable ? "input" : false, editorParams: { selectContents: true }, mutatorEdit: normalizeInput, formatter: moneyOrEmpty,
@@ -117,12 +151,34 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
         formatter: moneyOrEmpty, bottomCalc: sumCalc, bottomCalcFormatter: moneyOrEmpty },
     ]);
     const rows = data.rows.map((r) => ({
-      key: String(r.article_id), article_id: r.article_id, name: r.name, group: r.group, ...r.values,
+      key: `${r.article_id}:${r.executor_id ?? 0}`, article_id: r.article_id, executor_id: r.executor_id ?? null,
+      executor_name: r.executor_name ?? "", name: r.name, group: r.group, ...r.values,
       total: sumMoney(Object.values(r.values)),
       ...(r.parts?.length ? { _children: r.parts.map((p) => ({ key: `${r.article_id}:${p.cfo_id}`, name: p.name,
         group: r.group, ...p.values, total: sumMoney(Object.values(p.values)) })) } : {}),
     }));
     await table.setData(rows);
+  }
+
+  function addExecutorRow(row) {
+    const base = row.getData();
+    const present = new Set(table.getData().filter((r) => r.article_id === base.article_id).map((r) => r.executor_id));
+    const options = executorChoices.filter((e) => !present.has(e.id)).map((e) => [String(e.id), executorName.get(e.id)]);
+    if (!options.length) {
+      toast("По этой статье строки есть для всех ЦФУ", "error");
+      return;
+    }
+    openForm({
+      title: `ЦФУ для статьи «${base.name}»`,
+      fields: [{ name: "executor_id", label: "Исполнитель", type: "select", options,
+        hint: "Появится строка статьи с этим ЦФУ — введите в неё суммы" }],
+      submitText: "Добавить строку",
+      onSubmit: async (v) => {
+        const id = Number(v.executor_id);
+        await table.addRow({ key: `${base.article_id}:${id}`, article_id: base.article_id, executor_id: id,
+          executor_name: executorName.get(id), name: base.name, group: base.group, total: null }, false, row);
+      },
+    });
   }
 
   async function onEdited(cell) {
@@ -132,7 +188,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     const raw = cell.getValue() ?? null; // уже приведено normalizeInput
     try {
       await api.put(`/api/budget-versions/${version.id}/cells`, {
-        kind, cfo_id: kind === "pl" ? cfoId : null,
+        kind, cfo_id: kind === "pl" ? cfoId : null, executor_id: row.getData().executor_id ?? null,
         cells: [{ article_id: row.getData().article_id, month: month.month, amount: raw }],
       });
       const values = data.months.map((m) => (m.key === month.key ? raw : row.getData()[m.key]));
@@ -180,9 +236,10 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     }
   });
 
+  executorSelect.addEventListener("change", () => { executorId = Number(executorSelect.value); load(); });
   cfoSelect.addEventListener("change", () => {
     cfoId = Number(cfoSelect.value);
-    mode = hasChildren(cfoId) ? "branch" : "own";
+    if (mode !== "executor") mode = hasChildren(cfoId) ? "branch" : "own";
     renderTabs();
     load();
   });

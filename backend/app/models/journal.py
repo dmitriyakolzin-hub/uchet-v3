@@ -34,6 +34,7 @@ ANALYTIC_COLUMNS: dict[str, tuple[str, str]] = {
     "warehouse": ("warehouse_id", "warehouses"),
     "fixed_asset": ("fixed_asset_id", "fixed_assets"),
     "cfo": ("cfo_id", "cfos"),
+    "executor": ("executor_id", "executors"),
     "cash_flow_item": ("cash_flow_article_id", "articles"),
     "pl_item": ("pl_article_id", "articles"),
 }
@@ -58,7 +59,8 @@ class Operation(Base):
         CheckConstraint("(status = 'plan') = (budget_version_id IS NOT NULL)", name="plan_has_version"),
         CheckConstraint("plan_kind IS NULL OR plan_kind IN ('pl', 'cf')", name="plan_kind"),
         # ячейка бюджета: версия + вид плана (ОПиУ / ДДС) + ЦФО + статья + месяц — одна плановая операция
-        Index("uq_operations_plan_cell", "budget_version_id", "plan_kind", "plan_cfo_id", "article_id", "op_date",
+        Index("uq_operations_plan_cell", "budget_version_id", "plan_kind", "plan_cfo_id", "plan_executor_id",
+              "article_id", "op_date",
               unique=True, postgresql_nulls_not_distinct=True,
               postgresql_where=text("budget_version_id IS NOT NULL")),
         Index("ix_operations_organization_date", "organization_id", "op_date"),
@@ -89,6 +91,7 @@ class Operation(Base):
     )
     plan_kind: Mapped[str | None] = mapped_column(String(2))
     plan_cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"))
+    plan_executor_id: Mapped[int | None] = mapped_column(ForeignKey("executors.id", ondelete="RESTRICT"))  # ЦФУ
 
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

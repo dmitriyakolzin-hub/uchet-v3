@@ -22,6 +22,7 @@ class AnalyticsIn(BaseModel):
     warehouse: int | None = None
     fixed_asset: int | None = None
     cfo: int | None = None
+    executor: int | None = None  # ЦФУ — необязательно, там, где ведётся ЦФО
     cash_flow_item: int | None = None
     pl_item: int | None = None
 

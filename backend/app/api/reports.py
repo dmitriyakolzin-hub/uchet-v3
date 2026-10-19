@@ -15,7 +15,7 @@ from app.api.access import branch_ids, cfo_scope, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.analytics import ANALYTIC_TITLES, AnalyticKind
 from app.core.permissions import Perm
-from app.models import Account, Budget, BudgetVersion, Cfo, LegalEntity, Warehouse
+from app.models import Account, Budget, BudgetVersion, Cfo, Executor, LegalEntity, Warehouse
 from app.models.journal import ANALYTIC_COLUMNS
 from app.services import report_xlsx as xlsx
 from app.services import reports
@@ -34,6 +34,7 @@ def report_filter(
     legal_entity_id: int | None = None,
     cfo_id: int | None = None,
     drafts: bool = False,
+    executor_id: int | None = None,
 ) -> ReportFilter:
     """Общие фильтры отчётов + проверка права просмотра и принадлежности юрлица и ЦФО организации."""
     get_organization_for(db, user, organization_id, Perm.VIEW)
@@ -51,7 +52,14 @@ def report_filter(
             cfo_id = scope
         elif cfo_id not in branch_ids(db, scope):
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="ЦФО не найдено в вашей ветке")
-    return ReportFilter(organization_id, date_from, date_to, legal_entity_id, cfo_id, drafts)
+    executor_ids = None
+    if executor_id is not None:
+        executor = db.get(Executor, executor_id)
+        if executor is None or executor.organization_id != organization_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="ЦФУ не найден в этой организации")
+        executor_ids = (executor.id, *db.scalars(select(Executor.id).where(Executor.parent_id == executor.id)))
+    return ReportFilter(organization_id, date_from, date_to, legal_entity_id, cfo_id, drafts,
+                        executor_ids=executor_ids)
 
 
 Filter = Annotated[ReportFilter, Depends(report_filter)]
@@ -358,6 +366,8 @@ def _subtitle(db: Session, f: ReportFilter) -> str:
         parts.append(f"Юрлицо: {db.get(LegalEntity, f.legal_entity_id).short_name}")
     if f.cfo_id:
         parts.append(f"ЦФО: {db.get(Cfo, f.cfo_id).name} (с подчинёнными)")
+    if f.executor_ids:
+        parts.append(f"ЦФУ: {db.get(Executor, f.executor_ids[0]).name}")
     parts.append("с черновиками" if f.with_drafts else "только проведённые операции")
     return "; ".join(parts)
 

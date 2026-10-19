@@ -434,6 +434,15 @@ with sync_playwright() as p:
     page.click("button.tab:has-text('ОСВ')")
 
     # бюджеты: годовой бюджет, утверждение, пересмотр новой версией
+    # ЦФУ (исполнители): отдел → исполнитель
+    page.click("#nav a[data-page=references]")
+    page.click("button.tab:has-text('ЦФУ')")
+    page.click("text=Добавить отдел")
+    dialog_fill(page, {"name": "Инженерный отдел"}).locator("button[type=submit]").click()
+    page.locator(".tabulator-row", has_text="Инженерный отдел").locator(".tabulator-cell[tabulator-field=_add]").click()
+    dialog_fill(page, {"name": "Инженер Петров"}).locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="Инженер Петров")).to_be_visible()  # дерево раскрыто
+
     page.click("#nav a[data-page=budgets]")
     page.click("text=Новый бюджет")
     d = page.locator("dialog[open]")
@@ -472,7 +481,22 @@ with sync_playwright() as p:
     page.keyboard.press("Enter")
     expect(rent.locator(".tabulator-cell[tabulator-field=total]")).to_have_text("1 500,50")
     expect(page.locator(".toast-error")).to_have_count(0)
+    # строка статьи с ЦФУ
+    utilities = page.locator(".tabulator-row", has_text="Коммунальные услуги").first
+    utilities.locator(".tabulator-cell[tabulator-field=_executor]").click()
+    d = page.locator("dialog[open]")
+    d.locator("[name=executor_id]").select_option(label="Инженерный отдел / Инженер Петров")
+    d.locator("button[type=submit]").click()
+    engineer = page.locator(".tabulator-row", has_text="Инженер Петров")
+    engineer.locator(".tabulator-cell[tabulator-field='2027-01']").click()
+    page.keyboard.type("700")
+    page.keyboard.press("Enter")
+    expect(engineer.locator(".tabulator-cell[tabulator-field=total]")).to_have_text("700,00")
+    expect(page.locator(".toast-error")).to_have_count(0)
     page.screenshot(path=f"{OUT}/28_plan_grid.png", full_page=True)
+    page.click("button.tab:has-text('По ЦФУ')")
+    page.locator("select[aria-label='ЦФУ плана']").select_option(label="Инженерный отдел")
+    expect(page.locator(".tabulator-row", has_text="Коммунальные услуги").first).to_contain_text("700,00")
     page.click("button.tab:has-text('Свод по ветке')")
     rent = page.locator(".tabulator-row", has_text="Аренда").first
     expect(rent.locator(".tabulator-cell[tabulator-field=total]")).to_have_text("1 500,50")

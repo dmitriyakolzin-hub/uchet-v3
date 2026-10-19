@@ -16,6 +16,7 @@ from app.models import (
     Counterparty,
     Currency,
     Employee,
+    Executor,
     FixedAsset,
     LegalEntity,
     Nomenclature,
@@ -177,6 +178,19 @@ def _check_fixed_asset(db, asset: FixedAsset, creating: bool) -> None:
                              "Чтобы исправить, отмените ввод в эксплуатацию")
 
 
+def _check_executor(db, executor: Executor, _creating: bool) -> None:
+    """Два уровня: отдел (без вышестоящего) → исполнитель; у отдела с исполнителями вышестоящего нет."""
+    if executor.parent_id is None:
+        return
+    if executor.parent_id == executor.id:
+        raise ValueError("ЦФУ не может подчиняться сам себе")
+    parent = db.get(Executor, executor.parent_id)
+    if parent.parent_id is not None:
+        raise ValueError("ЦФУ — два уровня: отдел → исполнитель; выберите отдел")
+    if executor.id is not None and db.scalar(select(Executor.id).where(Executor.parent_id == executor.id).limit(1)):
+        raise ValueError("У этого отдела есть исполнители — его нельзя сделать исполнителем другого отдела")
+
+
 for resource in (
     OrgResource(
         path="bank-accounts", model=BankAccount, title="Расчётный счёт",
@@ -239,6 +253,14 @@ for resource in (
         order_by=lambda m: [m.name],
         refs={"cfo_id": Ref(Cfo, "ЦФО")},
         nullable_fields={"cfo_id"},
+    ),
+    OrgResource(
+        path="executors", model=Executor, title="ЦФУ",
+        create_schema=s.ExecutorCreate, update_schema=s.ExecutorUpdate, out_schema=s.ExecutorOut,
+        conflict_message="Такой ЦФУ уже есть",
+        order_by=lambda m: [m.name],
+        refs={"parent_id": Ref(Executor, "Отдел"), "employee_id": Ref(Employee, "Сотрудник")},
+        nullable_fields={"parent_id", "employee_id"}, check=_check_executor,
     ),
     OrgResource(
         path="fixed-assets", model=FixedAsset, title="Основное средство",

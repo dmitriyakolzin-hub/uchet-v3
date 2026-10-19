@@ -428,4 +428,13 @@
   в сетке плана переключатель «Свод по ветке / Свой план», таблица пересоздаётся под режим (dataTree в своде).
   Миграций нет. Тестов 347, ui_smoke дополнен.
   Дальше: шаг 6.2 — ЦФУ (исполнители).
+- 2026-10-19 — Шаг 6.2 (ветка `etap-6-2-executors`, построена поверх `etap-6-1-budget-rollup`, PR 34 ещё не влит),
+  допущения — `docs/TZ.md`, раздел 16 «Детали 6.2». Миграция 0024: `executors` (OrgScoped, parent_id — два уровня,
+  employee_id), вид аналитики `executor` («ЦФУ», колонки `dt_/ct_executor_id`), `operations.plan_executor_id`
+  (входит в `uq_operations_plan_cell`). Необязательная аналитика — `core/analytics.OPTIONAL_ANALYTICS` (ЦФУ можно
+  там, где ведётся ЦФО; `journal.posting_errors`). План: `set_cells(..., executor_id)`, строки грида по (статья, ЦФУ),
+  `executor_grid` (отдел + исполнители, раскрытие по ЦФО), `copy_plan` и Excel плана с ЦФУ. `select_lines(executor_ids)`,
+  `ReportFilter.executor_ids`, параметр `executor_id` у всех отчётов. Интерфейс: вкладка «ЦФУ (исполнители)»,
+  ЦФУ в форме операции, «+ ЦФУ» и режим «По ЦФУ» в сетке плана, фильтр «ЦФУ» в отчётах. Тестов 349, ui_smoke дополнен.
+  Дальше: шаг 6.3 — инвестиционный бюджет.
 
