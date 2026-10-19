@@ -76,6 +76,9 @@ def money_overview(db: Session, organization_id: int, date_from: dt.date, date_t
         })
 
     cash = _balances(db, organization_id, (CASH_ROOT,), "cfo", date_from, date_to)
+    # кассы, добавленные на «Деньгах», видны и без движения
+    for cfo_id in db.scalars(select(Cfo.id).where(Cfo.organization_id == organization_id, Cfo.has_cash, Cfo.is_active)):
+        cash.setdefault(cfo_id, Balance())
     names = dict(db.execute(select(Cfo.id, Cfo.name).where(Cfo.id.in_([k for k in cash if k]))).all())
     for cfo_id, balance in sorted(cash.items(), key=lambda kv: names.get(kv[0], "")):
         rows.append({
