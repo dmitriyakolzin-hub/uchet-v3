@@ -36,7 +36,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(16)
+    expect(page.locator("#nav a")).to_have_count(17)
     expect(page.locator("#nav a.active")).to_have_text("Журнал операций")  # открывается первым
     page.click("#nav a[data-page=organizations]")
 
@@ -566,6 +566,37 @@ with sync_playwright() as p:
     page.locator("tr", has_text="Ноябрь 2026").locator("button", has_text="Отменить").click()
     expect(page.locator("text=Начислений пока нет.")).to_be_visible()
 
+    # регламентная операция из операции журнала; закрытие и открытие месяца
+    page.click("#nav a[data-page=journal]")
+    page.locator(".tabulator-row", has_text="Оплата по счёту 15").locator(".tabulator-cell[tabulator-field=description]").click()
+    page.locator("dialog[open] button", has_text="Сделать регламентной").click()
+    d = page.locator("dialog[open]").last
+    expect(d.locator("[name=name]")).to_have_value("Оплата по счёту 15")
+    d.locator("[name=name]").fill("Оплата аренды")
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".toast")).to_contain_text("Регламентная операция создана")
+    page.locator("dialog[open] button", has_text="Закрыть").click()
+
+    page.click("#nav a[data-page=closing]")
+    expect(page.locator(".closing-status")).to_have_text("Период не закрыт")
+    expect(page.locator("tr", has_text="Оплата аренды")).to_contain_text("сразу")
+    page.locator("select[aria-label='Месяц']").select_option(label="Сентябрь")
+    expect(page.locator("ul.checklist")).to_contain_text("Нет черновиков")
+    page.once("dialog", lambda dlg: dlg.accept())
+    page.click("button:has-text('Закрыть месяц')")
+    expect(page.locator(".closing-status")).to_have_text("Период закрыт по 30.09.2026")
+    # октябрь: черновик мешает закрыть
+    expect(page.locator("select[aria-label='Месяц'] option:checked")).to_have_text("Октябрь")
+    expect(page.locator("li.check-fail", has_text="Нет черновиков")).to_be_visible()
+    expect(page.locator("button:has-text('Закрыть месяц')")).to_be_disabled()
+    # ноябрь: регламентная операция ждёт выполнения
+    page.locator("select[aria-label='Месяц']").select_option(label="Ноябрь")
+    expect(page.locator("tr", has_text="Оплата аренды").first).to_contain_text("не выполнена")
+    page.screenshot(path=f"{OUT}/34_closing.png", full_page=True)
+    page.once("dialog", lambda dlg: dlg.accept())
+    page.click("button:has-text('Открыть сентябрь 2026')")
+    expect(page.locator(".closing-status")).to_have_text("Период не закрыт")
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")
@@ -590,7 +621,7 @@ with sync_playwright() as p:
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(15)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(16)  # нет «Пользователи»
     page.click("#nav a[data-page=organizations]")
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою

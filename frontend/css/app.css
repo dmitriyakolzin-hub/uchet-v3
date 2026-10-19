@@ -251,3 +251,12 @@ table.assets td.num { text-align: right; white-space: nowrap; }
 table.assets td.strong { font-weight: 600; }
 table.assets tr.muted td { color: var(--muted); }
 table.assets td.actions { white-space: normal; }
+/* Закрытие периода: список проверок */
+.closing-status { font-size: 16px; }
+ul.checklist { list-style: none; padding: 0; margin: 8px 0 16px; }
+ul.checklist > li { padding: 4px 0; }
+ul.checklist ul { margin: 2px 0 4px 28px; color: var(--muted); }
+.check-mark { display: inline-block; width: 20px; font-weight: 700; }
+.check-ok .check-mark { color: #05603a; }
+.check-fail .check-mark { color: #b42318; }
+.check-warn .check-mark { color: #b54708; }

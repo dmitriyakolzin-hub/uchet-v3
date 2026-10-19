@@ -32,6 +32,8 @@ class Organization(Base):
     note: Mapped[str] = mapped_column(Text, default="", server_default="")
     # Дата, на которую введены начальные остатки; обычные операции — только позже неё
     opening_balance_date: Mapped[date | None] = mapped_column(Date)
+    # Период закрыт по эту дату включительно (последний день месяца): операции до неё не меняются
+    closed_through: Mapped[date | None] = mapped_column(Date)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
