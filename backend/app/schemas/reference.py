@@ -218,6 +218,7 @@ class CfoOut(_Out):
     parent_id: int | None
     path: str
     legal_entity_id: int | None
+    has_cash: bool = False  # «есть касса» (вкладка «Деньги»)
     is_active: bool
 
 

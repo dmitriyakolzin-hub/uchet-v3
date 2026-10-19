@@ -190,6 +190,7 @@ class ImportOut(BaseModel):
     new_counterparties: list[str]
     accounts: list[AccountCheckOut]
     confirmed_sheets: list[int] = []
+    paid_requests: list[int] = []
 
 
 @router.post("/organizations/{organization_id}/bank-statements", response_model=ImportOut)
@@ -213,6 +214,6 @@ async def upload_statement(organization_id: int, request: Request, user: Current
         date_from=result.date_from, date_to=result.date_to, created=result.created,
         incomplete=result.incomplete, skipped_duplicates=result.skipped_duplicates,
         skipped_before_opening=result.skipped_before_opening, new_counterparties=result.new_counterparties,
-        confirmed_sheets=result.confirmed_sheets,
+        confirmed_sheets=result.confirmed_sheets, paid_requests=result.paid_requests,
         accounts=[AccountCheckOut(**{**a.__dict__, "totals_match": a.totals_match}) for a in result.accounts],
     )

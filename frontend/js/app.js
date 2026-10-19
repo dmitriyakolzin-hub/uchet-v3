@@ -2,6 +2,7 @@ import { api, clearSession, hasSession, login } from "./api.js";
 import { renderAccounts } from "./pages/accounts.js";
 import { renderArticles } from "./pages/articles.js";
 import { renderBudgets } from "./pages/budgets.js";
+import { renderCalendar } from "./pages/calendar.js";
 import { renderClosing } from "./pages/closing.js";
 import { renderCommon } from "./pages/common.js";
 import { renderCurrencies } from "./pages/currencies.js";
@@ -21,6 +22,7 @@ import { el } from "./ui.js";
 const PAGES = {
   journal: { title: "Журнал операций", render: renderJournal },
   money: { title: "Деньги", render: renderMoney },
+  calendar: { title: "Платёжный календарь", render: renderCalendar },
   opening: { title: "Начальные остатки", render: renderOpening },
   reports: { title: "Отчёты", render: renderReports },
   budgets: { title: "Бюджеты", render: renderBudgets },
