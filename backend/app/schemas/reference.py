@@ -1,7 +1,8 @@
 import datetime as dt
+from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
 LongText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)]
@@ -231,6 +232,8 @@ class EmployeeCreate(BaseModel):
     cfo_id: int | None = None
     hired_on: dt.date | None = None
     fired_on: dt.date | None = None
+    legal_entity_id: int | None = None  # работодатель
+    pl_item_id: int | None = None  # статья затрат ОПиУ для начисленной зарплаты
 
 
 class EmployeeUpdate(BaseModel):
@@ -241,6 +244,8 @@ class EmployeeUpdate(BaseModel):
     cfo_id: int | None = None
     hired_on: dt.date | None = None
     fired_on: dt.date | None = None
+    legal_entity_id: int | None = None
+    pl_item_id: int | None = None
     is_active: bool | None = None
 
 
@@ -254,7 +259,23 @@ class EmployeeOut(_Out):
     cfo_id: int | None
     hired_on: dt.date | None
     fired_on: dt.date | None
+    legal_entity_id: int | None
+    pl_item_id: int | None
     is_active: bool
+
+
+class SalaryIn(BaseModel):
+    valid_from: dt.date
+    amount: Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=2)]
+    note: ShortText = ""
+
+
+class SalaryOut(_Out):
+    id: int
+    employee_id: int
+    valid_from: dt.date
+    amount: Decimal
+    note: str
 
 
 # --- Единицы измерения (общий справочник) ---

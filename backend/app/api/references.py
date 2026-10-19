@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import AdminUser, CurrentUser, DbSession
 from app.api.org_resources import OrgResource, Ref, register
 from app.models import (
+    Article,
     Bank,
     BankAccount,
     Cfo,
@@ -144,7 +145,11 @@ def _check_cfo(db: Session, cfo: Cfo, creating: bool) -> None:
         )
 
 
-def _check_employee(_db, employee: Employee, _creating: bool) -> None:
+def _check_employee(db, employee: Employee, _creating: bool) -> None:
+    if employee.pl_item_id is not None:
+        article = db.get(Article, employee.pl_item_id)
+        if article is None or not article.is_pl:
+            raise ValueError("Статья затрат — только статья ОПиУ")
     if employee.hired_on and employee.fired_on and employee.fired_on < employee.hired_on:
         raise ValueError("Дата увольнения раньше даты приёма")
 
@@ -192,8 +197,10 @@ for resource in (
         create_schema=s.EmployeeCreate, update_schema=s.EmployeeUpdate, out_schema=s.EmployeeOut,
         conflict_message="Сотрудник с таким табельным номером уже есть",
         order_by=lambda m: [m.full_name],
-        refs={"cfo_id": Ref(Cfo, "ЦФО")},
-        nullable_fields={"inn", "cfo_id", "hired_on", "fired_on"}, check=_check_employee,
+        refs={"cfo_id": Ref(Cfo, "ЦФО"), "legal_entity_id": LEGAL_ENTITY,
+              "pl_item_id": Ref(Article, "Статья затрат", org_scoped=False)},
+        nullable_fields={"inn", "cfo_id", "hired_on", "fired_on", "legal_entity_id", "pl_item_id"},
+        check=_check_employee,
     ),
     OrgResource(
         path="nomenclature", model=Nomenclature, title="Номенклатура",

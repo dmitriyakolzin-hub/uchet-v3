@@ -65,3 +65,6 @@ class Employee(OrgScoped, Base):
     cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"), index=True)
     hired_on: Mapped[date | None] = mapped_column(Date)
     fired_on: Mapped[date | None] = mapped_column(Date)
+    # Условия оплаты (docs/TZ.md, раздел 14): работодатель и статья затрат ОПиУ для начисленной зарплаты
+    legal_entity_id: Mapped[int | None] = mapped_column(ForeignKey("legal_entities.id", ondelete="RESTRICT"))
+    pl_item_id: Mapped[int | None] = mapped_column(ForeignKey("articles.id", ondelete="RESTRICT"))
