@@ -405,6 +405,17 @@ with sync_playwright() as p:
     page.screenshot(path=f"{OUT}/22_balance.png", full_page=True)
     d2.locator("button", has_text="Закрыть").click()
     d.locator("button", has_text="Закрыть").click()
+    # Дебиторка и кредиторка: аванс поставщику, раскрытие до договора и проводок
+    page.click("button.tab:has-text('Дебиторка и кредиторка')")
+    row = page.locator(".tabulator-row", has_text="Поставщик Плюс").first
+    expect(row).to_contain_text("1 500,50")
+    row.locator(".tabulator-data-tree-control").click()
+    child = page.locator(".tabulator-row", has_text="60.01")
+    child.locator(".drill").first.click()
+    d = page.locator("dialog[open]", has_text="Расшифровка")
+    expect(d).to_contain_text("Дебет: 1 500,50")
+    page.screenshot(path=f"{OUT}/24_debts.png", full_page=True)
+    d.locator("button", has_text="Закрыть").click()
     page.click("button.tab:has-text('ОСВ')")
 
     # пользователь CEO
