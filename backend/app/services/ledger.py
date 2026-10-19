@@ -54,10 +54,12 @@ def select_lines(
     date_to: dt.date | None = None,
     legal_entity_id: int | None = None,
     account_id: int | None = None,
+    account_ids: list[int] | None = None,
     side: str | None = None,
     analytics: dict[str, int] | None = None,
 ) -> Select:
-    """Строки проводок по условиям. Счёт отбирается вместе со всеми своими субсчетами.
+    """Строки проводок по условиям. Счёт (account_id или любой из account_ids) отбирается
+    вместе со всеми своими субсчетами.
 
     По умолчанию — только проведённые операции (так считают отчёты).
     """
@@ -71,9 +73,12 @@ def select_lines(
         query = query.where(lines.c.legal_entity_id == legal_entity_id)
     if side is not None:
         query = query.where(lines.c.side == side)
-    if account_id is not None:
-        root = select(Account.code).where(Account.id == account_id).scalar_subquery()
-        subtree = select(Account.id).where(or_(Account.code == root, Account.code.like(root + ".%")))
+    roots = ([account_id] if account_id is not None else []) + list(account_ids or [])
+    if roots:
+        root_codes = select(Account.code).where(Account.id.in_(roots)).subquery()
+        subtree = select(Account.id).join(
+            root_codes, or_(Account.code == root_codes.c.code, Account.code.like(root_codes.c.code + ".%"))
+        )
         query = query.where(lines.c.account_id.in_(subtree))
     for kind, value in (analytics or {}).items():
         query = query.where(and_(getattr(lines.c, kind) == value))

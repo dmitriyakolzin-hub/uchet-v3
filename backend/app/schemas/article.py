@@ -19,6 +19,7 @@ class ArticleIn(BaseModel):
     pl_section: Section | None = None
     debit_account_id: int | None = None
     credit_account_id: int | None = None
+    is_transfer: bool = False
     is_active: bool = True
 
     @model_validator(mode="after")
@@ -50,4 +51,5 @@ class ArticleOut(BaseModel):
     pl_section: Section | None
     debit_account_id: int | None
     credit_account_id: int | None
+    is_transfer: bool
     is_active: bool

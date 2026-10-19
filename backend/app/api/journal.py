@@ -55,7 +55,8 @@ def operation_out(op: Operation) -> OperationOut:
         ))
     return OperationOut(
         id=op.id, organization_id=op.organization_id, legal_entity_id=op.legal_entity_id,
-        number=op.number, op_date=op.op_date, article_id=op.article_id, description=op.description,
+        number=op.number, op_date=op.op_date, is_opening=op.is_opening,
+        article_id=op.article_id, description=op.description,
         status=op.status, total_rub=sum((p.amount_rub or Decimal(0) for p in op.postings), Decimal(0)),
         postings=postings, created_by=op.created_by, created_at=op.created_at,
         updated_by=op.updated_by, updated_at=op.updated_at, posted_by=op.posted_by, posted_at=op.posted_at,
@@ -116,6 +117,7 @@ def list_operations(
     counterparty_id: int | None = None,
     article_id: int | None = None,
     q: Annotated[str | None, Query(max_length=200)] = None,
+    opening: bool | None = None,  # true — только ввод остатков, false — без него, не указано — все
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> OperationList:
@@ -131,6 +133,8 @@ def list_operations(
         query = query.where(Operation.legal_entity_id == legal_entity_id)
     if q:
         query = query.where(Operation.description.ilike(f"%{q}%"))
+    if opening is not None:
+        query = query.where(Operation.is_opening == opening)
     if article_id:
         # статья в шапке или в аналитике проводок
         by_lines = select_lines(organization_id, statuses=("draft", "posted", "cancelled"))
@@ -181,7 +185,9 @@ def create_operation(
     organization_id: int, body: OperationIn, user: CurrentUser, db: DbSession, post: bool = False
 ) -> OperationOut:
     get_organization_for(db, user, organization_id, Perm.DRAFT)
-    op = Operation(organization_id=organization_id, created_by=user.id, status="draft")
+    op = Operation(
+        organization_id=organization_id, created_by=user.id, status="draft", is_opening=body.is_opening
+    )
     try:
         journal.save_draft(db, op, body, user)
         op.number = journal.next_number(db, organization_id)

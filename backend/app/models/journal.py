@@ -63,6 +63,8 @@ class Operation(Base):
     article_id: Mapped[int | None] = mapped_column(ForeignKey("articles.id", ondelete="RESTRICT"))
     description: Mapped[str] = mapped_column(Text, default="", server_default="")
     status: Mapped[str] = mapped_column(String(20), default="draft", server_default="draft")
+    # Ввод начальных остатков (проводки против счёта 00, дата — дата остатков организации)
+    is_opening: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

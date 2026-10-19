@@ -1,3 +1,4 @@
+import datetime as dt
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
@@ -22,6 +23,7 @@ class OrganizationUpdate(BaseModel):
     name: Name | None = None
     kind: Kind | None = None
     note: str | None = Field(default=None, max_length=2000)
+    opening_balance_date: dt.date | None = None
     is_active: bool | None = None
 
 
@@ -32,6 +34,7 @@ class OrganizationOut(BaseModel):
     name: str
     kind: Kind
     note: str
+    opening_balance_date: dt.date | None
     is_active: bool
     permissions: list[Perm] = []
 

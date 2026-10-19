@@ -36,7 +36,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(9)
+    expect(page.locator("#nav a")).to_have_count(11)
     expect(page.locator("#nav a.active")).to_have_text("Журнал операций")  # открывается первым
     page.click("#nav a[data-page=organizations]")
 
@@ -249,6 +249,49 @@ with sync_playwright() as p:
     expect(page.locator(".bulk-bar")).to_be_hidden()  # открытие операции не отмечает строку
     page.screenshot(path=f"{OUT}/12_journal.png", full_page=True)
 
+    # начальные остатки: дата, расхождение, затем сходится
+    page.click("#nav a[data-page=opening]")
+    page.locator(".inline-select").select_option(label="Группа АВМВ")
+    page.locator("[aria-label='Дата начальных остатков']").fill("2026-09-30")
+    page.click("text=Сохранить дату")
+    expect(page.locator(".check-box")).to_contain_text("ещё не введены")
+    page.click("text=Добавить остатки")
+    d = page.locator("dialog[open]")
+    expect(d.locator("[name=op_date]")).to_have_value("2026-09-30")
+    d.locator("[name=debit_account]").select_option(label="51 Расчётные счета")
+    d.locator("[name=credit_account]").select_option(label="00 Ввод остатков")
+    d.locator("[name=amount]").fill("10000")
+    d.locator("[aria-label='Расчётный счёт (дебет)']").select_option(index=1)
+    d.locator("[aria-label='Статья ДДС (дебет)']").select_option(label="Прочие поступления")
+    d.locator("button", has_text="Сохранить и провести").click()
+    expect(page.locator(".check-box")).to_contain_text("Расхождение 10 000,00 ₽: активов введено больше")
+    page.click("text=Добавить остатки")
+    d = page.locator("dialog[open]")
+    d.locator("[name=debit_account]").select_option(label="00 Ввод остатков")
+    d.locator("[name=credit_account]").select_option(label="80 Уставный капитал")
+    d.locator("[name=amount]").fill("10000")
+    d.locator("button", has_text="Сохранить и провести").click()
+    expect(page.locator(".check-box")).to_contain_text("сходятся")
+    expect(page.locator("[aria-label='Дата начальных остатков']")).to_be_disabled()
+    page.screenshot(path=f"{OUT}/13_opening.png", full_page=True)
+
+    # деньги: остаток на начало из начальных остатков, движение, быстрое поступление
+    page.click("#nav a[data-page=money]")
+    row = page.locator(".tabulator-row", has_text="Сбер, основной")
+    expect(row).to_contain_text("10 000,00")   # на начало
+    expect(row).to_contain_text("1 500,50")    # списано по журналу
+    expect(row).to_contain_text("8 499,50")    # на конец
+    row.locator(".tabulator-cell").first.click()
+    expect(page.locator("h2", has_text="Движение: Сбер, основной")).to_contain_text("на начало 10 000,00")
+    expect(page.locator(".tabulator-row", has_text="Поставщик Плюс")).to_contain_text("8 499,50")
+    page.click("button:has-text('Поступление')")
+    d = page.locator("dialog[open]")
+    expect(d.locator("[name=debit_account] option:checked")).to_have_text("51 Расчётные счета")
+    expect(d.locator("[aria-label='Расчётный счёт (дебет)'] option:checked")).to_contain_text("Сбер, основной")
+    expect(d.locator("[name=credit_account] option", has_text="00 Ввод остатков")).to_have_count(0)  # 00 только для остатков
+    page.screenshot(path=f"{OUT}/14_money.png", full_page=True)
+    d.locator("button", has_text="Отмена").click()
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")
@@ -263,7 +306,7 @@ with sync_playwright() as p:
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(8)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(10)  # нет «Пользователи»
     page.click("#nav a[data-page=organizations]")
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою
@@ -283,6 +326,11 @@ with sync_playwright() as p:
     expect(page.locator("text=Новая операция")).to_be_hidden()
     page.locator(".tabulator-row", has_text="Оплата по счёту 15").locator("input[type=checkbox]").check()
     expect(page.locator(".bulk-bar")).to_be_hidden()
+
+    # CEO видит деньги без кнопок ввода
+    page.click("#nav a[data-page=money]")
+    expect(page.locator(".tabulator-row", has_text="Сбер, основной")).to_contain_text("8 499,50")
+    expect(page.locator("button:has-text('Поступление')")).to_have_count(0)
 
     # CEO видит справочники организации без кнопок изменения
     page.click("#nav a[data-page=references]")

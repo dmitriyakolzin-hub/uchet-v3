@@ -1,9 +1,10 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Identity,
@@ -29,6 +30,8 @@ class Organization(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True)
     kind: Mapped[str] = mapped_column(String(20))
     note: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # Дата, на которую введены начальные остатки; обычные операции — только позже неё
+    opening_balance_date: Mapped[date | None] = mapped_column(Date)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

@@ -39,6 +39,7 @@ class PostingIn(BaseModel):
 class OperationIn(BaseModel):
     legal_entity_id: int
     op_date: dt.date
+    is_opening: bool = False  # ввод начальных остатков; задаётся при создании и не меняется
     article_id: int | None = None
     description: Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)] = ""
     postings: list[PostingIn] = Field(default_factory=list, max_length=100)
@@ -64,6 +65,7 @@ class OperationOut(BaseModel):
     legal_entity_id: int
     number: int
     op_date: dt.date
+    is_opening: bool
     article_id: int | None
     description: str
     status: Literal["draft", "posted", "cancelled"]

@@ -160,6 +160,15 @@ button.danger { color: var(--error); }
 .history ul { margin: 4px 0 0; padding-left: 20px; color: var(--muted); }
 .history h3 { margin: 12px 0 0; font-size: 15px; }
 
+/* --- Деньги, начальные остатки --- */
+
+.quick-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+.tabulator .tabulator-row.row-total { font-weight: 600; background: #f9fafb; }
+.tabulator-cell.strong { font-weight: 600; }
+.check-box { margin: 4px 0 20px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+.check-box.ok { border-color: #a6f4c5; background: #ecfdf3; color: #05603a; }
+.check-box.bad { border-color: #fecdca; background: #fef3f2; color: var(--error); }
+
 /* --- Формы --- */
 
 .form label { display: block; margin-top: 12px; color: var(--muted); }

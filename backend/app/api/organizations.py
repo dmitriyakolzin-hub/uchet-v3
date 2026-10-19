@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.api.access import get_organization_for, org_permissions, visible_organization_ids
 from app.api.deps import AdminUser, CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import LegalEntity, Organization, User
+from app.models import LegalEntity, Operation, Organization, User
 from app.schemas.organization import (
     LegalEntityCreate,
     LegalEntityOut,
@@ -64,7 +64,18 @@ def update_organization(
     organization_id: int, body: OrganizationUpdate, user: CurrentUser, db: DbSession
 ) -> OrganizationOut:
     organization = get_organization_for(db, user, organization_id, Perm.EDIT_REFERENCE)
-    for field, value in body.model_dump(exclude_unset=True).items():
+    data = body.model_dump(exclude_unset=True)
+    if "opening_balance_date" in data and data["opening_balance_date"] != organization.opening_balance_date:
+        has_opening = db.scalar(
+            select(Operation.id).where(Operation.organization_id == organization_id, Operation.is_opening).limit(1)
+        )
+        if has_opening:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail="Дату начальных остатков нельзя менять: остатки уже вводятся. Удалите операции ввода остатков",
+            )
+        organization.opening_balance_date = data.pop("opening_balance_date")
+    for field, value in data.items():
         if value is not None:
             setattr(organization, field, value)
     _commit(db, "Организация с таким наименованием уже есть")
