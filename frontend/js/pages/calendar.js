@@ -1,6 +1,7 @@
 // «Платёжный календарь»: заявки на оплату и ожидаемые поступления — подача, согласование, оплата (docs/TZ.md, раздел 18).
 import { api } from "../api.js";
 import { date, money, monthBounds, parseNumber } from "../format.js";
+import { openOperation } from "../opform.js";
 import { el, openForm, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
 
@@ -75,15 +76,16 @@ export async function renderCalendar(view) {
     el("div", { class: "page-head" }, el("h1", {}, "Платёжный календарь"), el("label", { class: "inline" }, "Организация ", orgSelect)),
     tabs, content,
   );
-  let tab = recall(TAB_KEY) === "expected" ? "expected" : "requests";
+  let tab = ["requests", "expected"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "grid";
   function openTab(key) {
     tab = org.restricted ? "requests" : key;
     remember(TAB_KEY, tab);
-    const list = [["requests", "Заявки"], ...(org.restricted ? [] : [["expected", "Ожидаемые платежи"]])];
+    const list = org.restricted ? [["requests", "Заявки"]]
+      : [["grid", "Календарь"], ["requests", "Заявки"], ["expected", "Ожидаемые платежи"]];
     tabs.replaceChildren(...list.map(([k, title]) =>
       el("button", { type: "button", class: `tab${k === tab ? " active" : ""}`, onclick: () => openTab(k) }, title)));
-    content.replaceChildren(tab === "requests" ? requestsBox : expectedBox);
-    return tab === "requests" ? load() : loadExpected();
+    content.replaceChildren({ grid: gridBox, requests: requestsBox, expected: expectedBox }[tab]);
+    return { grid: loadGrid, requests: load, expected: loadExpected }[tab]();
   }
 
   function budgetCell(r) {
@@ -211,7 +213,7 @@ export async function renderCalendar(view) {
     selectNode.replaceChildren(...items.map(([v, t]) => el("option", { value: v, selected: v === keep }, t)));
   }
 
-  function move(r) {
+  function move(r, after = load) {
     const dialog = openForm({
       title: `Перенести заявку № ${r.number}`,
       fields: [
@@ -222,7 +224,7 @@ export async function renderCalendar(view) {
       submitText: "Сохранить",
       onSubmit: async (v) => {
         await api.post(`/api/payment-requests/${r.id}/move`, { pay_date: v.pay_date, ...sourceBody(v.source) });
-        await load();
+        await after();
       },
     });
     return dialog;
@@ -328,6 +330,140 @@ export async function renderCalendar(view) {
           el("td", { class: "num" }, r.direction === "out" ? money(r.amount) : "")))))
       : el("p", { class: "muted" }, "За этот период ожидаемых платежей нет."));
     expTotals.textContent = `Поступления: ${money(data.total_in)} · Выплаты: ${money(data.total_out)}`;
+  }
+
+  // --- календарь по дням: остаток, факт и ожидаемое, кассовые разрывы ---
+  const WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+  const nextMonthEnd = (() => { const d = new Date(); return monthBounds(new Date(d.getFullYear(), d.getMonth() + 1, 1))[1]; })();
+  const gridFilter = { date_from: from, date_to: nextMonthEnd, legal_entity_id: "", source: "", include_pending: false };
+  const gridBox = el("div");
+  const gridTable = el("div");
+  const gridHead = el("div");
+  const gridDate = (key, label) => {
+    const node = el("input", { type: "date", value: gridFilter[key], "aria-label": label });
+    node.addEventListener("change", () => { gridFilter[key] = node.value; loadGrid(); });
+    return node;
+  };
+  const gridEntity = el("select", { "aria-label": "Юрлицо" });
+  gridEntity.addEventListener("change", () => { gridFilter.legal_entity_id = gridEntity.value; gridFilter.source = ""; loadGrid(); });
+  const gridSource = el("select", { "aria-label": "Счёт или касса" });
+  gridSource.addEventListener("change", () => { gridFilter.source = gridSource.value; loadGrid(); });
+  const gridPending = el("input", { type: "checkbox", "aria-label": "С заявками на согласовании" });
+  gridPending.addEventListener("change", () => { gridFilter.include_pending = gridPending.checked; loadGrid(); });
+  const gridParams = () => {
+    const p = new URLSearchParams({ date_from: gridFilter.date_from, date_to: gridFilter.date_to });
+    if (gridFilter.legal_entity_id) p.set("legal_entity_id", gridFilter.legal_entity_id);
+    if (gridFilter.source.startsWith("bank:")) p.set("bank_account_id", gridFilter.source.slice(5));
+    if (gridFilter.source.startsWith("cash:")) p.set("cash_cfo_id", gridFilter.source.slice(5));
+    if (gridFilter.include_pending) p.set("include_pending", "true");
+    return p;
+  };
+  gridBox.append(
+    el("p", { class: "muted" }, "Прошедшие дни — факт из журнала; с сегодняшнего дня — плюс ожидаемые платежи "
+      + "(согласованные заявки, ведомости, регламентные операции, оплаты инвестпроектов). Просроченные — на сегодня. "
+      + "Красным — дни, где остаток уходит в минус. Нажмите на день, чтобы увидеть, из чего сложились суммы."),
+    el("div", { class: "filters" },
+      el("label", { class: "inline" }, "С ", gridDate("date_from", "Календарь с")),
+      el("label", { class: "inline" }, "по ", gridDate("date_to", "Календарь по")),
+      gridEntity, gridSource,
+      el("label", { class: "check" }, gridPending, " с заявками на согласовании"),
+      el("button", { type: "button", class: "secondary",
+        onclick: () => api.download(`/api/organizations/${org.id}/payment-calendar.xlsx?${gridParams()}`, "payment_calendar.xlsx")
+          .catch((err) => toast(err.message, "error")) }, "Скачать в Excel")),
+    gridHead, gridTable,
+  );
+
+  function cellMoney(total, expectedPart) {
+    if (!Number(total)) return el("td", { class: "num" }, "");
+    return el("td", { class: "num" }, money(total),
+      Number(expectedPart) ? el("div", { class: "muted small" }, `ожид. ${money(expectedPart)}`) : null);
+  }
+
+  async function loadGrid() {
+    gridTable.replaceChildren(el("p", { class: "muted" }, "Загрузка…"));  // старая таблица не должна оставаться кликабельной
+    gridEntity.replaceChildren(...[["", "Все юрлица"], ...ref.entities.map((e) => [String(e.id), e.short_name])]
+      .map(([v, t]) => el("option", { value: v, selected: v === gridFilter.legal_entity_id }, t)));
+    const banks = ref.bankAccounts.filter((b) => !gridFilter.legal_entity_id || String(b.legal_entity_id) === gridFilter.legal_entity_id);
+    gridSource.replaceChildren(...[["", "Все счета и кассы"],
+      ...banks.map((b) => [`bank:${b.id}`, `${b.name} ··${b.number.slice(-4)}`]),
+      ...ref.cfos.filter((c) => c.has_cash).map((c) => [`cash:${c.id}`, `Касса: ${c.name}`])]
+      .map(([v, t]) => el("option", { value: v, selected: v === gridFilter.source }, t)));
+    let data;
+    try {
+      data = await api.get(`/api/organizations/${org.id}/payment-calendar?${gridParams()}`);
+    } catch (err) {
+      gridHead.replaceChildren();
+      gridTable.replaceChildren(el("p", { class: "error" }, err.message));
+      return;
+    }
+    gridHead.replaceChildren(data.first_gap
+      ? el("p", { class: "gap-note" }, `Первый кассовый разрыв: ${date(data.first_gap.date)}, остаток ${money(data.first_gap.closing)}`)
+      : el("p", { class: "muted" }, "Кассовых разрывов в периоде нет."));
+    const today = ref.today;
+    const rows = [];
+    let w = 0;
+    for (const d of data.days) {
+      const weekday = WEEKDAYS[new Date(`${d.date}T00:00:00`).getDay()];
+      const cls = [Number(d.closing) < 0 ? "gap-row" : "", d.date === today ? "today-row" : "", "day-row"].join(" ");
+      rows.push(el("tr", { class: cls, "data-date": d.date, onclick: () => showDay(d), title: "Подробнее" },
+        el("td", {}, `${date(d.date)} ${weekday}`, d.date === today ? el("span", { class: "muted" }, " · сегодня") : null),
+        el("td", { class: "num" }, money(d.opening)),
+        cellMoney(d.inflow, d.expected_in), cellMoney(d.outflow, d.expected_out),
+        el("td", { class: "num strong" }, money(d.closing))));
+      const week = data.weeks[w];
+      if (week && d.date === week.date_to) {
+        rows.push(el("tr", { class: `week-row${Number(week.closing) < 0 ? " gap-row" : ""}` },
+          el("td", {}, `Неделя ${date(week.date_from).slice(0, 5)}–${date(week.date_to).slice(0, 5)}`), el("td", {}),
+          el("td", { class: "num" }, Number(week.inflow) ? money(week.inflow) : ""),
+          el("td", { class: "num" }, Number(week.outflow) ? money(week.outflow) : ""),
+          el("td", { class: "num" }, money(week.closing))));
+        w += 1;
+      }
+    }
+    gridTable.replaceChildren(el("table", { class: "recon calendar-grid" },
+      el("thead", {}, el("tr", {}, ...["День", "Остаток на начало", "Поступления", "Выплаты", "Остаток на конец"]
+        .map((t) => el("th", {}, t)))),
+      el("tbody", {},
+        el("tr", { class: "week-row" }, el("td", {}, "Остаток на начало периода"), el("td", {}), el("td", {}), el("td", {}),
+          el("td", { class: "num" }, money(data.opening))),
+        ...rows,
+        el("tr", { class: "week-row" }, el("td", {}, "Итого за период"), el("td", { class: "num" }, money(data.opening)),
+          el("td", { class: "num" }, money(data.inflow)), el("td", { class: "num" }, money(data.outflow)),
+          el("td", { class: "num" }, money(data.closing))))));
+  }
+
+  function showDay(d) {
+    const close = () => dialog.close();
+    const factList = d.fact.length
+      ? el("table", { class: "recon" }, el("tbody", {}, ...d.fact.map((f) => el("tr", {},
+        el("td", {}, el("button", { type: "button", class: "link", onclick: async () => {
+          close();
+          const op = await api.get(`/api/operations/${f.operation_id}`);
+          openOperation({ ref, org, op, perms: org.permissions, onChanged: loadGrid });
+        } }, `№ ${f.number}`)),
+        el("td", {}, f.description),
+        el("td", { class: "num" }, Number(f.inflow) ? `+${money(f.inflow)}` : ""),
+        el("td", { class: "num" }, Number(f.outflow) ? `−${money(f.outflow)}` : "")))))
+      : el("p", { class: "muted" }, "Нет.");
+    const expectedList = d.expected.length
+      ? el("table", { class: "recon" }, el("tbody", {}, ...d.expected.map((i) => el("tr", {},
+        el("td", {}, i.title, i.overdue ? el("div", { class: "over-budget" }, `просрочен (${date(i.date)})`) : null),
+        el("td", {}, i.counterparty_name || i.source_name),
+        el("td", { class: "num" }, i.direction === "in" ? `+${money(i.amount)}` : `−${money(i.amount)}`),
+        el("td", {}, i.source === "request" && can("post")
+          ? el("button", { type: "button", class: "link", onclick: async () => {
+            close();
+            move(await api.get(`/api/payment-requests/${i.source_id}`), loadGrid);
+          } }, "Перенести") : "")))))
+      : el("p", { class: "muted" }, "Нет.");
+    const dialog = el("dialog", { class: "dialog wide" },
+      el("h2", {}, `${date(d.date)}: остаток ${money(d.opening)} → ${money(d.closing)}`),
+      el("h3", {}, "Факт (журнал)"), factList,
+      el("h3", {}, "Ожидается"), expectedList,
+      el("div", { class: "form-actions" }, el("button", { type: "button", onclick: close }, "Закрыть")));
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.showModal();
   }
 
   await openTab(tab);
