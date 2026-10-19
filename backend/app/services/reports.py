@@ -21,6 +21,7 @@ from app.models import (
     FixedAsset,
     Nomenclature,
     Operation,
+    Unit,
     Warehouse,
 )
 from app.models.journal import ANALYTIC_COLUMNS
@@ -837,3 +838,86 @@ def _prune_cash_sections(rows: list[dict]) -> list[dict]:
             continue
         kept.append(r)
     return kept
+
+
+# --- Склад: остатки и обороты по номенклатуре ---
+
+STOCK_ROOTS = ("10", "41", "43")
+STOCK_FIELDS = ("opening_qty", "opening_sum", "in_qty", "in_sum", "out_qty", "out_sum", "closing_qty", "closing_sum")
+QTY_ZERO = Decimal("0.000")
+
+
+@dataclass
+class StockRow:
+    key: str
+    parent: str | None
+    title: str
+    account: str
+    unit: str
+    values: dict[str, Decimal]
+    drill: dict | None
+
+
+def stock(db: Session, f: ReportFilter, account_id: int | None = None,
+          warehouse_id: int | None = None) -> tuple[list[StockRow], dict[str, Decimal]]:
+    """Остатки и обороты (количество и сумма) по складам и номенклатуре; приход — дебет, расход — кредит."""
+    roots = [account_id] if account_id else list(db.scalars(select(Account.id).where(Account.code.in_(STOCK_ROOTS))))
+    accounts = {a.id: a for a in db.scalars(select(Account))}
+    analytics = {"warehouse": warehouse_id} if warehouse_id else None
+    lines = f.lines(date_to=f.date_to, account_ids=roots, analytics=analytics).subquery()
+    before = lines.c.op_date < f.date_from
+    debit = lines.c.side == "debit"
+    qty = func.coalesce(lines.c.quantity, 0)
+
+    def total(expr, cond):
+        return func.coalesce(func.sum(case((cond, expr), else_=0)), 0)
+
+    keys = [lines.c.warehouse, lines.c.nomenclature, lines.c.account_id]
+    groups = db.execute(select(
+        *keys,
+        total(qty, before & debit) - total(qty, before & ~debit),
+        total(lines.c.amount_rub, before & debit) - total(lines.c.amount_rub, before & ~debit),
+        total(qty, ~before & debit), total(lines.c.amount_rub, ~before & debit),
+        total(qty, ~before & ~debit), total(lines.c.amount_rub, ~before & ~debit),
+    ).group_by(*keys)).all()
+
+    nomenclature_ids = [g[1] for g in groups if g[1] is not None]
+    units = dict(db.execute(select(Nomenclature.id, Unit.short_name).join(Unit, Unit.id == Nomenclature.unit_id)
+                            .where(Nomenclature.id.in_(nomenclature_ids))).all())
+    names = {k: analytic_names(db, k, [g[i] for g in groups]) for i, k in ((0, "warehouse"), (1, "nomenclature"))}
+
+    def empty() -> dict[str, Decimal]:
+        return {k: (QTY_ZERO if k.endswith("qty") else ZERO) for k in STOCK_FIELDS}
+
+    parents: dict[str, StockRow] = {}
+    children: list[StockRow] = []
+    for warehouse, item, acc_id, o_qty, o_sum, i_qty, i_sum, x_qty, x_sum in groups:
+        values = {"opening_qty": Decimal(o_qty), "opening_sum": Decimal(o_sum), "in_qty": Decimal(i_qty),
+                  "in_sum": Decimal(i_sum), "out_qty": Decimal(x_qty), "out_sum": Decimal(x_sum)}
+        values["closing_qty"] = values["opening_qty"] + values["in_qty"] - values["out_qty"]
+        values["closing_sum"] = values["opening_sum"] + values["in_sum"] - values["out_sum"]
+        values = {k: v + (QTY_ZERO if k.endswith("qty") else ZERO) for k, v in values.items()}
+        if not any(values.values()):
+            continue
+        pkey = f"wh:{warehouse}" if warehouse is not None else "wh:none"
+        a_wh = f"warehouse:{'none' if warehouse is None else warehouse}"
+        parent = parents.setdefault(pkey, StockRow(
+            pkey, None, names["warehouse"].get(warehouse, "?") if warehouse is not None else "Без склада", "", "",
+            empty(), {"account_id": roots, "a": [a_wh]}))
+        title = names["nomenclature"].get(item, "?") if item is not None else "Без номенклатуры"
+        children.append(StockRow(f"{pkey}/{item}/{acc_id}", pkey, title, accounts[acc_id].code, units.get(item, ""),
+                                 values, {"account_id": [acc_id],
+                                          "a": [a_wh, f"nomenclature:{'none' if item is None else item}"]}))
+        for k, v in values.items():
+            parent.values[k] += v
+
+    total_values = empty()
+    for p in parents.values():
+        for k, v in p.values.items():
+            total_values[k] += v
+    rows: list[StockRow] = []
+    for pkey, parent in sorted(parents.items(), key=lambda kv: (kv[0] == "wh:none", kv[1].title.lower())):
+        rows.append(parent)
+        rows += sorted((c for c in children if c.parent == pkey), key=lambda c: (c.title.lower(), c.account))
+    return rows, total_values
+

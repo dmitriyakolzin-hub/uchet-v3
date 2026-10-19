@@ -8,13 +8,14 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.access import branch_ids, cfo_scope, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.analytics import ANALYTIC_TITLES, AnalyticKind
 from app.core.permissions import Perm
-from app.models import Account, Budget, BudgetVersion, Cfo, LegalEntity
+from app.models import Account, Budget, BudgetVersion, Cfo, LegalEntity, Warehouse
 from app.models.journal import ANALYTIC_COLUMNS
 from app.services import report_xlsx as xlsx
 from app.services import reports
@@ -435,6 +436,70 @@ def get_debts_xlsx(f: Filter, db: DbSession):
         rows, ["Итого", ""] + [data.total[k] for k, _ in DEBT_XLSX],
     )
     return _xlsx(content, f"debts_{f.date_to:%Y-%m-%d}.xlsx")
+
+
+class StockRowOut(BaseModel):
+    key: str
+    parent: str | None
+    title: str
+    account: str
+    unit: str
+    opening_qty: Decimal
+    opening_sum: Decimal
+    in_qty: Decimal
+    in_sum: Decimal
+    out_qty: Decimal
+    out_sum: Decimal
+    closing_qty: Decimal
+    closing_sum: Decimal
+    drill: dict | None
+
+
+class StockOut(BaseModel):
+    rows: list[StockRowOut]
+    total: dict[str, Decimal]
+    accounts: list[dict]  # количественные счета для выбора
+
+
+def _stock(db: Session, f: ReportFilter, account_id: int | None, warehouse_id: int | None) -> StockOut:
+    if account_id is not None:
+        account = db.get(Account, account_id)
+        if account is None or not account.is_quantitative:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Выберите количественный счёт")
+    if warehouse_id is not None:
+        warehouse = db.get(Warehouse, warehouse_id)
+        if warehouse is None or warehouse.organization_id != f.organization_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Склад не найден в этой организации")
+    rows, total = reports.stock(db, f, account_id, warehouse_id)
+    accounts = [{"id": a.id, "code": a.code, "name": a.name} for a in
+                db.scalars(select(Account).where(Account.code.in_(reports.STOCK_ROOTS)).order_by(Account.code))]
+    return StockOut(rows=[StockRowOut(key=r.key, parent=r.parent, title=r.title, account=r.account, unit=r.unit,
+                                      drill=r.drill, **r.values) for r in rows], total=total, accounts=accounts)
+
+
+@router.get("/stock", response_model=StockOut)
+def get_stock(f: Filter, db: DbSession, account_id: int | None = None, warehouse_id: int | None = None):
+    """Склад: остатки и обороты по складам и номенклатуре (количество и сумма)."""
+    return _stock(db, f, account_id, warehouse_id)
+
+
+STOCK_XLSX = [("opening_qty", "Нач. остаток, кол-во"), ("opening_sum", "Нач. остаток, сумма"),
+              ("in_qty", "Приход, кол-во"), ("in_sum", "Приход, сумма"), ("out_qty", "Расход, кол-во"),
+              ("out_sum", "Расход, сумма"), ("closing_qty", "Кон. остаток, кол-во"), ("closing_sum", "Кон. остаток, сумма")]
+
+
+@router.get("/stock.xlsx")
+def get_stock_xlsx(f: Filter, db: DbSession, account_id: int | None = None, warehouse_id: int | None = None):
+    data = _stock(db, f, account_id, warehouse_id)
+    rows = [(1 if r.parent else 0, [r.title, r.account, r.unit] + [getattr(r, k) for k, _ in STOCK_XLSX],
+             r.parent is None) for r in data.rows]
+    content = xlsx.build(
+        "Склад: остатки и обороты", _subtitle(db, f),
+        [xlsx.XlsxColumn("Склад / номенклатура", 40), xlsx.XlsxColumn("Счёт", 8), xlsx.XlsxColumn("Ед.", 7)]
+        + [xlsx.XlsxColumn(t, 14, money=k.endswith("sum"), quantity=k.endswith("qty")) for k, t in STOCK_XLSX],
+        rows, ["Итого", "", ""] + [data.total[k] for k, _ in STOCK_XLSX],
+    )
+    return _xlsx(content, f"stock_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
 
 
 @router.get("/plan-fact.xlsx")
