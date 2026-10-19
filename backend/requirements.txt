@@ -18,6 +18,10 @@ cffi==2.1.1
     # via argon2-cffi-bindings
 click==8.5.0
     # via uvicorn
+defusedxml==0.7.1
+    # via uchet-v3 (pyproject.toml)
+et-xmlfile==2.0.0
+    # via openpyxl
 fastapi==0.145.0
     # via uchet-v3 (pyproject.toml)
 h11==0.16.0
@@ -30,6 +34,8 @@ mako==1.4.3
     # via alembic
 markupsafe==3.0.4
     # via mako
+openpyxl==3.1.5
+    # via uchet-v3 (pyproject.toml)
 opentelemetry-api==1.45.1
     # via fastapi
 psycopg==3.3.6

@@ -3,6 +3,7 @@ import { renderAccounts } from "./pages/accounts.js";
 import { renderArticles } from "./pages/articles.js";
 import { renderCommon } from "./pages/common.js";
 import { renderCurrencies } from "./pages/currencies.js";
+import { renderImport } from "./pages/import.js";
 import { renderJournal } from "./pages/journal.js";
 import { renderMoney } from "./pages/money.js";
 import { renderOpening } from "./pages/opening.js";
@@ -16,6 +17,7 @@ const PAGES = {
   journal: { title: "Журнал операций", render: renderJournal },
   money: { title: "Деньги", render: renderMoney },
   opening: { title: "Начальные остатки", render: renderOpening },
+  import: { title: "Загрузка из Excel", render: renderImport },
   organizations: { title: "Организации", render: renderOrganizations },
   references: { title: "Справочники", render: renderReferences },
   accounts: { title: "План счетов", render: renderAccounts },

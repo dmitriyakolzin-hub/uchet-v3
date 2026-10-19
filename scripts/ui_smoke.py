@@ -36,7 +36,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(11)
+    expect(page.locator("#nav a")).to_have_count(12)
     expect(page.locator("#nav a.active")).to_have_text("Журнал операций")  # открывается первым
     page.click("#nav a[data-page=organizations]")
 
@@ -324,6 +324,37 @@ with sync_playwright() as p:
     expect(d).to_contain_text("уже были загружены раньше: 2")
     d.locator("button", has_text="Понятно").click()
 
+    # загрузка из Excel: шаблон скачивается, контрагенты и операции загружаются, ошибки строк видны
+    from openpyxl import Workbook
+    page.click("#nav a[data-page=import]")
+    with page.expect_download() as dl:
+        page.locator(".import-card", has_text="Операции").locator("button", has_text="Скачать шаблон").click()
+    assert dl.value.suggested_filename == "operations.xlsx"
+    def xlsx(path, rows):
+        wb = Workbook()
+        for r in rows:
+            wb.active.append(r)
+        wb.save(path)
+    cp_path = f"{OUT}/counterparties.xlsx"
+    xlsx(cp_path, [["Наименование*", "ИНН", "Поставщик"], ["ООО Новый", "7708888888", "да"], ["Плохой", "123", ""]])
+    page.locator("input[aria-label='Файл: Контрагенты']").set_input_files(cp_path)
+    d = page.locator("dialog[open]", has_text="Файл загружен")
+    expect(d).to_contain_text("Добавлено контрагентов: 1 — ООО Новый")
+    expect(d).to_contain_text("Строка 3:")
+    d.locator("button", has_text="Понятно").click()
+    op_path = f"{OUT}/operations.xlsx"
+    xlsx(op_path, [["Дата*", "Счёт Дт*", "Счёт Кт*", "Сумма*", "Контрагент (ИНН или наименование)", "Описание"],
+                   ["20.10.2026", "44", "60.01", 990, "7708888888", "Реклама из Excel"],
+                   ["20.10.2026", "99.99", "60.01", 1, "", ""]])
+    page.locator("input[aria-label='Файл: Операции']").set_input_files(op_path)
+    d = page.locator("dialog[open]", has_text="Файл загружен")
+    expect(d).to_contain_text("Создано черновиков: 1")
+    expect(d).to_contain_text("неполных")
+    expect(d).to_contain_text("Строка 3: «Счёт Дт»: счёта 99.99 нет в плане счетов")
+    page.screenshot(path=f"{OUT}/16_excel.png", full_page=True)
+    d.locator("button", has_text="Открыть журнал").click()
+    expect(page.locator(".tabulator-row", has_text="Реклама из Excel")).to_be_visible()
+
     # пользователь CEO
     page.click("#nav a[data-page=users]")
     page.click("text=Добавить пользователя")
@@ -338,7 +369,7 @@ with sync_playwright() as p:
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(10)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(11)  # нет «Пользователи»
     page.click("#nav a[data-page=organizations]")
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою

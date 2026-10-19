@@ -61,7 +61,7 @@ async function refresh() {
   return true;
 }
 
-async function request(method, path, body, raw = false) {
+async function request(method, path, body, raw = false, blob = false) {
   // raw — тело отправляется как есть (файл), без JSON
   const send = () =>
     fetch(path, {
@@ -81,7 +81,18 @@ async function request(method, path, body, raw = false) {
   }
   if (!resp.ok) throw new ApiError(resp.status, await errorMessage(resp));
   if (resp.status === 204) return null;
-  return resp.json();
+  return blob ? resp.blob() : resp.json();
+}
+
+// Скачать файл с сервера (с токеном) и сохранить под именем fileName
+async function download(path, fileName) {
+  const data = await request("GET", path, undefined, false, true);
+  const url = URL.createObjectURL(data);
+  const link = Object.assign(document.createElement("a"), { href: url, download: fileName });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export const api = {
@@ -91,5 +102,6 @@ export const api = {
   put: (path, body) => request("PUT", path, body),
   delete: (path) => request("DELETE", path),
   upload: (path, file) => request("POST", path, file, true),
+  download,
   storeTokens: store,
 };
