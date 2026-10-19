@@ -24,7 +24,7 @@ function remember(key, value) {
 }
 
 // Все справочники, нужные форме операции и фильтрам
-async function loadReferences(orgId) {
+export async function loadReferences(orgId) {
   const o = `/api/organizations/${orgId}`;
   const [accounts, articles, currencies, entities, bankAccounts, counterparties, contracts, employees, nomenclature, warehouses, cfos] =
     await Promise.all([
@@ -175,7 +175,7 @@ export async function renderJournal(view) {
   }
 
   async function load() {
-    const params = new URLSearchParams({ limit: LIMIT });
+    const params = new URLSearchParams({ limit: LIMIT, opening: "false" });
     for (const [key, node] of Object.entries(f)) if (node.value) params.set(key, node.value);
     const data = await api.get(`/api/organizations/${org.id}/operations?${params}`);
     await table.setData(data.items);

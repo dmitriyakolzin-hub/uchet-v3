@@ -31,14 +31,18 @@ function select(options, value, attrs = {}) {
 /**
  * ref — справочники организации (см. loadReferences в pages/journal.js)
  * op — операция или null (новая); perms — права в организации; onChanged — после сохранения/действия
+ * opening — ввод начальных остатков (дата — дата остатков организации, доступен счёт 00)
+ * preset — заготовка новой операции: { article_id, posting: {debit_account_id, debit: {...}, ...} }
  */
-export function openOperation({ ref, org, op, perms, onChanged }) {
+export function openOperation({ ref, org, op, perms, onChanged, opening = false, preset = null }) {
   const canDraft = perms.includes("draft");
   const canPost = perms.includes("post");
   const editable = (op === null || op.status === "draft") && canDraft;
+  const isOpening = op ? op.is_opening : opening;
   const accountsById = new Map(ref.accounts.map((a) => [a.id, a]));
+  // счёт 00 — только для ввода остатков
   const postableOptions = [["", "— счёт —"], ...ref.accounts
-    .filter((a) => !a.has_children && a.is_active)
+    .filter((a) => !a.has_children && a.is_active && (isOpening || a.code !== "00"))
     .map((a) => [String(a.id), `${a.code} ${a.name}`])];
 
   // --- Шапка ---
@@ -48,10 +52,10 @@ export function openOperation({ ref, org, op, perms, onChanged }) {
     { name: "legal_entity_id" },
   );
   const dateInput = el("input", { type: "date", name: "op_date", required: true });
-  dateInput.value = op?.op_date ?? ref.today;
+  dateInput.value = op?.op_date ?? (isOpening ? org.opening_balance_date : ref.today);
   const articleSelect = select(
     [["", "— без статьи —"], ...ref.articles.filter((a) => a.is_active || a.id === op?.article_id).map((a) => [String(a.id), a.name])],
-    op?.article_id ?? "",
+    op?.article_id ?? preset?.article_id ?? "",
     { name: "article_id" },
   );
   const description = el("textarea", { name: "description", rows: 2 });
@@ -193,14 +197,18 @@ export function openOperation({ ref, org, op, perms, onChanged }) {
   articleSelect.addEventListener("change", () => {
     const article = ref.articles.find((a) => a.id === Number(articleSelect.value));
     if (!article) return;
+    // шаблон статьи заполняет только пустые счета первой незаполненной проводки
     const postings = [...postingsBox.querySelectorAll(".posting")];
-    const blank = postings.find((p) => !p.querySelector('[name="debit_account"]').value && !p.querySelector('[name="credit_account"]').value);
-    if (article.debit_account_id && (postings.length === 0 || blank)) {
-      const target = blank ?? addPosting();
-      target.querySelector('[name="debit_account"]').value = String(article.debit_account_id);
-      target.querySelector('[name="credit_account"]').value = String(article.credit_account_id);
-      renderAnalytics(target, "debit", {});
-      renderAnalytics(target, "credit", {});
+    const incomplete = postings.find((p) => !p.querySelector('[name="debit_account"]').value || !p.querySelector('[name="credit_account"]').value);
+    if (article.debit_account_id && (postings.length === 0 || incomplete)) {
+      const target = incomplete ?? addPosting();
+      for (const [side, accountId] of [["debit", article.debit_account_id], ["credit", article.credit_account_id]]) {
+        const control = target.querySelector(`[name="${side}_account"]`);
+        if (!control.value) {
+          control.value = String(accountId);
+          renderAnalytics(target, side, collectAnalytics(target, side));
+        }
+      }
     }
     postingsBox.querySelectorAll(".posting").forEach(fillArticleAnalytics);
   });
@@ -215,6 +223,7 @@ export function openOperation({ ref, org, op, perms, onChanged }) {
       legal_entity_id: Number(entitySelect.value) || null,
       op_date: dateInput.value,
       article_id: Number(articleSelect.value) || null,
+      is_opening: isOpening,
       description: description.value.trim(),
       postings: [...postingsBox.querySelectorAll(".posting")].map((p) => {
         const isRub = Number(p.querySelector('[name="currency"]').value) === ref.rubId;
@@ -308,7 +317,8 @@ export function openOperation({ ref, org, op, perms, onChanged }) {
     if (canPost) actions.append(button("Сохранить и провести", () => run(() => save(true))));
   }
 
-  const title = op ? `Операция № ${op.number} — ${STATUS_TITLES[op.status]}` : "Новая операция";
+  const kind = isOpening ? "Ввод остатков" : "Операция";
+  const title = op ? `${kind} № ${op.number} — ${STATUS_TITLES[op.status]}` : isOpening ? "Ввод начальных остатков" : "Новая операция";
   const dialog = el(
     "dialog",
     { class: "dialog wide" },
@@ -331,8 +341,12 @@ export function openOperation({ ref, org, op, perms, onChanged }) {
   dialog.addEventListener("close", () => dialog.remove());
 
   for (const p of op?.postings ?? []) addPosting(p);
-  if (!op) addPosting();
+  if (!op) {
+    addPosting(preset?.posting ?? {});
+    if (preset?.article_id) articleSelect.dispatchEvent(new Event("change"));
+  }
   if (!editable) dialog.querySelectorAll("input, select, textarea").forEach((n) => { n.disabled = true; });
+  if (isOpening) dateInput.disabled = true; // дата остатков задаётся на вкладке «Начальные остатки»
 
   dialog.showModal();
   return dialog;
