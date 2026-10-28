@@ -28,7 +28,7 @@ from app.models import (
 from app.models.cfo import CFO_LEVELS
 from app.schemas import reference as s
 from app.services import plan
-from app.services.fixed_assets import DEPRECIATION_ARTICLE
+from app.services.articles import is_group, system_article
 
 router = APIRouter(prefix="/api", tags=["Справочники"])
 
@@ -156,6 +156,8 @@ def _check_employee(db, employee: Employee, _creating: bool) -> None:
         article = db.get(Article, employee.pl_item_id)
         if article is None or not article.is_pl:
             raise ValueError("Статья затрат — только статья ОПиУ")
+        if is_group(db, article.id):
+            raise ValueError(f"«{article.name}» — группа статей, выберите подстатью")
     if employee.hired_on and employee.fired_on and employee.fired_on < employee.hired_on:
         raise ValueError("Дата увольнения раньше даты приёма")
 
@@ -166,11 +168,14 @@ FIXED_ASSET_LOCKED = {"legal_entity_id": "юрлицо", "cost": "стоимос
 
 def _check_fixed_asset(db, asset: FixedAsset, creating: bool) -> None:
     if asset.pl_item_id is None:
-        asset.pl_item_id = db.scalar(select(Article.id).where(Article.name == DEPRECIATION_ARTICLE))
+        depreciation = system_article(db, asset.organization_id, "depreciation")
+        asset.pl_item_id = depreciation.id if depreciation else None
     if asset.pl_item_id is not None:
         article = db.get(Article, asset.pl_item_id)
         if article is None or not article.is_pl or article.debit_account_id is None:
             raise ValueError("Статья амортизации — статья ОПиУ с шаблоном проводки (счёт затрат в дебете)")
+        if is_group(db, article.id):
+            raise ValueError(f"«{article.name}» — группа статей, выберите подстатью")
     if not creating and asset.commissioned_on is not None:
         state = inspect(asset)
         changed = [title for name, title in FIXED_ASSET_LOCKED.items()
@@ -248,7 +253,7 @@ for resource in (
         conflict_message="Сотрудник с таким табельным или внутренним номером уже есть",
         order_by=lambda m: [m.full_name],
         refs={"cfo_id": Ref(Cfo, "ЦФО"), "legal_entity_id": LEGAL_ENTITY,
-              "pl_item_id": Ref(Article, "Статья затрат", org_scoped=False)},
+              "pl_item_id": Ref(Article, "Статья затрат")},
         nullable_fields={"inn", "cfo_id", "hired_on", "fired_on", "legal_entity_id", "pl_item_id"},
         check=_check_employee,
     ),
@@ -289,7 +294,7 @@ for resource in (
         conflict_message="Основное средство с таким инвентарным номером уже есть",
         order_by=lambda m: [m.name],
         refs={"cfo_id": Ref(Cfo, "ЦФО"), "legal_entity_id": LEGAL_ENTITY,
-              "pl_item_id": Ref(Article, "Статья амортизации", org_scoped=False), "project_id": PROJECT},
+              "pl_item_id": Ref(Article, "Статья амортизации"), "project_id": PROJECT},
         nullable_fields={"cfo_id", "pl_item_id", "project_id"},
         check=_check_fixed_asset,
     ),

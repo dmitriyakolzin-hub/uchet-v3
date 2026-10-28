@@ -29,6 +29,7 @@ from app.models import (
 )
 from app.schemas.journal import AnalyticsIn, OperationIn, PostingIn
 from app.services import journal
+from app.services.articles import system_article
 from app.services.excel_import import Column, RowError, RowProblem, _decimal, _read_rows, _text
 from app.services.journal import JournalError
 
@@ -45,7 +46,6 @@ def salary_on(db: Session, employee_id: int, on_date: dt.date) -> Decimal | None
 
 # --- Начисление зарплаты за месяц ---
 
-INSURANCE_ARTICLE = "Страховые взносы с оплаты труда"
 MONTHS_GENITIVE = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь",
                    "октябрь", "ноябрь", "декабрь"]
 ZERO = Decimal("0.00")
@@ -134,9 +134,9 @@ def post(db: Session, run: PayrollRun, user: User) -> Operation:
         raise PayrollError("В начислении нет сотрудников — нажмите «Заполнить»")
     recalc(db, run)
     accounts = {a.code: a.id for a in db.scalars(select(Account))}
-    insurance_article = db.scalar(select(Article).where(Article.name == INSURANCE_ARTICLE))
+    insurance_article = system_article(db, run.organization_id, "insurance")
     if insurance_article is None:
-        raise PayrollError(f"Нет статьи «{INSURANCE_ARTICLE}» — восстановите её в справочнике статей")
+        raise PayrollError("Нет системной статьи страховых взносов — восстановите её в справочнике статей")
     problems, postings = [], []
     for line in lines:
         employee = db.get(Employee, line.employee_id)
@@ -307,7 +307,6 @@ def import_lines(db: Session, run: PayrollRun, raw: bytes) -> tuple[int, int, li
 
 # --- Ведомости на выплату: аванс и зарплата, оплата через банк, подтверждение выпиской ---
 
-SALARY_PAYMENT_ARTICLE = "Выплата заработной платы"
 PAYMENT_WORDS = ("заработн", "зарплат", "аванс", "реестр", "оплата труда")
 
 
@@ -361,9 +360,9 @@ def pay_sheet(db: Session, sheet: PayoutSheet, user: User, paid_on: dt.date, *, 
     """Оплата: проведённая операция Дт 70 (сотрудник) — Кт 51 (расчётный счёт, статья выплаты)."""
     if sheet.status != "sent":
         raise PayrollError("Оплатить можно ведомость, отправленную в банк")
-    article = db.scalar(select(Article).where(Article.name == SALARY_PAYMENT_ARTICLE))
+    article = system_article(db, sheet.organization_id, "salary_payment")
     if article is None:
-        raise PayrollError(f"Нет статьи «{SALARY_PAYMENT_ARTICLE}» — восстановите её в справочнике статей")
+        raise PayrollError("Нет системной статьи выплаты зарплаты — восстановите её в справочнике статей")
     bank = db.get(BankAccount, sheet.bank_account_id)
     money_code = "51" if db.get(Currency, bank.currency_id).code == "RUB" else "52"
     accounts = {a.code: a.id for a in db.scalars(select(Account).where(Account.code.in_(("70", money_code))))}

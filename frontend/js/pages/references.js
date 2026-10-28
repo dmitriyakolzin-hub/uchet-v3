@@ -1,5 +1,6 @@
 // «Справочники»: справочники выбранной организации, по вкладкам.
 import { api } from "../api.js";
+import { articleIndex } from "../articles.js";
 import { lookup, optionsOf, referenceTab } from "../reftab.js";
 import { money } from "../format.js";
 import { el, makeTable, openForm, toast } from "../ui.js";
@@ -332,7 +333,7 @@ const TABS = [
         { title: "Принят", field: "hired_on", width: 110, formatter: date },
         { title: "Уволен", field: "fired_on", width: 110, formatter: date },
         { title: "Юрлицо", field: "legal_entity_id", width: 110, formatter: (c) => d.entities.find((e) => e.id === c.getValue())?.short_name ?? "" },
-        { title: "Статья затрат", field: "pl_item_id", widthGrow: 2, formatter: (c) => d.articles.find((a) => a.id === c.getValue())?.name ?? "" },
+        { title: "Статья затрат", field: "pl_item_id", widthGrow: 2, formatter: (c) => d.articleIndex.label.get(c.getValue()) ?? "" },
         ...(state.canEdit ? [{ title: "", field: "_salary", width: 90, hozAlign: "center", headerSort: false,
           formatter: () => "оклады", cssClass: "link-like", cellClick: (_e, c) => openSalaries(c.getRow().getData()) }] : []),
       ];
@@ -352,7 +353,8 @@ const TABS = [
         { name: "legal_entity_id", label: "Работодатель (юрлицо)", type: "select", numeric: true,
           options: optionsOf(d.entities, (e) => e.short_name, { empty: "— не указано —" }) },
         { name: "pl_item_id", label: "Статья затрат на оплату труда (ОПиУ)", type: "select", numeric: true,
-          options: [["", "— не указана —"], ...d.articles.filter((a) => a.is_pl && a.is_active).map((a) => [String(a.id), a.name])] },
+          options: [["", "— не указана —"], ...d.articleIndex.leaves.filter((a) => a.is_pl && a.is_active)
+            .map((a) => [String(a.id), d.articleIndex.label.get(a.id)])] },
       ];
     },
   },
@@ -471,12 +473,13 @@ export async function renderReferences(view) {
       need(["contracts"], () => api.get(`/api/organizations/${org.id}/counterparties`)),
       need(["cfos", "employees", "warehouses", "investment-projects"], () => api.get(`/api/organizations/${org.id}/cfos`)),
       need(["nomenclature"], () => api.get("/api/units")),
-      need(["employees"], () => api.get("/api/articles")),
+      need(["employees"], () => api.get(`/api/organizations/${org.id}/articles`)),
       need(["executors"], () => api.get(`/api/organizations/${org.id}/employees`)),
       need(["executors", "investment-projects"], () => api.get(`/api/organizations/${org.id}/executors`)),
       need(["contracts"], () => api.get(`/api/organizations/${org.id}/investment-projects`)),
     ]);
-    const d = { entities, banks, currencies, counterparties, cfos, units, articles, employees, executors, projects,
+    const d = { entities, banks, currencies, counterparties, cfos, units, articles, articleIndex: articleIndex(articles),
+      employees, executors, projects,
       rub: currencies.find((c) => c.is_base) };
     const state = { canEdit: org.permissions.includes("edit_reference"), ref: null };
     state.ref = await referenceTab(tabBox, {

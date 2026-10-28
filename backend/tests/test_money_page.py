@@ -36,7 +36,7 @@ def env(client, headers_for, make_user, make_org, db):
                                        "number": "40702810900000000002", "name": "Дополнительный"})
     shop = post("cfos", {"name": "Магазин"})
     accounts = {a["code"]: a["id"] for a in client.get("/api/accounts", headers=h).json()}
-    articles = {a["name"]: a["id"] for a in client.get("/api/articles", headers=h).json()}
+    articles = {a["name"]: a["id"] for a in client.get(f"/api/organizations/{org.id}/articles", headers=h).json()}
     return {"org": org, "other": other, "le": le, "cp": cp, "contract": contract, "main": acc_main,
             "extra": acc_extra, "shop": shop, "acc": accounts, "art": articles, "h": h, "o": o,
             "headers_for": headers_for, "ceo": ceo, "other_fd": other_fd}
@@ -200,7 +200,7 @@ def test_ceo_cannot_set_opening_date(client, env):
 
 
 def test_transfer_article_seeded(client, env):
-    arts = {a["name"]: a for a in client.get("/api/articles", headers=env["h"]).json()}
+    arts = {a["name"]: a for a in client.get(f"{env['o']}/articles", headers=env["h"]).json()}
     t = arts["Перевод между своими счетами"]
     assert t["is_transfer"] and t["is_cash_flow"]
     assert t["debit_account_id"] == t["credit_account_id"] == env["acc"]["51"]

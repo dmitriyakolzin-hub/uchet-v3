@@ -35,6 +35,7 @@ from app.models import (
 )
 from app.models.journal import ANALYTIC_COLUMNS, analytic_column
 from app.schemas.journal import OperationIn
+from app.services import articles as article_tree
 from app.services.rates import RateNotFound, rate_on
 
 REF_MODELS = {
@@ -80,8 +81,10 @@ def base_currency_id(db: Session) -> int:
 def _check_ref(db: Session, organization_id: int, kind: str, ref_id: int, where: str) -> None:
     obj = db.get(REF_MODELS[kind], ref_id)
     title = ANALYTIC_TITLES[AnalyticKind(kind)]
-    if obj is None or (kind not in ("cash_flow_item", "pl_item") and obj.organization_id != organization_id):
+    if obj is None or obj.organization_id != organization_id:
         raise JournalError(f"{where}: {title} не найден(а) в этой организации")
+    if kind in ("cash_flow_item", "pl_item") and article_tree.is_group(db, obj.id):
+        raise JournalError(f"{where}: «{obj.name}» — группа статей, выберите подстатью")
     if kind == "cash_flow_item" and not obj.is_cash_flow:
         raise JournalError(f"{where}: статья «{obj.name}» не является статьёй ДДС")
     if kind == "pl_item" and not obj.is_pl:
@@ -93,8 +96,12 @@ def save_draft(db: Session, op: Operation, body: OperationIn, user: User) -> Non
     entity = db.get(LegalEntity, body.legal_entity_id)
     if entity is None or entity.organization_id != op.organization_id:
         raise JournalError("Юрлицо не найдено в этой организации")
-    if body.article_id is not None and db.get(Article, body.article_id) is None:
-        raise JournalError("Статья не найдена")
+    if body.article_id is not None:
+        article = db.get(Article, body.article_id)
+        if article is None or article.organization_id != op.organization_id:
+            raise JournalError("Статья не найдена в этой организации")
+        if article_tree.is_group(db, article.id):
+            raise JournalError(f"«{article.name}» — группа статей, выберите подстатью")
 
     rub_id = base_currency_id(db)
     op.legal_entity_id = body.legal_entity_id

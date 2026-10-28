@@ -73,7 +73,7 @@ export async function renderMoney(view) {
   accountsTable.on("rowClick", (_e, row) => selectAccount(row.getData()));
 
   const counterpartyName = (id) => ref.counterpartyName.get(id) ?? "";
-  const articleName = (id) => ref.articles.find((a) => a.id === id)?.name ?? "";
+  const articleName = (id) => ref.articleLabel.get(id) ?? "";
   const movementsTable = makeTable(movementsBox, {
     columns: [
       { title: "Дата", field: "op_date", width: 110, formatter: (c) => date(c.getValue()) },
@@ -96,7 +96,7 @@ export async function renderMoney(view) {
   }
 
   const accountId = (code) => ref.accounts.find((a) => a.code === code)?.id;
-  const articleId = (name) => ref.articles.find((a) => a.name === name)?.id;
+  const articleId = (key) => ref.articleByKey.get(key)?.id;  // системная статья (app/core/standard_articles.py)
 
   // Заготовки быстрых операций для выбранного счёта
   function moneySide(row) {
@@ -167,7 +167,7 @@ export async function renderMoney(view) {
   function openPreset(kind) {
     const side = moneySide(selected);
     let preset;
-    const transfer = articleId("Перевод между своими счетами");
+    const transfer = articleId("transfer");
     // касса ↔ расчётный счёт — перевод между своими счетами (в ДДС гасится); счёт выбирается в форме
     if (kind === "deposit") {
       preset = { article_id: transfer, posting: { debit_account_id: accountId("51"), debit: { cash_flow_item: transfer },
@@ -178,14 +178,14 @@ export async function renderMoney(view) {
         credit_account_id: accountId("51"), credit: { cash_flow_item: transfer } } };
     }
     if (kind === "advance") {
-      const art = articleId("Выдача под отчёт");
+      const art = articleId("advance_report");
       preset = { article_id: art, posting: { debit_account_id: accountId("71"),
         credit_account_id: side.account, credit: { ...side.analytics, cash_flow_item: art } } };
     }
     if (kind === "in") preset = { posting: { debit_account_id: side.account, debit: side.analytics } };
     if (kind === "out") preset = { posting: { credit_account_id: side.account, credit: side.analytics } };
     if (kind === "transfer") {
-      const art = articleId("Перевод между своими счетами");
+      const art = articleId("transfer");
       preset = {
         article_id: art,
         posting: { debit_account_id: side.account, credit_account_id: side.account, credit: { ...side.analytics, cash_flow_item: art } },

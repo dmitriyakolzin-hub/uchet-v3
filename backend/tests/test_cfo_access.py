@@ -43,7 +43,7 @@ def env(client, headers_for, make_user, make_org, db, admin):
     assert resp.status_code == 200, resp.text
     assert db.query(Membership).filter_by(user_id=head.id).one().cfo_id == trade["id"]
     acc = {a["code"]: a["id"] for a in client.get("/api/accounts", headers=h).json()}
-    art = {a["name"]: a["id"] for a in client.get("/api/articles", headers=h).json()}
+    art = {a["name"]: a["id"] for a in client.get(f"/api/organizations/{org.id}/articles", headers=h).json()}
     return {"org": org, "other": other, "le": le, "o": o, "h": h, "hh": headers_for(head),
             "lonely": headers_for(lonely), "company": company, "trade": trade, "shop": shop,
             "logistics": logistics, "foreign": foreign, "cp": cp, "contract": contract, "bank_acc": bank_acc,

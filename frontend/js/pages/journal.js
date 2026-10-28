@@ -1,5 +1,6 @@
 // «Журнал операций»: фильтры, таблица операций, массовые действия, форма операции.
 import { api } from "../api.js";
+import { articleIndex } from "../articles.js";
 import { date, isoDate, money, monthBounds, sumMoney } from "../format.js";
 import { openOperation } from "../opform.js";
 import { el, makeTable, toast } from "../ui.js";
@@ -29,7 +30,7 @@ export async function loadReferences(orgId) {
   const [accounts, articles, currencies, entities, bankAccounts, counterparties, contracts, employees, nomenclature, warehouses, cfos,
     fixedAssets, executors, projects] =
     await Promise.all([
-      api.get("/api/accounts"), api.get("/api/articles"), api.get("/api/currencies"),
+      api.get("/api/accounts"), api.get(`${o}/articles`), api.get("/api/currencies"),
       api.get(`${o}/legal-entities`), api.get(`${o}/bank-accounts`), api.get(`${o}/counterparties`),
       api.get(`${o}/contracts`), api.get(`${o}/employees`), api.get(`${o}/nomenclature`),
       api.get(`${o}/warehouses`), api.get(`${o}/cfos`), api.get(`${o}/fixed-assets`),
@@ -37,8 +38,11 @@ export async function loadReferences(orgId) {
     ]);
   const cfoNames = new Map(cfos.map((c) => [String(c.id), c.name]));
   const activeOnly = (items) => items.filter((i) => i.is_active);
+  const index = articleIndex(articles);
   return {
     accounts, articles, currencies, entities,
+    // статьи без подстатей (только их ставят в операции), подпись «код путь», системные статьи по ключу
+    leafArticles: index.leaves, articleLabel: index.label, articleByKey: index.byKey,
     bankAccounts: activeOnly(bankAccounts), counterparties: activeOnly(counterparties), contracts: activeOnly(contracts),
     employees: activeOnly(employees), nomenclature: activeOnly(nomenclature), warehouses: activeOnly(warehouses),
     cfos: activeOnly(cfos), fixedAssets: activeOnly(fixedAssets), executors: activeOnly(executors), projects,
@@ -82,7 +86,7 @@ export async function renderJournal(view) {
     fill(f.legal_entity_id, "Все юрлица", ref.entities.map((e) => [e.id, e.short_name]));
     fill(f.account_id, "Все счета", ref.accounts.map((a) => [a.id, `${a.code} ${a.name}`]));
     fill(f.counterparty_id, "Все контрагенты", ref.counterparties.map((c) => [c.id, c.name]));
-    fill(f.article_id, "Все статьи", ref.articles.map((a) => [a.id, a.name]));
+    fill(f.article_id, "Все статьи", ref.leafArticles.map((a) => [a.id, ref.articleLabel.get(a.id)]));
   }
   fillFilterLists();
 
@@ -103,7 +107,7 @@ export async function renderJournal(view) {
   let codes = accountCode();
   const entityName = () => new Map(ref.entities.map((e) => [e.id, e.short_name]));
   let entities = entityName();
-  const articleName = () => new Map(ref.articles.map((a) => [a.id, a.name]));
+  const articleName = () => ref.articleLabel;
   let articles = articleName();
 
   const table = makeTable(tableBox, {

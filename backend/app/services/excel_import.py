@@ -170,6 +170,42 @@ def _to_bytes(wb: Workbook) -> bytes:
     return out.getvalue()
 
 
+def leaf_articles(db: Session, organization_id: int, **conditions) -> list[Article]:
+    """Действующие статьи организации без подстатей — только их ставят в операции."""
+    groups = select(Article.parent_id).where(Article.parent_id.is_not(None))
+    query = select(Article).where(Article.organization_id == organization_id, Article.is_active, Article.id.not_in(groups))
+    for name, value in conditions.items():
+        query = query.where(getattr(Article, name) == value)
+    return list(db.scalars(query))
+
+
+def article_label(article: Article) -> str:
+    """Как статья пишется в файле: «код название» или название."""
+    return f"{article.code} {article.name}" if article.code else article.name
+
+
+class ArticleLookup:
+    """Статья по ячейке: код, «код название» или название (если такое название одно)."""
+
+    def __init__(self, items: list[Article]):
+        self.by_code = {a.code.rstrip("."): a for a in items if a.code}
+        self.by_name: dict[str, list[Article]] = {}
+        for a in items:
+            self.by_name.setdefault(a.name.strip().lower(), []).append(a)
+
+    def find(self, text: str, title: str) -> Article:
+        head, _, rest = text.partition(" ")
+        article = self.by_code.get(text.rstrip(".")) or (self.by_code.get(head.rstrip(".")) if rest else None)
+        if article is not None:
+            return article
+        found = self.by_name.get(text.strip().lower(), [])
+        if len(found) > 1:
+            raise RowProblem(f"«{title}»: статей «{text}» несколько — укажите код статьи")
+        if not found:
+            raise RowProblem(f"«{title}»: статьи «{text}» нет в справочнике (или это группа — укажите подстатью)")
+        return found[0]
+
+
 def operations_template(db: Session, organization_id: int) -> bytes:
     wb = Workbook()
     ws = wb.active
@@ -180,7 +216,7 @@ def operations_template(db: Session, organization_id: int) -> bytes:
     parents = set(db.scalars(select(Account.parent_id).where(Account.parent_id.is_not(None))))
     accounts = [a for a in db.scalars(select(Account).where(Account.is_active).order_by(Account.code))
                 if a.id not in parents and a.code != OPENING_ACCOUNT]
-    articles = list(db.scalars(select(Article).where(Article.is_active).order_by(Article.name)))
+    articles = sorted(leaf_articles(db, organization_id), key=lambda a: (a.code or "", a.name.lower()))
     entities = list(db.scalars(select(LegalEntity).where(
         LegalEntity.organization_id == organization_id, LegalEntity.is_active).order_by(LegalEntity.short_name)))
 
@@ -198,7 +234,7 @@ def operations_template(db: Session, organization_id: int) -> bytes:
         lists.cell(row=i, column=2, value=a.name)
         lists.cell(row=i, column=3, value=", ".join(ANALYTIC_TITLES[AnalyticKind(x.kind)] for x in a.analytics))
     for i, art in enumerate(articles, start=2):
-        lists.cell(row=i, column=5, value=art.name)
+        lists.cell(row=i, column=5, value=article_label(art))
     for i, e in enumerate(entities, start=2):
         lists.cell(row=i, column=7, value=e.inn).number_format = "@"
         lists.cell(row=i, column=8, value=e.short_name)
@@ -371,7 +407,7 @@ class _OperationsImporter:
         self.entities = list(db.scalars(select(LegalEntity).where(LegalEntity.organization_id == org,
                                                                   LegalEntity.is_active)))
         self.accounts = {a.code: a for a in db.scalars(select(Account))}
-        self.articles = {a.name.lower(): a for a in db.scalars(select(Article).where(Article.is_active))}
+        self.articles = ArticleLookup(leaf_articles(db, organization_id))
         self.currencies = {c.code: c for c in db.scalars(select(Currency))}
 
         def scoped(model):
@@ -500,10 +536,7 @@ class _OperationsImporter:
         text = _text(value)
         if not text:
             return None
-        article = self.articles.get(text.lower())
-        if article is None:
-            raise RowProblem(f"«Статья»: статьи «{text}» нет в справочнике")
-        return article
+        return self.articles.find(text, "Статья")
 
     # --- группа строк → черновик ---
 

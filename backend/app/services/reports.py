@@ -356,7 +356,8 @@ def dds(db: Session, f: ReportFilter, include_all: bool = False) -> ColumnsResul
 
     articles = {a.id: a for a in db.scalars(select(Article).where(Article.id.in_([k for k in by_article if k])))}
     if include_all:
-        for a in db.scalars(select(Article).where(Article.is_active, Article.is_cash_flow, ~Article.is_transfer)):
+        for a in db.scalars(select(Article).where(Article.organization_id == f.organization_id, Article.is_active,
+                                                  Article.is_cash_flow, ~Article.is_transfer)):
             articles.setdefault(a.id, a)
             by_article.setdefault(a.id, empty())
     flow_drill = {"period": "turnover", "exclude_corr": True, "opening": False}
@@ -469,7 +470,8 @@ def pl(db: Session, f: ReportFilter, include_all: bool = False) -> ColumnsResult
         values["total"] += Decimal(amount) + ZERO
 
     if include_all:
-        for article_id in db.scalars(select(Article.id).where(Article.is_active, Article.is_pl)):
+        for article_id in db.scalars(select(Article.id).where(Article.organization_id == f.organization_id,
+                                                              Article.is_active, Article.is_pl)):
             by_article.setdefault(article_id, {c.key: ZERO for c in columns})
     articles = {a.id: a for a in db.scalars(select(Article).where(Article.id.in_(list(by_article))))}
     sections = {key: empty() for key, _ in PL_SECTIONS}
