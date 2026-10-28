@@ -22,7 +22,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.analytics import ANALYTIC_TITLES, AnalyticKind
+from app.core.analytics import ANALYTIC_TITLES, OPTIONAL_ANALYTICS, AnalyticKind
 from app.core.money import round_money
 from app.models import (
     Account,
@@ -33,6 +33,7 @@ from app.models import (
     Counterparty,
     Currency,
     Employee,
+    Executor,
     FixedAsset,
     LegalEntity,
     Nomenclature,
@@ -82,7 +83,8 @@ OPERATION_COLUMNS = [
     Column("Склад", "warehouse", False, 18, True),
     Column("Основное средство (инв. № или наименование)", "fixed_asset", False, 28, True,
            "Для счетов 01, 02, 08"),
-    Column("ЦФО", "cfo", False, 22, True, "Наименование ЦФО"),
+    Column("ЦФО", "cfo", False, 22, True, "Код ЦФО, путь «Компания / … / Магазин» или название"),
+    Column("ЦФУ", "executor", False, 22, True, "Код ЦФУ, «Отдел / Исполнитель» или название; ставится там же, где ЦФО"),
     Column("Описание", "description", False, 40),
 ]
 
@@ -98,7 +100,7 @@ COUNTERPARTY_COLUMNS = [
 
 # Колонки аналитики шаблона → вид аналитики (статья ставится отдельно — по признакам статьи)
 ANALYTIC_KEYS = ["counterparty", "contract", "bank_account", "employee", "nomenclature", "warehouse", "fixed_asset",
-                 "cfo"]
+                 "cfo", "executor"]
 KIND_TITLES = {"организация": "legal", "юрлицо": "legal", "юл": "legal",
                "ип": "entrepreneur", "индивидуальный предприниматель": "entrepreneur",
                "физлицо": "person", "физ. лицо": "person", "физическое лицо": "person", "фл": "person"}
@@ -204,6 +206,43 @@ class ArticleLookup:
         if not found:
             raise RowProblem(f"«{title}»: статьи «{text}» нет в справочнике (или это группа — укажите подстатью)")
         return found[0]
+
+
+class TreeLookup:
+    """ЦФО или ЦФУ по ячейке: код, путь («Компания / … / Магазин», «Отдел / Исполнитель») или название, если оно одно."""
+
+    def __init__(self, items: list, labels: dict[int, str], title: str):
+        self.title = title
+        self.by_code = {x.code.strip().lower(): x.id for x in items if x.code}
+        self.by_text: dict[str, list[int]] = {}  # путь и название
+        for x in items:
+            for text in {labels[x.id].lower(), x.name.strip().lower()}:
+                self.by_text.setdefault(text, []).append(x.id)
+
+    def find(self, text: str) -> int:
+        low = text.strip().lower()
+        if low in self.by_code:
+            return self.by_code[low]
+        ids = self.by_text.get(low, [])
+        if not ids:
+            raise RowProblem(f"{self.title} «{text}» не найден в справочнике организации")
+        if len(ids) > 1:
+            raise RowProblem(f"{self.title} «{text}»: несколько с таким названием — укажите код или путь")
+        return ids[0]
+
+
+def cfo_lookup(db: Session, organization_id: int, active_only: bool = True) -> TreeLookup:
+    cfos = list(db.scalars(select(Cfo).where(Cfo.organization_id == organization_id)))
+    names = {c.id: c.name for c in cfos}
+    labels = {c.id: " / ".join(names[int(i)] for i in str(c.path).split(".")) for c in cfos}
+    return TreeLookup([c for c in cfos if c.is_active or not active_only], labels, "ЦФО")
+
+
+def executor_lookup(db: Session, organization_id: int, active_only: bool = True) -> TreeLookup:
+    items = list(db.scalars(select(Executor).where(Executor.organization_id == organization_id)))
+    names = {e.id: e.name for e in items}
+    labels = {e.id: f"{names[e.parent_id]} / {e.name}" if e.parent_id else e.name for e in items}
+    return TreeLookup([e for e in items if e.is_active or not active_only], labels, "ЦФУ")
 
 
 def operations_template(db: Session, organization_id: int) -> bytes:
@@ -420,7 +459,8 @@ class _OperationsImporter:
         self.nomenclature = scoped(Nomenclature)
         self.warehouses = scoped(Warehouse)
         self.fixed_assets = scoped(FixedAsset)
-        self.cfos = scoped(Cfo)
+        self.cfos = cfo_lookup(db, org)
+        self.executors = executor_lookup(db, org)
 
     # --- поиск в справочниках ---
 
@@ -484,7 +524,9 @@ class _OperationsImporter:
             found = [a for a in self.fixed_assets if a.inventory_number and a.inventory_number == text]
             return self._one(found or self._by_name(self.fixed_assets, text), "Основное средство", text).id
         if kind == "cfo":
-            return self._one(self._by_name(self.cfos, text), "ЦФО", text).id
+            return self.cfos.find(text)
+        if kind == "executor":
+            return self.executors.find(text)
         raise AssertionError(kind)
 
     # --- строка → проводка ---
@@ -516,6 +558,7 @@ class _OperationsImporter:
         used: set[str] = set()
         for side, account in (("debit", debit), ("credit", credit)):
             required = {a.kind for a in account.analytics}
+            required |= {extra for extra, base in OPTIONAL_ANALYTICS.items() if base in required}
             for kind, ref_id in values.items():
                 if kind in required:
                     setattr(sides[side], kind, ref_id)

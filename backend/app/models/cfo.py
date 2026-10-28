@@ -28,9 +28,11 @@ class Cfo(OrgScoped, Base):
         CheckConstraint("level = 1 OR legal_entity_id IS NULL", name="legal_entity_only_for_company"),
         CheckConstraint("nlevel(path) = level", name="path_depth"),
         Index("ix_cfos_path", "path", postgresql_using="gist"),
+        Index("uq_cfos_organization_code", "organization_id", "code", unique=True, postgresql_where=text("code <> ''")),
     )
 
     name: Mapped[str] = mapped_column(String(255))
+    code: Mapped[str] = mapped_column(String(50), default="", server_default="")  # для загрузок из Excel
     level: Mapped[int] = mapped_column(SmallInteger)
     parent_id: Mapped[int | None] = mapped_column(
         ForeignKey("cfos.id", ondelete="RESTRICT"), index=True
@@ -85,7 +87,12 @@ class Executor(OrgScoped, Base):
     отдел (без вышестоящего) → исполнитель (docs/TZ.md, раздел 16)."""
 
     __tablename__ = "executors"
+    __table_args__ = (
+        Index("uq_executors_organization_code", "organization_id", "code", unique=True,
+              postgresql_where=text("code <> ''")),
+    )
 
     name: Mapped[str] = mapped_column(String(255))
+    code: Mapped[str] = mapped_column(String(50), default="", server_default="")
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("executors.id", ondelete="RESTRICT"), index=True)
     employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id", ondelete="RESTRICT"))

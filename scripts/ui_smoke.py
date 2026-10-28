@@ -529,10 +529,28 @@ with sync_playwright() as p:
     page.click("#nav a[data-page=references]")
     page.click("button.tab:has-text('ЦФУ')")
     page.click("text=Добавить отдел")
-    dialog_fill(page, {"name": "Инженерный отдел"}).locator("button[type=submit]").click()
+    dialog_fill(page, {"name": "Инженерный отдел", "code": "ИО"}).locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="Инженерный отдел")).to_contain_text("ИО")
     page.locator(".tabulator-row", has_text="Инженерный отдел").locator(".tabulator-cell[tabulator-field=_add]").click()
     dialog_fill(page, {"name": "Инженер Петров"}).locator("button[type=submit]").click()
     expect(page.locator(".tabulator-row", has_text="Инженер Петров")).to_be_visible()  # дерево раскрыто
+    # поиск по коду (шаг 11.1); кириллицу Playwright вставляет без нажатий, а Tabulator ищет по отпусканию клавиши
+    def search(field, text):
+        box = page.locator(f".tabulator-col[tabulator-field={field}] input")
+        box.fill(text)
+        box.press("End")
+
+    search("code", "нет")
+    expect(page.locator(".tabulator-row", has_text="Инженерный отдел")).to_have_count(0)
+    search("code", "ио")
+    expect(page.locator(".tabulator-row", has_text="Инженерный отдел")).to_be_visible()
+    expect(page.locator(".tabulator-row", has_text="Инженер Петров")).to_have_count(0)
+    search("code", "")
+    search("name", "петров")  # подчинённый найден — виден вместе с отделом
+    expect(page.locator(".tabulator-row", has_text="Инженерный отдел")).to_be_visible()
+    expect(page.locator(".tabulator-row", has_text="Инженер Петров")).to_be_visible()
+    search("name", "")
+    expect(page.locator(".tabulator-row", has_text="Инженер Петров")).to_be_visible()
 
     # инвестпроект
     page.click("button.tab:has-text('Инвестпроекты')")
