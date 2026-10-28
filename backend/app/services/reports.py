@@ -301,6 +301,7 @@ class ReportRow:
     kind: str  # balance / section / group / item / total
     values: dict[str, Decimal]
     drill: dict | None = None  # условия расшифровки ячейки (дополняются счетами и датами колонки)
+    parent: str | None = None  # ключ строки-группы статей, внутри которой эта строка (дерево статей)
 
 
 @dataclass
@@ -312,6 +313,69 @@ class ColumnsResult:
 
 def money_account_ids(db: Session) -> list[int]:
     return list(db.scalars(select(Account.id).where(Account.code.in_(MONEY_ROOTS))))
+
+
+def _natural(code: str | None) -> tuple:
+    """Код «2.6.10.» сортируется после «2.6.9.»."""
+    return tuple(int(p) if p.isdigit() else 0 for p in (code or "").strip(".").split(".") if p) if code else (10 ** 6,)
+
+
+def article_rows(db: Session, organization_id: int, values: dict[int, dict[str, Decimal]], level: int, kind: str,
+                 drill: dict) -> list[ReportRow]:
+    """Строки статей деревом (docs/TZ.md, раздел 19, «Детали 9.3»): группа — сумма своих подстатей, её расшифровка —
+    проводки всей ветки (a_tree); суммы, записанные на саму группу (до того, как у неё появились подстатьи), —
+    строкой «… (без подстатьи)». values — суммы по статьям, на которые есть проводки."""
+    articles = {a.id: a for a in db.scalars(select(Article).where(Article.organization_id == organization_id))}
+    nodes: dict[int, dict] = {}
+    for article_id in values:
+        if article_id not in articles:
+            continue
+        nodes.setdefault(article_id, {"own": None, "children": set()})["own"] = values[article_id]
+        child, parent = article_id, articles[article_id].parent_id
+        while parent is not None and parent in articles:
+            nodes.setdefault(parent, {"own": None, "children": set()})["children"].add(child)
+            child, parent = parent, articles[parent].parent_id
+    if not nodes:
+        return []
+    keys = list(next(iter(values.values())).keys())
+
+    def order(article_id: int) -> tuple:
+        a = articles[article_id]
+        return a.sort_order, _natural(a.code), a.name.lower()
+
+    totals: dict[int, dict[str, Decimal]] = {}
+
+    def total(article_id: int) -> dict[str, Decimal]:
+        if article_id not in totals:
+            node = nodes[article_id]
+            result = {k: (node["own"] or {}).get(k, ZERO) for k in keys}
+            for child in node["children"]:
+                for k, v in total(child).items():
+                    result[k] += v
+            totals[article_id] = result
+        return totals[article_id]
+
+    rows: list[ReportRow] = []
+
+    def emit(article_id: int, depth: int, parent_key: str | None) -> None:
+        a, node = articles[article_id], nodes[article_id]
+        title = f"{a.code} {a.name}" if a.code else a.name
+        if not node["children"]:
+            rows.append(ReportRow(f"art:{article_id}", title, level + depth, "item", node["own"],
+                                  {**drill, "a": [f"{kind}:{article_id}"]}, parent_key))
+            return
+        key = f"artg:{article_id}"
+        rows.append(ReportRow(key, title, level + depth, "item_group", total(article_id),
+                              {**drill, "a_tree": [f"{kind}:{article_id}"]}, parent_key))
+        for child in sorted(node["children"], key=order):
+            emit(child, depth + 1, key)
+        if node["own"] is not None and any(node["own"].values()):
+            rows.append(ReportRow(f"art:{article_id}", f"{a.name} (без подстатьи)", level + depth + 1, "item",
+                                  node["own"], {**drill, "a": [f"{kind}:{article_id}"]}, key))
+
+    for root in sorted((i for i in nodes if articles[i].parent_id not in nodes), key=order):
+        emit(root, 0, None)
+    return rows
 
 
 def dds(db: Session, f: ReportFilter, include_all: bool = False) -> ColumnsResult:
@@ -375,15 +439,14 @@ def dds(db: Session, f: ReportFilter, include_all: bool = False) -> ColumnsResul
         section = ReportRow(f"act:{activity}", f"Сальдо: {title.lower()}", 0, "section", empty())
         section_rows = []
         for direction, group_title in (("inflow", "Поступления"), ("outflow", "Выплаты")):
-            items = sorted((a for a in in_section if a.cash_flow_direction == direction), key=lambda a: a.name.lower())
+            items = [a for a in in_section if a.cash_flow_direction == direction]
             if not items:
                 continue
             group = ReportRow(f"grp:{activity}:{direction}", group_title, 1, "group", empty())
-            item_rows = []
             for a in items:
-                item_rows.append(ReportRow(f"art:{a.id}", a.name, 2, "item", by_article[a.id],
-                                           {**flow_drill, "a": [f"cash_flow_item:{a.id}"]}))
                 add(group.values, by_article[a.id])
+            item_rows = article_rows(db, f.organization_id, {a.id: by_article[a.id] for a in items}, 2,
+                                     "cash_flow_item", flow_drill)
             section_rows += [group, *item_rows]
         add(section.values, {k: sum((r.values[k] for r in section_rows if r.kind == "group"), ZERO) for k in section.values})
         rows.append(ReportRow(f"title:{activity}", title, 0, "title", {}))
@@ -475,15 +538,12 @@ def pl(db: Session, f: ReportFilter, include_all: bool = False) -> ColumnsResult
             by_article.setdefault(article_id, {c.key: ZERO for c in columns})
     articles = {a.id: a for a in db.scalars(select(Article).where(Article.id.in_(list(by_article))))}
     sections = {key: empty() for key, _ in PL_SECTIONS}
-    items: dict[str, list[ReportRow]] = {key: [] for key, _ in PL_SECTIONS}
+    items: dict[str, dict[int, dict[str, Decimal]]] = {key: {} for key, _ in PL_SECTIONS}
     for article_id, values in by_article.items():
         if not any(values.values()) and not include_all:
             continue  # перенос затрат внутри статьи (20 → 90.02) погасился
-        article = articles[article_id]
-        section = article.pl_section or "other_expense"
-        items[section].append(ReportRow(f"art:{article_id}", article.name, 1, "item", values,
-                                        {"period": "turnover", "a": [f"pl_item:{article_id}"],
-                                         "exclude_corr_ids": reformation}))
+        section = articles[article_id].pl_section or "other_expense"
+        items[section][article_id] = values
         for k, v in values.items():
             sections[section][k] += v
 
@@ -494,7 +554,8 @@ def pl(db: Session, f: ReportFilter, include_all: bool = False) -> ColumnsResult
             rows.append(ReportRow(key, title, 0, "total", values))
         else:
             rows.append(ReportRow(key, title, 0, "section", sections[key]))
-            rows += sorted(items[key], key=lambda r: r.title.lower())
+            rows += article_rows(db, f.organization_id, items[key], 1, "pl_item",
+                                 {"period": "turnover", "exclude_corr_ids": reformation})
     return ColumnsResult(columns=columns, money_account_ids=[], rows=rows)
 
 
@@ -815,7 +876,7 @@ def plan_fact(db: Session, f: ReportFilter, kind: str, version_id: int | None = 
         values = {c.key: cell(p.values.get(c.key, ZERO) if p and p.values else ZERO,
                               r.values.get(c.key, ZERO) if r.values else ZERO) for c in columns}
         rows.append({"key": r.key, "title": r.title, "level": r.level, "kind": r.kind, "values": values,
-                     "drill": r.drill, "empty": r.kind == "item" and not any(
+                     "drill": r.drill, "parent": r.parent, "empty": r.kind in ("item", "item_group") and not any(
                          v["plan"] or v["fact"] for v in values.values())})
     # статьи без плана и факта не показываем; группы ДДС без статей — тоже
     rows = [r for r in rows if not r["empty"]]
@@ -832,7 +893,7 @@ def _prune_cash_sections(rows: list[dict]) -> list[dict]:
         for r in rows[start + 1:]:
             if r["kind"] in stop_kinds:
                 return False
-            if r["kind"] == "item" and r["level"] == 2:
+            if r["kind"] in ("item", "item_group") and r["level"] == 2:
                 return True
         return False
 

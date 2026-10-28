@@ -2,7 +2,7 @@
 import { api } from "../api.js";
 import { money } from "../format.js";
 import { el, makeTable } from "../ui.js";
-import { openDrill } from "./common.js";
+import { nestRows, openDrill, TREE_OPTIONS } from "./common.js";
 
 const BOLD = new Set(["title", "section", "total"]);
 
@@ -26,11 +26,13 @@ export function planFactReport({ box, ctx }) {
 
   const table = makeTable(tableBox, {
     index: "key",
+    ...TREE_OPTIONS,
     columns: [{ title: "Статья", field: "title" }],
     columnDefaults: { headerWordWrap: true },
     rowFormatter: (row) => {
       const r = row.getData();
       row.getElement().classList.toggle("row-total", BOLD.has(r.kind));
+      row.getElement().classList.toggle("row-group", r.kind === "item_group");
       row.getElement().classList.toggle("row-key", r.kind === "total");
     },
   });
@@ -70,7 +72,7 @@ export function planFactReport({ box, ctx }) {
       org: ctx.org(), ref: ctx.ref(), filters: ctx.filters, onChanged: () => ctx.reload(),
       title: `${r.title}, ${col.title.toLowerCase()}, ${part === "plan" ? "план" : "факт"}`,
       extra: {
-        period: r.drill.period, a: r.drill.a, opening: r.drill.opening,
+        period: r.drill.period, a: r.drill.a, a_tree: r.drill.a_tree, opening: r.drill.opening,
         date_from: col.date_from, date_to: col.date_to,
         ...(m.length ? { account_id: m } : {}),
         ...(r.drill.exclude_corr ? { exclude_corr_account_id: m } : {}),
@@ -100,7 +102,10 @@ export function planFactReport({ box, ctx }) {
     });
     table.setColumns([
       { title: "Статья", field: "title", minWidth: 240, widthGrow: 3, headerSort: false, frozen: true,
-        formatter: (c) => `<span style="padding-left:${c.getRow().getData().level * 18}px">${escape(c.getValue())}</span>` },
+        formatter: (c) => {
+          const r = c.getRow().getData();
+          return `<span style="padding-left:${r._indent ?? r.level * 18}px">${escape(c.getValue())}</span>`;
+        } },
       ...data.columns.map((c) => ({
         title: c.key === "total" ? "Итого" : c.title,
         columns: [sub(c, "plan", "План"), sub(c, "fact", "Факт"), sub(c, "dev", "Откл."),
@@ -113,7 +118,7 @@ export function planFactReport({ box, ctx }) {
       for (const [key, v] of Object.entries(r.values)) for (const [part, x] of Object.entries(v)) flat[`${key}|${part}`] = x;
       return flat;
     });
-    await table.setData(rows);
+    await table.setData(nestRows(rows));
   }
 
   versionSelect.addEventListener("change", () => { versionId = versionSelect.value; load(); });

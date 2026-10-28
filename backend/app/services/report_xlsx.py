@@ -38,6 +38,7 @@ def build(title: str, subtitle: str, columns: list[XlsxColumn], rows: list[tuple
         cell.alignment = Alignment(wrap_text=True, vertical="center")
         ws.column_dimensions[get_column_letter(i)].width = col.width
     ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+    ws.sheet_properties.outlinePr.summaryBelow = False  # итог группы — над её строками
 
     def put(values: list, level: int = 0, bold: bool = False) -> None:
         ws.append(values)  # Decimal записывается в файл как есть, без float
@@ -52,6 +53,7 @@ def build(title: str, subtitle: str, columns: list[XlsxColumn], rows: list[tuple
                 cell.font = Font(bold=True)
         if level:
             ws.cell(row=r, column=1).alignment = Alignment(indent=level)
+            ws.row_dimensions[r].outline_level = min(level, 7)  # уровни сворачиваются кнопками «+ / −» слева
 
     for level, values, *bold in rows:
         put(values, level, bool(bold and bold[0]))

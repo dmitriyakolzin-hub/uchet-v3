@@ -119,3 +119,21 @@ export async function openDrill({ org, ref, filters, extra, title, onChanged }) 
     openOperation({ ref, org, op, perms: org.permissions, onChanged });
   });
 }
+
+/** Строки отчёта деревом статей (docs/TZ.md, раздел 19): строка с parent — внутри строки-группы статей.
+ *  Возвращает строки верхнего уровня; _indent — отступ строки, не считая отступа дерева. */
+export function nestRows(rows) {
+  const byKey = new Map(rows.map((r) => [r.key, r]));
+  const roots = [];
+  for (const r of rows) {
+    const parent = r.parent ? byKey.get(r.parent) : null;  // группа всегда идёт раньше своих подстатей
+    r._depth = parent ? parent._depth + 1 : 0;
+    r._indent = (r.level - r._depth) * 18;
+    if (parent) (parent._children ??= []).push(r);
+    else roots.push(r);
+  }
+  return roots;
+}
+
+export const TREE_OPTIONS = { dataTree: true, dataTreeStartExpanded: false, dataTreeChildIndent: 18,
+  dataTreeElementColumn: "title" };
