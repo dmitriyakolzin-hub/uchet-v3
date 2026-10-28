@@ -358,8 +358,10 @@ def fill_sheet(db: Session, sheet: PayoutSheet, advance_percent: Decimal = Decim
 def pay_sheet(db: Session, sheet: PayoutSheet, user: User, paid_on: dt.date, *, import_key: str | None = None,
               confirmed: bool = False) -> Operation:
     """Оплата: проведённая операция Дт 70 (сотрудник) — Кт 51 (расчётный счёт, статья выплаты)."""
-    if sheet.status != "sent":
-        raise PayrollError("Оплатить можно ведомость, отправленную в банк")
+    if sheet.status == "paid":
+        raise PayrollError("Ведомость уже оплачена")
+    if sheet_total(db, sheet) <= 0:
+        raise PayrollError("В ведомости нет сумм к выплате")
     article = system_article(db, sheet.organization_id, "salary_payment")
     if article is None:
         raise PayrollError("Нет системной статьи выплаты зарплаты — восстановите её в справочнике статей")
@@ -374,7 +376,7 @@ def pay_sheet(db: Session, sheet: PayoutSheet, user: User, paid_on: dt.date, *, 
     kind = "аванса" if sheet.kind == "advance" else "зарплаты"
     body = OperationIn(legal_entity_id=sheet.legal_entity_id, op_date=paid_on, article_id=article.id,
                        description=f"Выплата {kind} за {MONTHS_GENITIVE[sheet.month - 1]} {sheet.year} "
-                                   f"по ведомости № {sheet.number}", postings=postings)
+                                   f"по ведомости № {sheet.number}", postings=postings, payout_sheet_id=sheet.id)
     op = Operation(organization_id=sheet.organization_id, created_by=user.id, status="draft", import_key=import_key)
     try:
         journal.save_draft(db, op, body, user)
@@ -401,12 +403,14 @@ def unpay_sheet(db: Session, sheet: PayoutSheet) -> None:
 
 def match_sheet(db: Session, organization_id: int, bank_account_id: int, amount: Decimal,
                 purpose: str) -> PayoutSheet | None:
-    """Отправленная в банк ведомость, которую оплатил этот платёж: тот же счёт, та же сумма, назначение о зарплате."""
+    """Неоплаченная ведомость (черновик или отправленная в банк), которую оплатил этот платёж: тот же счёт,
+    та же сумма, назначение о зарплате. Отправленные — в первую очередь."""
     if not any(word in purpose.lower() for word in PAYMENT_WORDS):
         return None
     for sheet in db.scalars(select(PayoutSheet).where(
             PayoutSheet.organization_id == organization_id, PayoutSheet.bank_account_id == bank_account_id,
-            PayoutSheet.status == "sent").order_by(PayoutSheet.pay_date, PayoutSheet.number)):
+            PayoutSheet.status.in_(("draft", "sent")))
+            .order_by(PayoutSheet.status.desc(), PayoutSheet.pay_date, PayoutSheet.number)):
         if sheet_total(db, sheet) == amount:
             return sheet
     return None

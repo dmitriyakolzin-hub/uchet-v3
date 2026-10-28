@@ -1,6 +1,6 @@
 // Форма операции журнала: шапка, проводки, аналитика по выбранным счетам, шаблон статьи.
 import { api } from "./api.js";
-import { money, parseNumber, quantity } from "./format.js";
+import { money, parseNumber, quantity, sumMoney } from "./format.js";
 import { el, openForm, toast } from "./ui.js";
 
 const KIND_TITLES = {
@@ -16,6 +16,9 @@ const KIND_TITLES = {
   cash_flow_item: "Статья ДДС",
   pl_item: "Статья ОПиУ",
 };
+const SHEET_KINDS = { advance: "аванс", salary: "зарплата" };
+const SHEET_STATUSES = { draft: "черновик", sent: "отправлена в банк", paid: "оплачена" };
+const MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
 const STATUS_TITLES = { draft: "Черновик", posted: "Проведена", cancelled: "Аннулирована" };
 const ACTION_TITLES = {
   created: "создал(а)", updated: "изменил(а)", posted: "провёл(а)",
@@ -66,6 +69,10 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
   );
   const description = el("textarea", { name: "description", rows: 2 });
   description.value = op?.description ?? "";
+
+  // выплата по ведомости (docs/TZ.md, раздел 21): проводки Дт 70 по сотрудникам — Кт 51, при проведении сверяются
+  let payoutSheet = op?.payout_sheet_id ? { id: op.payout_sheet_id, number: op.payout_sheet_number } : null;
+  const sheetBox = el("p", { class: "muted sheet-link" });
 
   const postingsBox = el("div", { class: "postings" });
   const errorBox = el("ul", { class: "error-list", role: "alert" });
@@ -239,6 +246,7 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
       article_id: Number(articleSelect.value) || null,
       is_opening: isOpening,
       description: description.value.trim(),
+      payout_sheet_id: payoutSheet?.id ?? null,
       postings: [...postingsBox.querySelectorAll(".posting")].map((p) => {
         const isRub = Number(p.querySelector('[name="currency"]').value) === ref.rubId;
         const qtyVisible = !p.querySelector(".qty").hidden;
@@ -254,6 +262,79 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
         };
       }),
     };
+  }
+
+  function renderSheet() {
+    sheetBox.replaceChildren(...(payoutSheet ? [
+      `Выплата по ведомости № ${payoutSheet.number}: при проведении суммы по сотрудникам сверяются с ведомостью, `
+        + "ведомость отмечается оплаченной. ",
+      editable ? el("button", { type: "button", class: "link", onclick: () => { payoutSheet = null; renderSheet(); } },
+        "Отвязать от ведомости") : null,
+    ] : []));
+    sheetBox.hidden = !payoutSheet;
+  }
+
+  const currentTotal = () => sumMoney([...postingsBox.querySelectorAll('[name="amount"]')].map((i) => parseNumber(i.value)));
+
+  // Подобрать ведомость: проводки заменяются строками ведомости; если в операции уже есть сумма (платёж из выписки),
+  // она должна совпасть с итогом ведомости
+  async function fillBySheet() {
+    const sheets = (await api.get(`/api/organizations/${org.id}/payout-sheets`))
+      .filter((sh) => sh.status !== "paid" || sh.operation_id === op?.id);
+    if (!sheets.length) {
+      toast("Нет неоплаченных ведомостей — создайте ведомость на странице «Зарплата»");
+      return;
+    }
+    const before = currentTotal();
+    const label = (sh) => `№ ${sh.number} — ${SHEET_KINDS[sh.kind]} за ${MONTHS[sh.month - 1]} ${sh.year}, `
+      + `${sh.legal_entity_name}, ${money(sh.total)} (${SHEET_STATUSES[sh.status]})`;
+    const choice = select(sheets.map((sh) => [String(sh.id), label(sh)]), payoutSheet?.id ?? sheets[0].id,
+      { "aria-label": "Ведомость" });
+    const note = el("p", { class: "muted" });
+    const apply = el("button", { type: "button" }, "Заполнить");
+    const check = () => {
+      const sh = sheets.find((x) => String(x.id) === choice.value);
+      const differs = Number(before) !== 0 && before !== sh.total;
+      note.textContent = differs
+        ? `Сумма операции ${money(before)}, итог ведомости ${money(sh.total)} — не совпадают. `
+          + "Исправьте ведомость на странице «Зарплата» или выберите другую."
+        : "Проводки операции заменятся строками ведомости: Дт 70 по каждому сотруднику — Кт расчётного счёта ведомости.";
+      note.classList.toggle("error", differs);
+      apply.disabled = differs;
+    };
+    choice.addEventListener("change", check);
+    const box = el("dialog", { class: "dialog" }, el("h2", {}, "Заполнить по ведомости"),
+      el("label", { class: "block" }, "Ведомость", choice), note,
+      el("div", { class: "form-actions" },
+        el("button", { type: "button", class: "secondary", onclick: () => box.close() }, "Отмена"), apply));
+    apply.addEventListener("click", async () => {
+      const sh = await api.get(`/api/payout-sheets/${choice.value}`);
+      const bank = ref.bankAccounts.find((b) => b.id === sh.bank_account_id);
+      const moneyCode = bank && bank.currency_id !== ref.rubId ? "52" : "51";
+      const accountId = (code) => ref.accounts.find((a) => a.code === code)?.id;
+      const article = ref.articleByKey.get("salary_payment");
+      entitySelect.value = String(sh.legal_entity_id);
+      if (article) articleSelect.value = String(article.id);
+      if (!description.value.trim()) {
+        description.value = `Выплата: ${SHEET_KINDS[sh.kind]} за ${MONTHS[sh.month - 1]} ${sh.year} по ведомости № ${sh.number}`;
+      }
+      postingsBox.replaceChildren();
+      for (const line of sh.lines) {
+        addPosting({
+          debit_account_id: accountId("70"), credit_account_id: accountId(moneyCode), amount: line.amount,
+          currency_id: bank?.currency_id, debit: { employee: line.employee_id },
+          credit: { bank_account: sh.bank_account_id, ...(article ? { cash_flow_item: article.id } : {}) },
+        });
+      }
+      payoutSheet = { id: sh.id, number: sh.number };
+      renderSheet();
+      box.close();
+      toast(`Проводки заполнены по ведомости № ${sh.number}: ${sh.lines.length} сотрудн., ${money(sh.total)}`);
+    });
+    box.addEventListener("close", () => box.remove());
+    document.body.append(box);
+    check();
+    box.showModal();
   }
 
   function showErrors(err) {
@@ -377,7 +458,11 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
     ),
     el("label", { class: "block" }, "Описание", description),
     postingsBox,
-    editable ? el("button", { type: "button", class: "link", onclick: () => addPosting() }, "+ Добавить проводку") : null,
+    sheetBox,
+    editable ? el("div", { class: "row-actions" },
+      el("button", { type: "button", class: "link", onclick: () => addPosting() }, "+ Добавить проводку"),
+      canPost && !isOpening ? el("button", { type: "button", class: "link", onclick: () => fillBySheet().catch(showErrors) },
+        "Заполнить по ведомости") : null) : null,
     closed ? el("p", { class: "muted" }, `Период закрыт по ${org.closed_through.split("-").reverse().join(".")} — операцию изменить нельзя.`) : null,
     errorBox,
     historyBox,
@@ -387,6 +472,7 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
   dialog.addEventListener("close", () => dialog.remove());
 
   for (const p of op?.postings ?? []) addPosting(p);
+  renderSheet();
   if (!op) {
     addPosting(preset?.posting ?? {});
     if (preset?.article_id) articleSelect.dispatchEvent(new Event("change"));

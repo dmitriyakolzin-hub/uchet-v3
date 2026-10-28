@@ -94,6 +94,9 @@ class Operation(Base):
     plan_executor_id: Mapped[int | None] = mapped_column(ForeignKey("executors.id", ondelete="RESTRICT"))  # ЦФУ
     # инвестпроект: план вложений (inv) и созданная по нему плановая оплата (cf)
     plan_project_id: Mapped[int | None] = mapped_column(ForeignKey("investment_projects.id", ondelete="CASCADE"))
+    # Выплата по ведомости (docs/TZ.md, раздел 21): при проведении суммы по сотрудникам сверяются с ведомостью,
+    # ведомость отмечается оплаченной; возврат в черновик или аннулирование снимает отметку
+    payout_sheet_id: Mapped[int | None] = mapped_column(ForeignKey("payout_sheets.id", ondelete="SET NULL"), index=True)
 
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
