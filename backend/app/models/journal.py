@@ -153,7 +153,7 @@ class OperationEvent(Base):
     __tablename__ = "operation_events"
     __table_args__ = (
         CheckConstraint(
-            "action IN ('created', 'updated', 'posted', 'unposted', 'cancelled', 'restored')",
+            "action IN ('created', 'updated', 'posted', 'unposted', 'cancelled', 'restored', 'bulk_edited')",
             name="action",
         ),
     )
@@ -165,3 +165,4 @@ class OperationEvent(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     action: Mapped[str] = mapped_column(String(20))
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    details: Mapped[str] = mapped_column(Text, default="", server_default="")  # что изменилось (массовое изменение)

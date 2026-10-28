@@ -283,3 +283,5 @@ table.calendar-grid tr.today-row td:first-child { font-weight: 600; }
 .table-scroll { max-height: 60vh; overflow: auto; }
 table.article-import th, table.article-import td { text-align: left; }
 .tabulator .tabulator-row.row-group { font-weight: 600; }
+.bulk-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+.bulk-row select, .bulk-row input { max-width: 320px; }
