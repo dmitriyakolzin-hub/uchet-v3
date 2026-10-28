@@ -719,6 +719,27 @@ with sync_playwright() as p:
     expect(d.locator("[name=article_id] option:checked")).to_contain_text("Выплата заработной платы")
     d.locator("button:has-text('Отмена')").click()
 
+    # шаг 11.3: разделить проводку по ЦФО — 33,33 % и остаток до копейки (тоже без сохранения)
+    page.click("text=Новая операция")
+    d = page.locator("dialog[open]")
+    d.locator("[name=article_id]").select_option(label="2.6.20.1. Связь и IT / Электричество")
+    d.locator("[name=amount]").fill("1 000")
+    d.locator("[aria-label='ЦФО (дебет)']").select_option(label="АВМВ / Торговля")
+    d.locator("button:has-text('Разделить по ЦФО')").click()
+    split = page.locator("dialog[open]", has_text="Разделить по ЦФО").last
+    expect(split.locator("[aria-label='ЦФО части 1'] option:checked")).to_have_text("АВМВ / Торговля")
+    split.locator("[aria-label='Как делить']").select_option("percent")
+    split.locator("[aria-label='Сумма части 1']").fill("33,33")
+    split.locator("[aria-label='ЦФО части 2']").select_option(label="АВМВ / Торговля / Филиал Юг")
+    expect(split.locator(".split-row").nth(1)).to_contain_text("остаток 666,70")
+    split.locator("button:has-text('Разделить')").last.click()
+    expect(d.locator(".posting")).to_have_count(2)
+    expect(d.locator("[name=amount]").nth(0)).to_have_value("333,30")
+    expect(d.locator("[name=amount]").nth(1)).to_have_value("666,70")
+    expect(d.locator("[aria-label='ЦФО (дебет)']").nth(1).locator("option:checked")).to_have_text("АВМВ / Торговля / Филиал Юг")
+    expect(d.locator("[aria-label='Статья ОПиУ (дебет)']").nth(1).locator("option:checked")).to_have_text("2.6.20.1. Связь и IT / Электричество")
+    d.locator("button:has-text('Отмена')").click()
+
     # основные средства: карточка, поступление на 08 в журнале, ввод в эксплуатацию, амортизация
     page.click("#nav a[data-page=fixedassets]")
     page.click("text=Новое основное средство")

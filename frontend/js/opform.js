@@ -1,5 +1,6 @@
 // Форма операции журнала: шапка, проводки, аналитика по выбранным счетам, шаблон статьи.
 import { api } from "./api.js";
+import { openCfoSplit } from "./cfosplit.js";
 import { money, parseNumber, quantity, sumMoney } from "./format.js";
 import { el, openForm, toast } from "./ui.js";
 
@@ -133,6 +134,8 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
       }),
     );
     updateQuantityVisibility(posting);
+    const split = posting.querySelector(".split");
+    if (split) split.hidden = !cfoSides(posting).length; // делить по ЦФО — где ЦФО ведётся
   }
 
   function collectAnalytics(posting, side) {
@@ -183,7 +186,10 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
         el("div", { class: "analytics", "data-side": "debit" }),
         el("div", { class: "analytics", "data-side": "credit" }),
       ),
-      editable ? el("button", { type: "button", class: "link remove", onclick: () => { posting.remove(); renumber(); } }, "Удалить проводку") : null,
+      editable ? el("div", { class: "row-actions" },
+        el("button", { type: "button", class: "link split", onclick: () => splitPosting(posting) }, "Разделить по ЦФО"),
+        el("button", { type: "button", class: "link remove", onclick: () => { posting.remove(); renumber(); } }, "Удалить проводку"))
+        : null,
     );
     for (const side of ["debit", "credit"]) {
       posting.querySelector(`[name="${side}_account"]`).addEventListener("change", () => {
@@ -197,6 +203,45 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
     syncRub();
     renumber();
     return posting;
+  }
+
+  // стороны проводки, где ведётся ЦФО
+  function cfoSides(posting) {
+    return ["debit", "credit"].filter((side) =>
+      accountsById.get(Number(posting.querySelector(`[name="${side}_account"]`).value))?.analytics.includes("cfo"));
+  }
+
+  // Разделить проводку по ЦФО (docs/TZ.md, раздел 21, «Детали 11.3»): N проводок с теми же счетами и аналитикой
+  function splitPosting(posting) {
+    const base = collectPosting(posting);
+    const sides = cfoSides(posting);
+    errorBox.replaceChildren();
+    if (!/^\d+(\.\d{1,2})?$/.test(base.amount ?? "") || /^0+(\.0*)?$/.test(base.amount)) {
+      showErrors(new Error("Сначала укажите сумму проводки"));
+      return;
+    }
+    if (base.quantity !== null) {
+      showErrors(new Error("Проводку с количеством по ЦФО не делим — разделите её вручную"));
+      return;
+    }
+    const side = sides[0];
+    openCfoSplit({
+      ref, amount: base.amount, current: { cfo: base[side].cfo, executor: base[side].executor },
+      onApply: (parts) => {
+        for (const part of parts) {
+          const data = { ...base, amount: part.amount, amount_rub: null, amount_rub_manual: false,
+            debit: { ...base.debit }, credit: { ...base.credit } };
+          for (const s of sides) {
+            delete data[s].executor;
+            data[s].cfo = part.cfo ?? undefined;
+            if (part.executor) data[s].executor = part.executor;
+          }
+          postingsBox.insertBefore(addPosting(data), posting);
+        }
+        posting.remove();
+        renumber();
+      },
+    });
   }
 
   function renumber() {
@@ -247,20 +292,22 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
       is_opening: isOpening,
       description: description.value.trim(),
       payout_sheet_id: payoutSheet?.id ?? null,
-      postings: [...postingsBox.querySelectorAll(".posting")].map((p) => {
-        const isRub = Number(p.querySelector('[name="currency"]').value) === ref.rubId;
-        const qtyVisible = !p.querySelector(".qty").hidden;
-        return {
-          debit_account_id: Number(p.querySelector('[name="debit_account"]').value) || null,
-          credit_account_id: Number(p.querySelector('[name="credit_account"]').value) || null,
-          amount: parseNumber(p.querySelector('[name="amount"]').value),
-          currency_id: Number(p.querySelector('[name="currency"]').value),
-          amount_rub: isRub ? null : parseNumber(p.querySelector('[name="amount_rub"]').value),
-          quantity: qtyVisible ? parseNumber(p.querySelector('[name="quantity"]').value) : null,
-          debit: collectAnalytics(p, "debit"),
-          credit: collectAnalytics(p, "credit"),
-        };
-      }),
+      postings: [...postingsBox.querySelectorAll(".posting")].map(collectPosting),
+    };
+  }
+
+  function collectPosting(p) {
+    const isRub = Number(p.querySelector('[name="currency"]').value) === ref.rubId;
+    const qtyVisible = !p.querySelector(".qty").hidden;
+    return {
+      debit_account_id: Number(p.querySelector('[name="debit_account"]').value) || null,
+      credit_account_id: Number(p.querySelector('[name="credit_account"]').value) || null,
+      amount: parseNumber(p.querySelector('[name="amount"]').value),
+      currency_id: Number(p.querySelector('[name="currency"]').value),
+      amount_rub: isRub ? null : parseNumber(p.querySelector('[name="amount_rub"]').value),
+      quantity: qtyVisible ? parseNumber(p.querySelector('[name="quantity"]').value) : null,
+      debit: collectAnalytics(p, "debit"),
+      credit: collectAnalytics(p, "credit"),
     };
   }
 

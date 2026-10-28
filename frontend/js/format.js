@@ -34,17 +34,26 @@ export function monthBounds(d = new Date()) {
   return [isoDate(new Date(d.getFullYear(), d.getMonth(), 1)), isoDate(new Date(d.getFullYear(), d.getMonth() + 1, 0))];
 }
 
-// Точная сумма денежных строк ("1234.50") в копейках, без float → "12345.67"
+// Денежная строка ("1234.50") ↔ копейки (BigInt), без float
+export function toKopecks(value) {
+  const negative = String(value).startsWith("-");
+  const [whole, frac = ""] = String(value).replace("-", "").split(".");
+  const k = BigInt(whole || "0") * 100n + BigInt((frac + "00").slice(0, 2));
+  return negative ? -k : k;
+}
+
+export function fromKopecks(kopecks) {
+  const negative = kopecks < 0n;
+  const abs = negative ? -kopecks : kopecks;
+  return `${negative ? "-" : ""}${abs / 100n}.${String(abs % 100n).padStart(2, "0")}`;
+}
+
+// Точная сумма денежных строк в копейках → "12345.67"
 export function sumMoney(values) {
   let kopecks = 0n;
   for (const v of values) {
     if (v === null || v === undefined || v === "") continue;
-    const negative = String(v).startsWith("-");
-    const [whole, frac = ""] = String(v).replace("-", "").split(".");
-    const k = BigInt(whole) * 100n + BigInt((frac + "00").slice(0, 2));
-    kopecks += negative ? -k : k;
+    kopecks += toKopecks(v);
   }
-  const negative = kopecks < 0n;
-  const abs = negative ? -kopecks : kopecks;
-  return `${negative ? "-" : ""}${abs / 100n}.${String(abs % 100n).padStart(2, "0")}`;
+  return fromKopecks(kopecks);
 }
