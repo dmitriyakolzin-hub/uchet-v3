@@ -1,13 +1,15 @@
-"""Загрузка из Excel (docs/TZ.md, раздел 11): шаблоны и загрузка операций и контрагентов."""
+"""Загрузка из Excel (docs/TZ.md, раздел 11): шаблоны и загрузка операций, контрагентов, сотрудников, статей."""
+
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StringConstraints
 from starlette.concurrency import run_in_threadpool
 
 from app.api.access import branch_ids, cfo_scope, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.services import employee_import
+from app.services import article_import, employee_import
 from app.services import excel_import as xl
 
 router = APIRouter(prefix="/api/organizations/{organization_id}/import", tags=["Загрузка из Excel"])
@@ -135,3 +137,64 @@ async def import_employees(organization_id: int, request: Request, user: Current
     db.commit()
     return EmployeesImportOut(rows=result.rows, created=result.created, updated=result.updated,
                               errors=[e.__dict__ for e in result.errors])
+
+
+# --- справочник статей (docs/TZ.md, раздел 19, «Детали 9.2») ---
+
+
+class ArticleRowOut(BaseModel):
+    row: int
+    code: str | None
+    name: str
+    note: str
+    kind: str
+    parent_code: str | None
+    match_id: int | None
+    match_name: str
+    match_reason: str
+    warning: str
+    flags: str
+
+
+class ArticleRowIn(BaseModel):
+    row: int
+    code: Annotated[str | None, StringConstraints(strip_whitespace=True, max_length=30)] = None
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
+    note: Annotated[str, StringConstraints(max_length=100)] = ""
+    kind: Literal["article", "indicator", "header"]
+    match_id: int | None = None
+
+
+class ArticlesImportOut(BaseModel):
+    created: int
+    merged: int
+    updated: int
+    skipped: int
+    errors: list[RowErrorOut]
+
+
+@router.post("/articles/preview", response_model=list[ArticleRowOut])
+async def preview_articles(organization_id: int, request: Request, user: CurrentUser, db: DbSession):
+    """Разбор файла справочника без изменений: вид строк, родители по коду, предлагаемое совмещение."""
+    get_organization_for(db, user, organization_id, Perm.EDIT_REFERENCE)
+    raw = await _body(request)
+    try:
+        rows = await run_in_threadpool(article_import.preview, db, organization_id, raw)
+    except article_import.ArticleImportError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    finally:
+        db.rollback()
+    return [ArticleRowOut(**r.__dict__) for r in rows]
+
+
+@router.post("/articles", response_model=ArticlesImportOut)
+def import_articles(organization_id: int, body: Annotated[list[ArticleRowIn], Field(max_length=2000)],
+                    user: CurrentUser, db: DbSession):
+    """Загрузка проверенных строк: статьи создаются или совмещаются с существующими."""
+    get_organization_for(db, user, organization_id, Perm.EDIT_REFERENCE)
+    rows = [article_import.Row(row=r.row, code=article_import.norm_code(r.code), name=r.name, note=r.note,
+                               kind=r.kind, match_id=r.match_id) for r in body]
+    result = article_import.apply(db, organization_id, rows)
+    db.commit()
+    return ArticlesImportOut(created=result.created, merged=result.merged, updated=result.updated,
+                             skipped=result.skipped, errors=[RowErrorOut(row=n, error=e) for n, e in result.errors])
