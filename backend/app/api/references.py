@@ -242,7 +242,7 @@ for resource in (
     OrgResource(
         path="cfos", model=Cfo, title="ЦФО",
         create_schema=s.CfoCreate, update_schema=s.CfoUpdate, out_schema=s.CfoOut,
-        conflict_message="Такой ЦФО уже есть",
+        conflict_message="ЦФО с таким кодом уже есть",
         order_by=lambda m: [m.path],
         refs={"parent_id": Ref(Cfo, "Вышестоящий ЦФО"), "legal_entity_id": LEGAL_ENTITY},
         nullable_fields={"parent_id", "legal_entity_id"}, check=_check_cfo,
@@ -275,7 +275,7 @@ for resource in (
     OrgResource(
         path="executors", model=Executor, title="ЦФУ",
         create_schema=s.ExecutorCreate, update_schema=s.ExecutorUpdate, out_schema=s.ExecutorOut,
-        conflict_message="Такой ЦФУ уже есть",
+        conflict_message="ЦФУ с таким кодом уже есть",
         order_by=lambda m: [m.name],
         refs={"parent_id": Ref(Executor, "Отдел"), "employee_id": Ref(Employee, "Сотрудник")},
         nullable_fields={"parent_id", "employee_id"}, check=_check_executor,

@@ -36,7 +36,17 @@ from app.services import journal
 from app.services import report_xlsx as xlsx
 from app.services.articles import labels as article_labels
 from app.services.articles import system_article
-from app.services.excel_import import ArticleLookup, Column, RowError, RowProblem, _decimal, _read_rows, _text
+from app.services.excel_import import (
+    ArticleLookup,
+    Column,
+    RowError,
+    RowProblem,
+    _decimal,
+    _read_rows,
+    _text,
+    cfo_lookup,
+    executor_lookup,
+)
 
 MONTH_TITLES = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь",
                 "Ноябрь", "Декабрь"]
@@ -456,29 +466,18 @@ def import_plan(db: Session, version: BudgetVersion, kind: str, raw: bytes, user
     columns = [Column("ЦФО", "cfo"), Column("Статья", "article", True), Column("ЦФУ", "executor")]
     columns += [Column(MONTH_TITLES[m - 1], f"m{m}") for m in budget.months]
     rows = _read_rows(raw, columns)
-    labels = cfo_labels(db, budget.organization_id)
-    by_label = {v.lower(): k for k, v in labels.items()}
-    by_name: dict[str, list[int]] = {}
-    for cfo_id, label in labels.items():
-        by_name.setdefault(label.split(" / ")[-1].lower(), []).append(cfo_id)
+    cfos = cfo_lookup(db, budget.organization_id)
     plan_items = [a for a, _ in plan_articles(db, budget.organization_id, kind)]
     articles = {a.display_name.lower(): a for a in plan_items}  # как в выгрузке: «код путь»
     article_lookup = ArticleLookup(plan_items)
-    executors = executor_labels(db, budget.organization_id)
-    executor_by_label = {v.lower(): k for k, v in executors.items()}
+    executors = executor_lookup(db, budget.organization_id, active_only=False)
     result = PlanImportResult(rows=len(rows))
     for number, row in rows:
         try:
             cfo_text = _text(row.get("cfo"))
             cfo_id = None
             if cfo_text:
-                cfo_id = by_label.get(cfo_text.lower())
-                if cfo_id is None:
-                    found = by_name.get(cfo_text.lower(), [])
-                    if len(found) != 1:
-                        raise RowProblem(f"ЦФО «{cfo_text}» не найден" if not found
-                                         else f"ЦФО «{cfo_text}»: несколько с таким названием — укажите путь")
-                    cfo_id = found[0]
+                cfo_id = cfos.find(cfo_text)  # код, путь или название
             if kind == "pl" and cfo_id is None:
                 raise RowProblem("Не указан ЦФО")
             if branch is not None and cfo_id not in branch:
@@ -493,9 +492,7 @@ def import_plan(db: Session, version: BudgetVersion, kind: str, raw: bytes, user
             executor_text = _text(row.get("executor"))
             executor_id = None
             if executor_text:
-                executor_id = executor_by_label.get(executor_text.lower())
-                if executor_id is None:
-                    raise RowProblem(f"ЦФУ «{executor_text}» не найден (укажите «Отдел / Исполнитель» или отдел)")
+                executor_id = executors.find(executor_text)
             cells = []
             for m in budget.months:
                 value = row.get(f"m{m}")

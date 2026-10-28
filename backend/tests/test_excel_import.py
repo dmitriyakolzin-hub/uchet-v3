@@ -13,7 +13,7 @@ XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 OP_HEADER = ["Дата*", "Операция", "Юрлицо (ИНН)", "Статья", "Счёт Дт*", "Счёт Кт*", "Сумма*", "Валюта",
              "Количество", "Контрагент (ИНН или наименование)", "Договор №", "Расчётный счёт (номер)",
              "Сотрудник (таб. № или ФИО)", "Номенклатура (артикул или наименование)", "Склад",
-             "Основное средство (инв. № или наименование)", "ЦФО", "Описание"]
+             "Основное средство (инв. № или наименование)", "ЦФО", "ЦФУ", "Описание"]
 
 
 def xlsx(header, rows) -> bytes:
@@ -250,3 +250,38 @@ def test_counterparties_template(client, env):
     assert resp.status_code == 200
     wb = load_workbook(io.BytesIO(resp.content))
     assert [c.value for c in wb.active[1]] == CP_HEADER
+
+
+def test_cfo_and_executor_found_by_code(client, env):
+    """Шаг 11.1: ЦФО и ЦФУ ищутся по коду, затем по пути и названию (docs/TZ.md, раздел 21)."""
+    o, h = env["o"], env["h"]
+    company_id = env["shop"]["parent_id"]
+    assert client.patch(f"/api/cfos/{env['shop']['id']}", headers=h, json={"code": "М-01"}).json()["code"] == "М-01"
+    twin = client.post(f"{o}/cfos", headers=h, json={"name": "Офис", "parent_id": company_id, "code": "М-02"}).json()
+    # код не повторяется в организации; пустой — у скольких угодно
+    assert client.post(f"{o}/cfos", headers=h, json={"name": "Склад", "parent_id": company_id,
+                                                      "code": "М-01"}).status_code == 409
+    assert client.post(f"{o}/cfos", headers=h, json={"name": "Склад", "parent_id": company_id}).json()["code"] == ""
+    dept = client.post(f"{o}/executors", headers=h, json={"name": "Отдел", "code": "Д1"}).json()
+    member = client.post(f"{o}/executors", headers=h, json={"name": "Иванов", "parent_id": dept["id"],
+                                                            "code": "И-1"}).json()
+    assert client.post(f"{o}/executors", headers=h, json={"name": "Петров", "code": "И-1"}).status_code == 409
+
+    rent = dict(Дата="10.10.2026", Статья="Аренда", **{
+        "Счёт Дт": 26, "Счёт Кт": 60.01, "Сумма": 100, "Контрагент (ИНН или наименование)": "ООО Поставщик",
+        "Договор №": "П-7"})
+    row = op_row
+    resp = upload(client, env, "operations", xlsx(OP_HEADER, [
+        row(**rent, ЦФО="м-01", ЦФУ="И-1"),  # код — без учёта регистра
+        row(**rent, ЦФО="Компания / Офис", ЦФУ="Отдел / Иванов", Описание="второй"),  # путь — тоже, но их два
+        row(**rent, ЦФО="Офис", Описание="третий"),
+        row(**PAYMENT, ЦФУ="Д1"),  # у 60.01 и 51 нет ЦФО — ЦФУ некуда поставить
+    ]))
+    result = resp.json()
+    assert result["created"] == [1], result
+    errors = {e["row"]: e["error"] for e in result["errors"]}
+    assert "несколько с таким названием" in errors[3] and "несколько с таким названием" in errors[4]
+    assert "ЦФУ" in errors[5]
+    debit = operations(client, env)[0]["postings"][0]["debit"]
+    assert (debit["cfo"], debit["executor"]) == (env["shop"]["id"], member["id"])
+    assert twin["code"] == "М-02"

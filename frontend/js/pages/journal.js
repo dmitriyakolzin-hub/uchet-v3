@@ -25,6 +25,8 @@ function remember(key, value) {
   try { localStorage.setItem(key, value); } catch { /* не страшно */ }
 }
 
+const withCode = (item, label) => (item.code ? `${item.code} ${label}` : label);
+
 // Все справочники, нужные форме операции и фильтрам
 export async function loadReferences(orgId) {
   const o = `/api/organizations/${orgId}`;
@@ -47,9 +49,10 @@ export async function loadReferences(orgId) {
     bankAccounts: activeOnly(bankAccounts), counterparties: activeOnly(counterparties), contracts: activeOnly(contracts),
     employees: activeOnly(employees), nomenclature: activeOnly(nomenclature), warehouses: activeOnly(warehouses),
     cfos: activeOnly(cfos), fixedAssets: activeOnly(fixedAssets), executors: activeOnly(executors), projects,
-    executorLabel: new Map(executors.map((e) => [e.id, e.parent_id
-      ? `${executors.find((x) => x.id === e.parent_id)?.name ?? ""} / ${e.name}` : e.name])),
-    cfoLabel: new Map(cfos.map((c) => [c.id, c.path.split(".").map((id) => cfoNames.get(id)).join(" / ")])),
+    // в подписи — код, если указан: по нему удобно искать в списках
+    executorLabel: new Map(executors.map((e) => [e.id, withCode(e, e.parent_id
+      ? `${executors.find((x) => x.id === e.parent_id)?.name ?? ""} / ${e.name}` : e.name)])),
+    cfoLabel: new Map(cfos.map((c) => [c.id, withCode(c, c.path.split(".").map((id) => cfoNames.get(id)).join(" / "))])),
     counterpartyName: new Map(counterparties.map((c) => [c.id, c.name])),
     rubId: currencies.find((c) => c.is_base)?.id,
     today: isoDate(new Date()),

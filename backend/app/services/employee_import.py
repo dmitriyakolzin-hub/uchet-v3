@@ -24,6 +24,7 @@ from app.services.excel_import import (
     _text,
     _to_bytes,
     article_label,
+    cfo_lookup,
     leaf_articles,
 )
 from app.services.payroll import salary_on
@@ -35,7 +36,7 @@ EMPLOYEE_COLUMNS = [
     Column("ИНН", "inn", False, 14, True, "12 цифр"),
     Column("Должность", "position", False, 24),
     Column("Юрлицо (ИНН или название)", "entity", False, 22, True, "Работодатель: ИНН или краткое название юрлица"),
-    Column("ЦФО", "cfo", False, 30, False, "Название ЦФО или путь «Компания / Направление / … / Магазин»"),
+    Column("ЦФО", "cfo", False, 30, False, "Код ЦФО, путь «Компания / Направление / … / Магазин» или название"),
     Column("Статья затрат", "pl_item", False, 34, False,
            "Статья ОПиУ для зарплаты, например «Оплата труда — коммерческий персонал»"),
     Column("Дата приёма", "hired_on", False, 13, hint="ДД.ММ.ГГГГ"),
@@ -98,11 +99,7 @@ class _Importer:
         self.db, self.org = db, organization_id
         self.employees = list(db.scalars(select(Employee).where(Employee.organization_id == organization_id)))
         self.entities = list(db.scalars(select(LegalEntity).where(LegalEntity.organization_id == organization_id)))
-        labels = _cfo_labels(db, organization_id)
-        self.cfo_by_label = {v.lower(): k for k, v in labels.items()}
-        self.cfo_by_name: dict[str, list[int]] = {}
-        for cfo_id, label in labels.items():
-            self.cfo_by_name.setdefault(label.split(" / ")[-1].lower(), []).append(cfo_id)
+        self.cfos = cfo_lookup(db, organization_id, active_only=False)
         self.articles = ArticleLookup(leaf_articles(db, organization_id, is_pl=True))
 
     def find(self, tab: str, internal: str, name: str) -> Employee | None:
@@ -128,15 +125,7 @@ class _Importer:
         return found[0].id
 
     def cfo(self, value) -> int:
-        text = _text(value)
-        cfo_id = self.cfo_by_label.get(text.lower())
-        if cfo_id is None:
-            found = self.cfo_by_name.get(text.lower(), [])
-            if len(found) != 1:
-                raise RowProblem(f"ЦФО «{text}» не найден" if not found
-                                 else f"ЦФО «{text}»: несколько с таким названием — укажите путь")
-            cfo_id = found[0]
-        return cfo_id
+        return self.cfos.find(_text(value))  # код, путь или название
 
     def article(self, value) -> int:
         return self.articles.find(_text(value), "Статья затрат").id

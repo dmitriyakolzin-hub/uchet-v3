@@ -199,12 +199,14 @@ NULLABLE_FIELDS = {"corr_account", "inn", "kpp", "contract_date"}
 
 class CfoCreate(BaseModel):
     name: Name
+    code: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] = ""  # для загрузок из Excel
     parent_id: int | None = None  # без родителя — ЦФО уровня «Компания»
     legal_entity_id: int | None = None
 
 
 class CfoUpdate(BaseModel):
     name: Name | None = None
+    code: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] | None = None
     parent_id: int | None = None
     legal_entity_id: int | None = None
     is_active: bool | None = None
@@ -214,6 +216,7 @@ class CfoOut(_Out):
     id: int
     organization_id: int
     name: str
+    code: str = ""
     level: int
     parent_id: int | None
     path: str
@@ -416,12 +419,14 @@ class FixedAssetOut(_Out):
 
 class ExecutorCreate(BaseModel):
     name: Name
+    code: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] = ""  # для загрузок из Excel
     parent_id: int | None = None  # отдел; не указан — это отдел
     employee_id: int | None = None
 
 
 class ExecutorUpdate(BaseModel):
     name: Name | None = None
+    code: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] | None = None
     parent_id: int | None = None
     employee_id: int | None = None
     is_active: bool | None = None
@@ -431,6 +436,7 @@ class ExecutorOut(_Out):
     id: int
     organization_id: int
     name: str
+    code: str = ""
     parent_id: int | None
     employee_id: int | None
     is_active: bool

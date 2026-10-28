@@ -23,7 +23,8 @@ def env(client, headers_for, make_user, make_org, db):
     h = headers_for(fd)
     o = f"/api/organizations/{org.id}"
     company = client.post(f"{o}/cfos", headers=h, json={"name": "Компания"}).json()
-    shop = client.post(f"{o}/cfos", headers=h, json={"name": "Магазин 1", "parent_id": company["id"]}).json()
+    shop = client.post(f"{o}/cfos", headers=h, json={"name": "Магазин 1", "parent_id": company["id"],
+                                                     "code": "S-1"}).json()
     return {"o": o, "h": h, "le": le, "shop": shop, "ceo": headers_for(ceo)}
 
 
@@ -48,7 +49,7 @@ def test_import_creates_and_updates(client, env):
     resp = upload(client, env, [
         ["Иванов Иван", "001", "M-17", "770000000001", "Продавец", "7701234567", "Компания / Магазин 1",
          "Оплата труда — коммерческий персонал", "01.02.2026", None, 60000, None],
-        ["Петров Пётр", None, "M-18", None, None, "А", "Магазин 1", None, "2026-03-15", None, "45 000,50", "01.04.2026"],
+        ["Петров Пётр", None, "M-18", None, None, "А", "S-1", None, "2026-03-15", None, "45 000,50", "01.04.2026"],
         ["Без номера", None, None, "123", None, None, None, None, None, None, None, None],  # ИНН не 12 цифр
         ["Чужой ЦФО", "9", None, None, None, None, "Нет такого", None, None, None, None, None],
     ])

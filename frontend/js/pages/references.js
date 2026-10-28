@@ -118,6 +118,14 @@ function cfoPathLabels(cfos) {
   return new Map(cfos.map((c) => [c.id, c.path.split(".").map((id) => names.get(id)).join(" / ")]));
 }
 
+// Поиск в дереве: строка видна, если подходит она сама или кто-то из подчинённых
+function treeSearch(title, field, extra = {}) {
+  const match = (text, row) => String(row[field] ?? "").toLowerCase().includes(text)
+    || (row._children ?? []).some((child) => match(text, child));
+  return { title, field, headerSort: false, headerFilter: "input", headerFilterPlaceholder: "поиск",
+    headerFilterFunc: (value, _cell, row) => match(String(value).trim().toLowerCase(), row), ...extra };
+}
+
 function cfoTree(cfos) {
   const byId = new Map(cfos.map((c) => [c.id, { ...c }]));
   const roots = [];
@@ -286,7 +294,8 @@ const TABS = [
     addText: "Добавить ЦФО уровня «Компания»",
     tree: true,
     columns: (d, tab) => [
-      { title: "Наименование", field: "name", widthGrow: 3, headerSort: false },
+      treeSearch("Наименование", "name", { widthGrow: 3 }),
+      treeSearch("Код", "code", { width: 120 }),
       { title: "Уровень", field: "level", width: 190, headerSort: false, formatter: (c) => CFO_LEVELS[c.getValue()] },
       { title: "Юрлицо", field: "legal_entity_id", headerSort: false, formatter: lookup(d.entities, (e) => e.short_name) },
       ...(tab.canEdit
@@ -308,6 +317,7 @@ const TABS = [
         .map((c) => [String(c.id), labels.get(c.id)]);
       return [
         { name: "name", label: `Наименование (${CFO_LEVELS[level]})`, required: true },
+        { name: "code", label: "Код", hint: "Необязательно; не повторяется в организации. По коду ЦФО находится при загрузке из Excel" },
         ...(level > 1
           ? [{ name: "parent_id", label: `Входит в (${CFO_LEVELS[level - 1]})`, type: "select", required: true, numeric: true, options: parentOptions }]
           : [{ name: "legal_entity_id", label: "Юрлицо (необязательно)", type: "select", numeric: true,
@@ -364,7 +374,8 @@ const TABS = [
     addText: "Добавить отдел",
     tree: true,
     columns: (d, tab) => [
-      { title: "Отдел / исполнитель", field: "name", widthGrow: 3, headerSort: false },
+      treeSearch("Отдел / исполнитель", "name", { widthGrow: 3 }),
+      treeSearch("Код", "code", { width: 120 }),
       { title: "Сотрудник", field: "employee_id", widthGrow: 2, headerSort: false,
         formatter: lookup(d.employees, (e) => e.full_name) },
       ...(tab.canEdit
@@ -381,6 +392,7 @@ const TABS = [
       return [
         { name: "name", label: isMember ? "Исполнитель" : "Отдел", required: true,
           placeholder: isMember ? "Инженер Петров" : "Инженерный отдел" },
+        { name: "code", label: "Код", hint: "Необязательно; не повторяется в организации. По коду ЦФУ находится при загрузке из Excel" },
         ...(isMember
           ? [{ name: "parent_id", label: "Отдел", type: "select", required: true, numeric: true,
                options: d.executors.filter((e) => !e.parent_id && e.id !== row?.id).map((e) => [String(e.id), e.name]) }]
