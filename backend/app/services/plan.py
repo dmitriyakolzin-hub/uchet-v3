@@ -34,8 +34,9 @@ from app.models.journal import ANALYTIC_COLUMNS, analytic_column
 from app.schemas.journal import AnalyticsIn, OperationIn, PostingIn
 from app.services import journal
 from app.services import report_xlsx as xlsx
+from app.services.articles import labels as article_labels
 from app.services.articles import system_article
-from app.services.excel_import import Column, RowError, RowProblem, _decimal, _read_rows, _text
+from app.services.excel_import import ArticleLookup, Column, RowError, RowProblem, _decimal, _read_rows, _text
 
 MONTH_TITLES = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь",
                 "Ноябрь", "Декабрь"]
@@ -66,8 +67,21 @@ def month_key(year: int, month: int) -> str:
     return f"{year}-{month:02d}"
 
 
+def _named(article: Article, names: dict[int, str]) -> Article:
+    article.display_name = names.get(article.id, article.name)
+    return article
+
+
+def _label_key(article: Article) -> tuple:
+    """Статьи с кодом — по коду (2.6.9 раньше 2.6.10), без кода — после них по подписи."""
+    code = tuple(int(p) for p in (article.code or "").strip(".").split(".") if p.isdigit())
+    return (0, code, "") if article.code else (1, (), article.display_name.lower())
+
+
 def plan_articles(db: Session, organization_id: int, kind: str) -> list[tuple[Article, str]]:
-    """Статьи сетки (без подстатей, с шаблоном проводки) и их группа, в порядке отчёта."""
+    """Статьи сетки (без подстатей, с шаблоном проводки) и их группа, в порядке отчёта.
+    У каждой статьи заполняется display_name — подпись «код путь» (articles.labels)."""
+    names = article_labels(db, organization_id)
     query = select(Article).where(Article.organization_id == organization_id, Article.is_active,
                                   Article.debit_account_id.is_not(None),
                                   Article.id.not_in(select(Article.parent_id).where(Article.parent_id.is_not(None))))
@@ -77,16 +91,16 @@ def plan_articles(db: Session, organization_id: int, kind: str) -> list[tuple[Ar
         items = db.scalars(query.where(Article.is_cash_flow, Article.cash_flow_activity == "investing",
                                        Article.cash_flow_direction == "outflow",
                                        Article.debit_account_id.in_(investment)))
-        return sorted(((a, "") for a in items), key=lambda x: x[0].name.lower())
+        return sorted(((_named(a, names), "") for a in items), key=lambda x: _label_key(x[0]))
     if kind == "pl":
-        items = [(a, PL_GROUPS[a.pl_section]) for a in db.scalars(query.where(Article.is_pl))]
+        items = [(_named(a, names), PL_GROUPS[a.pl_section]) for a in db.scalars(query.where(Article.is_pl))]
         order = {s: i for i, s in enumerate(PL_ORDER)}
-        return sorted(items, key=lambda x: (order[x[0].pl_section], x[0].name.lower()))
-    items = [(a, CF_GROUPS[(a.cash_flow_activity, a.cash_flow_direction)])
+        return sorted(items, key=lambda x: (order[x[0].pl_section], _label_key(x[0])))
+    items = [(_named(a, names), CF_GROUPS[(a.cash_flow_activity, a.cash_flow_direction)])
              for a in db.scalars(query.where(Article.is_cash_flow, ~Article.is_transfer))]
     keys = list(CF_GROUPS)
     return sorted(items, key=lambda x: (keys.index((x[0].cash_flow_activity, x[0].cash_flow_direction)),
-                                        x[0].name.lower()))
+                                        _label_key(x[0])))
 
 
 def _legal_entity(db: Session, organization_id: int, cfo: Cfo | None) -> int:
@@ -269,12 +283,12 @@ def grid(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None) -> 
     labels = executor_labels(db, budget.organization_id) if any(e for _, e in values) else {}
     rows = []
     for a, group in plan_articles(db, budget.organization_id, kind):
-        rows.append({"article_id": a.id, "executor_id": None, "executor_name": "", "name": a.name, "group": group,
+        rows.append({"article_id": a.id, "executor_id": None, "executor_name": "", "name": a.display_name, "group": group,
                      "values": values.get((a.id, None), {})})
         for (article_id, executor_id), v in sorted(values.items(), key=lambda kv: labels.get(kv[0][1] or 0, "").lower()):
             if article_id == a.id and executor_id is not None:
                 rows.append({"article_id": a.id, "executor_id": executor_id, "executor_name": labels[executor_id],
-                             "name": a.name, "group": group, "values": v})
+                             "name": a.display_name, "group": group, "values": v})
     return {"months": _months(budget), "rows": rows}
 
 
@@ -296,7 +310,7 @@ def investment_grid(db: Session, version: BudgetVersion) -> dict:
         limit = f"{project.limit_amount:,.2f}".replace(",", " ").replace(".", ",")
         group = f"{project.name} — лимит {limit} ₽, {PROJECT_STATUSES[project.status]}"
         for a, _ in articles:
-            rows.append({"project_id": project.id, "article_id": a.id, "name": a.name, "group": group,
+            rows.append({"project_id": project.id, "article_id": a.id, "name": a.display_name, "group": group,
                          "values": values.get((project.id, a.id), {})})
     return {"months": _months(budget), "rows": rows}
 
@@ -322,7 +336,7 @@ def executor_grid(db: Session, version: BudgetVersion, executor_id: int, branch:
     labels = cfo_labels(db, budget.organization_id)
     return {
         "months": _months(budget),
-        "rows": [{"article_id": a.id, "name": a.name, "group": group, "values": totals.get(a.id, {}),
+        "rows": [{"article_id": a.id, "name": a.display_name, "group": group, "values": totals.get(a.id, {}),
                   "parts": [{"cfo_id": c, "name": labels.get(c, "?"), "values": v}
                             for c, v in sorted(parts.get(a.id, {}).items(), key=lambda kv: labels.get(kv[0], "").lower())]}
                  for a, group in plan_articles(db, budget.organization_id, "pl")],
@@ -362,7 +376,7 @@ def branch_grid(db: Session, version: BudgetVersion, kind: str, cfo_id: int) -> 
 
     return {
         "months": _months(budget),
-        "rows": [{"article_id": a.id, "name": a.name, "group": group, "values": totals.get(a.id, {}),
+        "rows": [{"article_id": a.id, "name": a.display_name, "group": group, "values": totals.get(a.id, {}),
                   "parts": [{"cfo_id": b, "name": title(b), "values": v}
                             for b, v in sorted(parts.get(a.id, {}).items(), key=lambda kv: order(kv[0]))]}
                  for a, group in plan_articles(db, budget.organization_id, kind)],
@@ -447,7 +461,9 @@ def import_plan(db: Session, version: BudgetVersion, kind: str, raw: bytes, user
     by_name: dict[str, list[int]] = {}
     for cfo_id, label in labels.items():
         by_name.setdefault(label.split(" / ")[-1].lower(), []).append(cfo_id)
-    articles = {a.name.lower(): a for a, _ in plan_articles(db, budget.organization_id, kind)}
+    plan_items = [a for a, _ in plan_articles(db, budget.organization_id, kind)]
+    articles = {a.display_name.lower(): a for a in plan_items}  # как в выгрузке: «код путь»
+    article_lookup = ArticleLookup(plan_items)
     executors = executor_labels(db, budget.organization_id)
     executor_by_label = {v.lower(): k for k, v in executors.items()}
     result = PlanImportResult(rows=len(rows))
@@ -467,9 +483,13 @@ def import_plan(db: Session, version: BudgetVersion, kind: str, raw: bytes, user
                 raise RowProblem("Не указан ЦФО")
             if branch is not None and cfo_id not in branch:
                 raise RowProblem("ЦФО вне вашей ветки")
-            article = articles.get(_text(row.get("article")).lower())
+            article_text = _text(row.get("article"))
+            article = articles.get(article_text.lower())
             if article is None:
-                raise RowProblem(f"Статьи «{_text(row.get('article'))}» нет в плане {'ОПиУ' if kind == 'pl' else 'ДДС'}")
+                try:  # код, «код название» или название
+                    article = article_lookup.find(article_text, "Статья")
+                except RowProblem:
+                    raise RowProblem(f"Статьи «{article_text}» нет в плане {'ОПиУ' if kind == 'pl' else 'ДДС'}") from None
             executor_text = _text(row.get("executor"))
             executor_id = None
             if executor_text:

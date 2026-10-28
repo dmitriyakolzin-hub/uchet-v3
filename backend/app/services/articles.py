@@ -71,3 +71,17 @@ def check_tree(db: Session, article: Article, creating: bool) -> None:
         for child in descendants(db, article.id):
             for field in INHERITED:
                 setattr(child, field, getattr(article, field))
+
+
+def labels(db: Session, organization_id: int) -> dict[int, str]:
+    """Подпись статьи для списков и сеток: «код путь», например «2.3.2.1. Аренда / переменная часть / газ»."""
+    items = {a.id: a for a in db.scalars(select(Article).where(Article.organization_id == organization_id))}
+
+    def path(a: Article) -> str:
+        names, guard = [], 0
+        while a is not None and guard < 50:
+            names.append(a.name)
+            a, guard = items.get(a.parent_id), guard + 1
+        return " / ".join(reversed(names))
+
+    return {i: f"{a.code} {path(a)}" if a.code else path(a) for i, a in items.items()}

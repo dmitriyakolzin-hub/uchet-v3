@@ -543,6 +543,9 @@ with sync_playwright() as p:
     # у ЦФО с подчинёнными сначала свод по ветке (только просмотр); ввод — в «Свой план»
     expect(page.locator("button.tab.active", has_text="Свод по ветке")).to_be_visible()
     page.click("button.tab:has-text('Свой план')")
+    # подстатья — с кодом и путём, группы в сетке нет
+    expect(page.locator(".tabulator-row", has_text="2.6.20.1. Связь и IT / Электричество")).to_have_count(1)
+    expect(page.locator(".tabulator-row .tabulator-cell[tabulator-field=name]", has_text="Связь и IT")).to_have_count(1)
     rent = page.locator(".tabulator-row", has_text="Аренда")
     rent.locator(".tabulator-cell[tabulator-field='2027-01']").click()
     page.keyboard.type("1 500,50")

@@ -1,7 +1,7 @@
 // ДДС: остаток на начало, потоки по видам деятельности и статьям, остаток на конец; колонки по месяцам.
 import { api } from "../api.js";
 import { el, makeTable } from "../ui.js";
-import { moneyCell, openDrill } from "./common.js";
+import { moneyCell, nestRows, openDrill, TREE_OPTIONS } from "./common.js";
 
 const BOLD = new Set(["title", "section", "balance", "total"]);
 
@@ -17,10 +17,12 @@ export function columnsReport({ box, ctx, path, hint, fileName, onDetails, first
 
   const table = makeTable(tableBox, {
     index: "key",
+    ...TREE_OPTIONS,
     columns: [{ title: "Статья", field: "title" }],
     rowFormatter: (row) => {
       const r = row.getData();
       row.getElement().classList.toggle("row-total", BOLD.has(r.kind));
+      row.getElement().classList.toggle("row-group", r.kind === "item_group");
       row.getElement().classList.toggle("row-key", r.kind === "total" || r.kind === "balance");
     },
   });
@@ -34,7 +36,7 @@ export function columnsReport({ box, ctx, path, hint, fileName, onDetails, first
     }
     const money = data.money_account_ids;
     const extra = {
-      period: r.drill.period, a: r.drill.a, opening: r.drill.opening,
+      period: r.drill.period, a: r.drill.a, a_tree: r.drill.a_tree, opening: r.drill.opening,
       date_from: col.date_from, date_to: col.date_to,
       ...(money.length ? { account_id: money } : {}),
       ...(r.drill.exclude_corr ? { exclude_corr_account_id: money } : {}),
@@ -52,7 +54,7 @@ export function columnsReport({ box, ctx, path, hint, fileName, onDetails, first
       { title: firstTitle, field: "title", minWidth: 260, widthGrow: 3, headerSort: false, frozen: true,
         formatter: (c) => {
           const r = c.getRow().getData();
-          return `<span style="padding-left:${r.level * 18}px">${escape(r.title)}</span>`;
+          return `<span style="padding-left:${r._indent ?? r.level * 18}px">${escape(r.title)}</span>`;
         } },
       ...data.columns.map((c) => ({
         title: c.title, field: c.key, hozAlign: "right", minWidth: 120, headerSort: false,
@@ -62,7 +64,7 @@ export function columnsReport({ box, ctx, path, hint, fileName, onDetails, first
         },
       })),
     ]);
-    await table.setData(data.rows.map((r) => ({ ...r, ...r.values })));
+    await table.setData(nestRows(data.rows.map((r) => ({ ...r, ...r.values }))));
   }
 
   return {

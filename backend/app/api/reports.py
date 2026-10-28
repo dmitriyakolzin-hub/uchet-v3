@@ -15,10 +15,21 @@ from app.api.access import branch_ids, cfo_scope, forbid_scoped, get_organizatio
 from app.api.deps import CurrentUser, DbSession
 from app.core.analytics import ANALYTIC_TITLES, AnalyticKind
 from app.core.permissions import Perm
-from app.models import Account, Budget, BudgetVersion, Cfo, Executor, InvestmentProject, LegalEntity, Warehouse
+from app.models import (
+    Account,
+    Article,
+    Budget,
+    BudgetVersion,
+    Cfo,
+    Executor,
+    InvestmentProject,
+    LegalEntity,
+    Warehouse,
+)
 from app.models.journal import ANALYTIC_COLUMNS
 from app.services import report_xlsx as xlsx
 from app.services import reports
+from app.services.articles import subtree_ids
 from app.services.excel_import import XLSX_TYPE
 from app.services.reports import ReportFilter
 
@@ -180,6 +191,7 @@ def get_lines(
     account_id: Annotated[list[int] | None, Query()] = None,
     side: Literal["debit", "credit"] | None = None,
     a: Annotated[list[str] | None, Query(description="аналитика: kind:id или kind:none")] = None,
+    a_tree: Annotated[list[str] | None, Query(description="статья вместе с подстатьями: kind:id")] = None,
     exclude_corr_account_id: Annotated[list[int] | None, Query()] = None,
     opening: bool | None = None,
     plan_version_id: int | None = None,
@@ -198,6 +210,11 @@ def get_lines(
         if project is None or project.organization_id != f.organization_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Инвестпроект не найден")
         analytics_in = reports.project_analytics(db, project_id, project_part)
+    for kind, article_id in _analytics_param(a_tree or []).items():  # группа статей — вся её ветка
+        article = db.get(Article, article_id) if kind in ("cash_flow_item", "pl_item") and article_id else None
+        if article is None or article.organization_id != f.organization_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Статья не найдена")
+        analytics_in = {**(analytics_in or {}), kind: subtree_ids(db, article_id)}
     result = reports.drill(db, f, period, account_ids=account_id, side=side, analytics=_analytics_param(a or []),
                            exclude_corr_account_ids=exclude_corr_account_id, opening=opening,
                            analytics_in=analytics_in)
@@ -219,6 +236,7 @@ class ReportRowOut(BaseModel):
     kind: str
     values: dict[str, Decimal]
     drill: dict | None
+    parent: str | None = None
 
 
 class ColumnsReportOut(BaseModel):
