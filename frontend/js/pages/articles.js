@@ -66,13 +66,17 @@ export async function renderArticles(view) {
   searchInput.addEventListener("input", () => { search = searchInput.value.trim().toLowerCase(); show(); });
   const filterBar = el("div", { class: "tabs", role: "tablist" });
   const addButton = el("button", { type: "button", onclick: () => edit(null) }, "Добавить статью");
+  const fileInput = el("input", { type: "file", accept: ".xlsx", hidden: true, "aria-label": "Файл справочника статей" });
+  fileInput.addEventListener("change", () => fileInput.files[0] && previewImport(fileInput.files[0]));
+  const importButton = el("button", { type: "button", class: "secondary",
+    onclick: () => { fileInput.value = ""; fileInput.click(); } }, "Загрузить из Excel");
   const tableBox = el("div");
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Статьи ДДС и ОПиУ"), el("label", { class: "inline" }, "Организация ", orgSelect)),
     el("p", { class: "muted" }, "Справочник организации. Статьи вкладываются друг в друга: группа складывается из подстатей, "
       + "в операции и план ставятся только статьи без подстатей. Подстатья берёт признаки ДДС / ОПиУ у родителя. "
       + "Шаблон проводки подставляется при вводе операции, счета можно поменять."),
-    el("div", { class: "filters" }, searchInput, addButton),
+    el("div", { class: "filters" }, searchInput, addButton, importButton, fileInput),
     filterBar,
     tableBox,
   );
@@ -130,7 +134,7 @@ export async function renderArticles(view) {
   }
 
   async function load() {
-    addButton.hidden = !canEdit();
+    addButton.hidden = importButton.hidden = !canEdit();
     items = await api.get(`/api/organizations/${org.id}/articles`);
     show();
   }
@@ -194,6 +198,77 @@ export async function renderArticles(view) {
         await load();
       },
     });
+  }
+
+  // --- загрузка справочника из Excel: сначала разбор (ничего не меняет), потом загрузка проверенных строк ---
+  async function previewImport(file) {
+    let rows;
+    try {
+      rows = await api.upload(`/api/organizations/${org.id}/import/articles/preview`, file);
+    } catch (err) {
+      toast(err.message, "error");
+      return;
+    }
+    const index = articleIndex(items);
+    const matchOptions = [["", "— новая статья —"], ...[...items]
+      .sort((a, b) => index.label.get(a.id).localeCompare(index.label.get(b.id), "ru", { numeric: true }))
+      .map((a) => [String(a.id), index.label.get(a.id)])];
+    const KINDS = [["article", "статья"], ["indicator", "показатель"], ["header", "заголовок"]];
+    const select = (opts, value, label) => el("select", { "aria-label": label },
+      ...opts.map(([v, t]) => el("option", { value: v, selected: v === value }, t)));
+    const lines = rows.map((r) => ({ r, kind: select(KINDS, r.kind, `Вид строки ${r.row}`),
+      match: select(matchOptions, r.match_id ? String(r.match_id) : "", `Совместить строку ${r.row}`) }));
+    for (const line of lines) {
+      const sync = () => { line.match.disabled = line.kind.value !== "article"; };
+      line.kind.addEventListener("change", sync);
+      sync();
+    }
+    const count = (kind) => rows.filter((r) => r.kind === kind).length;
+    const errorBox = el("div", { class: "error", role: "alert" });
+    const submit = el("button", { type: "button" }, "Загрузить статьи");
+    const close = () => dialog.close();
+    const dialog = el("dialog", { class: "dialog wide" },
+      el("h2", {}, `Разбор файла: ${file.name}`),
+      el("p", { class: "muted" }, `Статей: ${count("article")}, из них совмещается с существующими: `
+        + `${rows.filter((r) => r.match_id).length}; показателей: ${count("indicator")}, заголовков: ${count("header")}. `
+        + "Показатели и заголовки не загружаются — они понадобятся для управленческого отчёта. Проверьте вид строк "
+        + "и совмещение; признаки ДДС / ОПиУ подставляются по разделу кода и наследуются подстатьями."),
+      el("div", { class: "table-scroll" }, el("table", { class: "recon article-import" },
+        el("thead", {}, el("tr", {}, ...["Стр.", "Код", "Наименование", "Вид", "Совместить с", "Признаки"].map((t) => el("th", {}, t)))),
+        el("tbody", {}, ...lines.map(({ r, kind, match }) => el("tr", { "data-code": r.code ?? "" },
+          el("td", {}, String(r.row)), el("td", {}, r.code ?? ""),
+          el("td", {}, r.parent_code ? `${"· ".repeat(r.code.split(".").length - 1)}${r.name}` : r.name,
+            r.note ? el("span", { class: "muted" }, ` (${r.note})`) : null),
+          el("td", {}, kind),
+          el("td", {}, match, r.match_reason ? el("div", { class: "muted small" }, r.match_reason) : null,
+            r.warning ? el("div", { class: "over-budget small" }, r.warning) : null),
+          el("td", { class: "muted small" }, r.flags)))))),
+      errorBox,
+      el("div", { class: "form-actions" }, el("button", { type: "button", class: "secondary", onclick: close }, "Отмена"), submit));
+    submit.addEventListener("click", async () => {
+      submit.disabled = true;
+      try {
+        const body = lines.map(({ r, kind, match }) => ({ row: r.row, code: r.code, name: r.name, note: r.note,
+          kind: kind.value, match_id: kind.value === "article" && match.value ? Number(match.value) : null }));
+        const result = await api.post(`/api/organizations/${org.id}/import/articles`, body);
+        await load();
+        if (result.errors.length) {
+          errorBox.replaceChildren(el("p", {}, `Загружено: новых ${result.created}, совмещено ${result.merged}, `
+            + `обновлено ${result.updated}. Не загружены строки:`),
+            el("ul", {}, ...result.errors.map((e) => el("li", {}, `строка ${e.row}: ${e.error}`))));
+        } else {
+          close();
+          toast(`Загружено: новых статей ${result.created}, совмещено ${result.merged}, обновлено ${result.updated}`);
+        }
+      } catch (err) {
+        errorBox.textContent = err.message;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.showModal();
   }
 
   await table.ready;

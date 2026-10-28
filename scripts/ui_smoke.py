@@ -114,6 +114,26 @@ with sync_playwright() as p:
     page.fill("input[aria-label='Поиск статьи']", "")
     page.screenshot(path=f"{OUT}/9_articles.png", full_page=True)
 
+    # загрузка справочника из Excel: разбор, совмещение «Охраны» по названию, новая группа
+    from openpyxl import Workbook
+    wb = Workbook()
+    for line in (["Наименование показателя", "Статья КБК"], ["ОПЕРАЦИОННАЯ ДЕЯТЕЛЬНОСТЬ", None],
+                 ["Прочие операционные расходы", "2.6."], ["Охрана", "2.6.22."], ["Дератизация", "2.6.21."],
+                 ["Операционная прибыль", "3.2."]):
+        wb.active.append(line)
+    articles_file = os.path.join(OUT, "articles_import.xlsx")
+    wb.save(articles_file)
+    page.set_input_files("input[aria-label='Файл справочника статей']", articles_file)
+    d = page.locator("dialog[open]")
+    expect(d.locator("tr[data-code='2.6.22']")).to_contain_text("по названию")
+    expect(d.locator("tr[data-code='3.2'] select").first).to_have_value("indicator")
+    page.screenshot(path=f"{OUT}/9b_articles_import.png")
+    d.locator("button:has-text('Загрузить статьи')").click()
+    expect(page.locator(".toast")).to_contain_text("совмещено 1")
+    page.fill("input[aria-label='Поиск статьи']", "охрана")
+    expect(page.locator(".tabulator-row", has_text="Прочие операционные расходы / Охрана")).to_contain_text("2.6.22.")
+    page.fill("input[aria-label='Поиск статьи']", "")
+
     # валюта и курс (с запятой, как привычно)
     page.click("#nav a[data-page=currencies]")
     expect(page.locator(".tabulator-row", has_text="Российский рубль")).to_be_visible()

@@ -280,3 +280,5 @@ table.calendar-grid tr.gap-row td { background: #fee4e2; color: #b42318; }
 table.calendar-grid tr.today-row td:first-child { font-weight: 600; }
 .small { font-size: 12px; }
 .gap-note { color: #b42318; font-weight: 600; }
+.table-scroll { max-height: 60vh; overflow: auto; }
+table.article-import th, table.article-import td { text-align: left; }
