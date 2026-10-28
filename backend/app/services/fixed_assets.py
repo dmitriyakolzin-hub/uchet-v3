@@ -30,11 +30,11 @@ from app.models import (
 )
 from app.schemas.journal import AnalyticsIn, OperationIn, PostingIn
 from app.services import journal
+from app.services.articles import system_article
 from app.services.journal import JournalError
 from app.services.ledger import select_lines
 
 ZERO = Decimal("0.00")
-DEPRECIATION_ARTICLE = "Амортизация основных средств"
 MONTHS_GENITIVE = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь",
                    "октябрь", "ноябрь", "декабрь"]
 MONTHS_PREPOSITIONAL = ["январе", "феврале", "марте", "апреле", "мае", "июне", "июле", "августе", "сентябре",
@@ -324,9 +324,10 @@ def dispose(db: Session, asset: FixedAsset, on_date: dt.date, kind: str, user: U
         raise AssetError(f"Сначала начислите амортизацию за {MONTHS_GENITIVE[prev_end.month - 1]} {prev_end.year}")
     if asset.cfo_id is None:
         raise AssetError("В карточке не указан ЦФО — выбытие не на что отнести")
-    articles = {a.name: a for a in db.scalars(select(Article).where(Article.name.in_((SALE_ARTICLE, WRITEOFF_ARTICLE))))}
-    if len(articles) < 2:
-        raise AssetError(f"Нет статей «{SALE_ARTICLE}» и «{WRITEOFF_ARTICLE}» — восстановите их в справочнике статей")
+    articles = {SALE_ARTICLE: system_article(db, asset.organization_id, "asset_sale"),
+                WRITEOFF_ARTICLE: system_article(db, asset.organization_id, "asset_writeoff")}
+    if None in articles.values():
+        raise AssetError("Нет системных статей продажи и списания ОС — восстановите их в справочнике статей")
 
     b = balances(db, asset.organization_id, on_date, [asset.id]).get(asset.id, Balance())
     an = AnalyticsIn(fixed_asset=asset.id)

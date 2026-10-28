@@ -32,7 +32,7 @@ def env(client, headers_for, make_user, make_org, db):
                                   "kind": "supplier", "number": "1"})
     office = post("cfos", {"name": "Офис"})
     acc = {a["code"]: a["id"] for a in client.get("/api/accounts", headers=h).json()}
-    art = {a["name"]: a["id"] for a in client.get("/api/articles", headers=h).json()}
+    art = {a["name"]: a["id"] for a in client.get(f"/api/organizations/{org.id}/articles", headers=h).json()}
     return {"o": o, "h": h, "org": org, "le": le, "cp": cp, "contract": contract, "office": office, "acc": acc,
             "art": art, "post": post, "ceo": headers_for(ceo), "head": headers_for(head), "other": headers_for(other)}
 

@@ -90,7 +90,7 @@ def env(client, headers_for, make_user, make_org, db):
     extra = client.post(f"{o}/bank-accounts", headers=h, json={
         "legal_entity_id": le.id, "bank_id": bank.id, "currency_id": rub.id, "number": OUR2, "name": "Второй"}).json()
     accounts = {a["id"]: a["code"] for a in client.get("/api/accounts", headers=h).json()}
-    articles = {a["id"]: a["name"] for a in client.get("/api/articles", headers=h).json()}
+    articles = {a["id"]: a["name"] for a in client.get(f"/api/organizations/{org.id}/articles", headers=h).json()}
     return {"org": org, "other": other, "le": le, "rub": rub, "main": main, "extra": extra, "h": h, "o": o,
             "acc": accounts, "art": articles, "headers_for": headers_for, "ceo": ceo, "other_fd": other_fd}
 

@@ -233,7 +233,7 @@ export async function renderCalendar(view) {
   function edit(r, direction) {
     const entities = ref.entities.filter((e) => e.is_active);
     const flow = direction === "out" ? "outflow" : "inflow";
-    const articles = ref.articles.filter((a) => a.is_active && a.is_cash_flow && !a.is_transfer && a.cash_flow_direction === flow);
+    const articles = ref.leafArticles.filter((a) => a.is_active && a.is_cash_flow && !a.is_transfer && a.cash_flow_direction === flow);
     const cfos = ref.cfos.filter(inBranch);
     const entityId = String(r?.legal_entity_id ?? entities[0]?.id ?? "");
     const contractOptions = (cpId, leId) => options(ref.contracts.filter((c) => String(c.counterparty_id) === cpId
@@ -247,7 +247,7 @@ export async function renderCalendar(view) {
           hint: org.restricted ? "Расчётный счёт выбирает финансовый директор" : "Можно выбрать при согласовании" },
         { name: "counterparty_id", label: "Контрагент", type: "select", options: options(ref.counterparties, (c) => c.name) },
         { name: "contract_id", label: "Договор", type: "select", options: contractOptions(String(r?.counterparty_id ?? ""), entityId) },
-        { name: "article_id", label: "Статья ДДС", type: "select", options: options(articles, (a) => a.name) },
+        { name: "article_id", label: "Статья ДДС", type: "select", options: options(articles, (a) => ref.articleLabel.get(a.id)) },
         { name: "cfo_id", label: "ЦФО", type: "select", options: options(cfos, (c) => ref.cfoLabel.get(c.id)),
           required: Boolean(org.restricted) },
         { name: "executor_id", label: "ЦФУ", type: "select", options: options(ref.executors, (e) => ref.executorLabel.get(e.id)) },

@@ -35,7 +35,7 @@ def env(client, headers_for, make_user, make_org, db):
     db.commit()
     h = headers_for(fd)
     o = f"/api/organizations/{org.id}"
-    art = {a["name"]: a["id"] for a in client.get("/api/articles", headers=h).json()}
+    art = {a["name"]: a["id"] for a in client.get(f"/api/organizations/{org.id}/articles", headers=h).json()}
     shop = client.post(f"{o}/cfos", headers=h, json={"name": "Магазин"}).json()
     sales = art["Оплата труда — коммерческий персонал"]
 

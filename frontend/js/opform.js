@@ -58,7 +58,8 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
   const dateInput = el("input", { type: "date", name: "op_date", required: true });
   dateInput.value = op?.op_date ?? (isOpening ? org.opening_balance_date : ref.today);
   const articleSelect = select(
-    [["", "— без статьи —"], ...ref.articles.filter((a) => a.is_active || a.id === op?.article_id).map((a) => [String(a.id), a.name])],
+    [["", "— без статьи —"], ...ref.leafArticles.filter((a) => a.is_active || a.id === op?.article_id)
+      .map((a) => [String(a.id), ref.articleLabel.get(a.id)])],
     op?.article_id ?? preset?.article_id ?? "",
     { name: "article_id" },
   );
@@ -98,9 +99,9 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
         return ref.executors.map((e) => [String(e.id), ref.executorLabel.get(e.id)])
           .sort((a, b) => a[1].localeCompare(b[1]));
       case "cash_flow_item":
-        return active(ref.articles, null).filter((a) => a.is_cash_flow).map((a) => [String(a.id), a.name]);
+        return active(ref.leafArticles, null).filter((a) => a.is_cash_flow).map((a) => [String(a.id), ref.articleLabel.get(a.id)]);
       case "pl_item":
-        return active(ref.articles, null).filter((a) => a.is_pl).map((a) => [String(a.id), a.name]);
+        return active(ref.leafArticles, null).filter((a) => a.is_pl).map((a) => [String(a.id), ref.articleLabel.get(a.id)]);
       default:
         return [];
     }

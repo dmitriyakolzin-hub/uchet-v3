@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Article, Cfo, Employee, EmployeeSalary, LegalEntity
 from app.services.excel_import import (
+    ArticleLookup,
     Column,
     RowError,
     RowProblem,
@@ -22,6 +23,8 @@ from app.services.excel_import import (
     _sheet_with_header,
     _text,
     _to_bytes,
+    article_label,
+    leaf_articles,
 )
 from app.services.payroll import salary_on
 
@@ -66,7 +69,8 @@ def employees_xlsx(db: Session, organization_id: int, with_rows: bool = True) ->
     if with_rows:
         entities = {e.id: e for e in db.scalars(select(LegalEntity).where(LegalEntity.organization_id == organization_id))}
         labels = _cfo_labels(db, organization_id)
-        articles = {a.id: a.name for a in db.scalars(select(Article).where(Article.is_pl))}
+        articles = {a.id: article_label(a) for a in db.scalars(select(Article).where(
+            Article.organization_id == organization_id, Article.is_pl))}
         today = dt.date.today()
         # строки — по номеру: шаблон заранее размечает текстовые колонки, append ушёл бы ниже разметки
         employees = db.scalars(select(Employee).where(Employee.organization_id == organization_id)
@@ -99,7 +103,7 @@ class _Importer:
         self.cfo_by_name: dict[str, list[int]] = {}
         for cfo_id, label in labels.items():
             self.cfo_by_name.setdefault(label.split(" / ")[-1].lower(), []).append(cfo_id)
-        self.articles = {a.name.strip().lower(): a for a in db.scalars(select(Article).where(Article.is_pl))}
+        self.articles = ArticleLookup(leaf_articles(db, organization_id, is_pl=True))
 
     def find(self, tab: str, internal: str, name: str) -> Employee | None:
         by_tab = [e for e in self.employees if tab and e.personnel_number == tab]
@@ -135,10 +139,7 @@ class _Importer:
         return cfo_id
 
     def article(self, value) -> int:
-        article = self.articles.get(_text(value).lower())
-        if article is None:
-            raise RowProblem(f"Статья затрат «{_text(value)}» не найдена среди статей ОПиУ")
-        return article.id
+        return self.articles.find(_text(value), "Статья затрат").id
 
 
 def import_employees(db: Session, organization_id: int, raw: bytes) -> EmployeesResult:

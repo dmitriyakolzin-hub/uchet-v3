@@ -67,7 +67,7 @@ export async function renderFixedAssets(view) {
   }
 
   function editAsset(asset) {
-    const plItems = ref.articles.filter((a) => a.is_pl && a.debit_account_id && (a.is_active || a.id === asset?.pl_item_id));
+    const plItems = ref.leafArticles.filter((a) => a.is_pl && a.debit_account_id && (a.is_active || a.id === asset?.pl_item_id));
     const fields = [
       { name: "name", label: "Наименование", required: true, placeholder: "Ноутбук бухгалтера" },
       { name: "inventory_number", label: "Инвентарный номер" },
@@ -85,7 +85,7 @@ export async function renderFixedAssets(view) {
         hint: "Вложения в это ОС (Дт 08) попадут в отчёт «Инвестиции» по проекту" },
       ...(asset ? [{ name: "is_active", label: "Действует (снимите — в архив, амортизация не начисляется)", type: "checkbox" }] : []),
     ];
-    const defaultItem = plItems.find((a) => a.name === "Амортизация основных средств");
+    const defaultItem = ref.articleByKey.get("depreciation");
     openForm({
       title: asset ? `Основное средство: ${asset.name}` : "Новое основное средство",
       fields,

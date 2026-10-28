@@ -32,15 +32,15 @@ from app.services.bank_statement import Document, Statement, parse
 from app.services.journal import JournalError
 from app.services.money import bank_balance
 
-# Статьи стартового набора, которые подбираются по правилам
-TRANSFER = "Перевод между своими счетами"
-COMMISSION = "Банковские комиссии"
-TAX = "Уплата прочих налогов"
-SALARY = "Выплата заработной платы"
-LOAN_IN = "Получение кредитов и займов"
-LOAN_OUT = "Погашение кредитов и займов"
-DEFAULT_IN = "Поступление от покупателей"
-DEFAULT_OUT = "Оплата поставщикам"
+# Системные статьи организации, которые подбираются по правилам (app/core/standard_articles.py)
+TRANSFER = "transfer"
+COMMISSION = "commission"
+TAX = "tax_other"
+SALARY = "salary_payment"
+LOAN_IN = "loan_in"
+LOAN_OUT = "loan_out"
+DEFAULT_IN = "default_in"
+DEFAULT_OUT = "default_out"
 
 
 @dataclass
@@ -92,7 +92,8 @@ class _Importer:
         self.banks = {
             b.number: b for b in db.scalars(select(BankAccount).where(BankAccount.organization_id == organization_id))
         }
-        self.articles = {a.name: a for a in db.scalars(select(Article).where(Article.is_active))}
+        self.articles = {a.system_key: a for a in db.scalars(select(Article).where(
+            Article.organization_id == organization_id, Article.is_active, Article.system_key.is_not(None)))}
         self.accounts = {a.code: a for a in db.scalars(select(Account))}
         self.accounts_by_id = {a.id: a for a in self.accounts.values()}
         self.currencies = {c.id: c for c in db.scalars(select(Currency))}
@@ -132,7 +133,8 @@ class _Importer:
             .join(Operation, Operation.article_id == Article.id)
             .join(Posting, Posting.operation_id == Operation.id)
             .where(Operation.organization_id == self.org_id, posting_has_cp, Operation.status != "cancelled",
-                   Article.is_cash_flow, Article.cash_flow_direction == direction, ~Article.is_transfer)
+                   Article.is_cash_flow, Article.cash_flow_direction == direction, ~Article.is_transfer,
+                   Article.is_active, Article.id.not_in(select(Article.parent_id).where(Article.parent_id.is_not(None))))
             .order_by(Operation.op_date.desc(), Operation.id.desc())
             .limit(1)
         )

@@ -46,7 +46,7 @@ def env(client, headers_for, make_user, make_org, db):
     db.query(Membership).filter(Membership.role == "cfo_head").update({"cfo_id": company["id"]})
     db.commit()
     accounts = {a["code"]: a["id"] for a in client.get("/api/accounts", headers=h).json()}
-    articles = {a["name"]: a["id"] for a in client.get("/api/articles", headers=h).json()}
+    articles = {a["name"]: a["id"] for a in client.get(f"/api/organizations/{org.id}/articles", headers=h).json()}
     return {
         "org": org, "other": other, "le": le, "le2": le2, "rub": rub, "cp": cp, "cp2": cp2,
         "contract": contract, "contract_le2": contract_le2, "bank_acc": bank_acc, "cfo": company,

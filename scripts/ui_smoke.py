@@ -101,6 +101,17 @@ with sync_playwright() as p:
     d.locator("button[type=submit]").click()
     page.click("button.tab:has-text('ДДС')")
     expect(page.locator(".tabulator-row", has_text="Охрана")).to_contain_text("Дт 60.01 — Кт 51")
+    # подстатья: наследует признаки родителя, видна в дереве и в поиске
+    page.click("button.tab:has-text('Все')")
+    page.locator(".tabulator-row", has_text="Связь и IT").locator(".tabulator-cell[tabulator-field=_add]").click()
+    d = dialog_fill(page, {"code": "2.6.20.1.", "name": "Электричество"})
+    d.locator("button[type=submit]").click()
+    group = page.locator(".tabulator-row", has_text="Связь и IT")
+    group.locator(".tabulator-data-tree-control").click()
+    expect(page.locator(".tabulator-row", has_text="Электричество")).to_contain_text("Управленческие расходы")
+    page.fill("input[aria-label='Поиск статьи']", "электр")
+    expect(page.locator(".tabulator-row", has_text="Связь и IT / Электричество")).to_be_visible()
+    page.fill("input[aria-label='Поиск статьи']", "")
     page.screenshot(path=f"{OUT}/9_articles.png", full_page=True)
 
     # валюта и курс (с запятой, как привычно)

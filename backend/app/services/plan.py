@@ -34,6 +34,7 @@ from app.models.journal import ANALYTIC_COLUMNS, analytic_column
 from app.schemas.journal import AnalyticsIn, OperationIn, PostingIn
 from app.services import journal
 from app.services import report_xlsx as xlsx
+from app.services.articles import system_article
 from app.services.excel_import import Column, RowError, RowProblem, _decimal, _read_rows, _text
 
 MONTH_TITLES = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь",
@@ -47,7 +48,6 @@ CF_GROUPS = {("operating", "inflow"): "Операционная: поступл�
              ("financing", "inflow"): "Финансовая: поступления", ("financing", "outflow"): "Финансовая: выплаты"}
 
 
-PAYMENT_ARTICLE = "Покупка основных средств"  # плановая оплата вложений — по статье фактических оплат
 PROJECT_STATUSES = {"planned": "план", "active": "в работе", "done": "завершён"}
 
 
@@ -66,9 +66,11 @@ def month_key(year: int, month: int) -> str:
     return f"{year}-{month:02d}"
 
 
-def plan_articles(db: Session, kind: str) -> list[tuple[Article, str]]:
-    """Статьи сетки (с шаблоном проводки) и их группа, в порядке отчёта."""
-    query = select(Article).where(Article.is_active, Article.debit_account_id.is_not(None))
+def plan_articles(db: Session, organization_id: int, kind: str) -> list[tuple[Article, str]]:
+    """Статьи сетки (без подстатей, с шаблоном проводки) и их группа, в порядке отчёта."""
+    query = select(Article).where(Article.organization_id == organization_id, Article.is_active,
+                                  Article.debit_account_id.is_not(None),
+                                  Article.id.not_in(select(Article.parent_id).where(Article.parent_id.is_not(None))))
     if kind == "inv":
         # статьи вложений: ДДС «инвестиционная, выплаты» с шаблоном Дт 08
         investment = select(Account.id).where(Account.code.like("08%"))
@@ -152,9 +154,9 @@ def rebuild_payments(db: Session, version: BudgetVersion, project: InvestmentPro
         totals[day] = totals.get(day, Decimal("0.00")) + sum((p.amount or Decimal(0) for p in op.postings), Decimal(0))
     if not totals:
         return
-    article = db.scalar(select(Article).where(Article.name == PAYMENT_ARTICLE))
+    article = system_article(db, project.organization_id, "asset_purchase")
     if article is None or article.debit_account_id is None:
-        raise PlanError(f"Нет статьи ДДС «{PAYMENT_ARTICLE}» с шаблоном — восстановите её в справочнике статей")
+        raise PlanError("Нет системной статьи покупки ОС с шаблоном — восстановите её в справочнике статей")
     entity_id = _legal_entity(db, project.organization_id, db.get(Cfo, project.cfo_id))
     for day, amount in sorted(totals.items()):
         op = Operation(organization_id=project.organization_id, number=0, status="plan", created_by=user.id,
@@ -206,7 +208,7 @@ def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None
             raise PlanError("ЦФУ не найден в этой организации")
         if kind == "cf":
             raise PlanError("ЦФУ не указывается в плане ДДС")
-    allowed = {a.id: a for a, _ in plan_articles(db, kind)}
+    allowed = {a.id: a for a, _ in plan_articles(db, budget.organization_id, kind)}
     entity_id = None
     changed = 0
     for cell in cells:
@@ -266,7 +268,7 @@ def grid(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None) -> 
         values.setdefault((op.article_id, op.plan_executor_id), {})[month_key(op.op_date.year, op.op_date.month)] = amount
     labels = executor_labels(db, budget.organization_id) if any(e for _, e in values) else {}
     rows = []
-    for a, group in plan_articles(db, kind):
+    for a, group in plan_articles(db, budget.organization_id, kind):
         rows.append({"article_id": a.id, "executor_id": None, "executor_name": "", "name": a.name, "group": group,
                      "values": values.get((a.id, None), {})})
         for (article_id, executor_id), v in sorted(values.items(), key=lambda kv: labels.get(kv[0][1] or 0, "").lower()):
@@ -288,7 +290,7 @@ def investment_grid(db: Session, version: BudgetVersion) -> dict:
         InvestmentProject.organization_id == budget.organization_id,
         (InvestmentProject.is_active & (InvestmentProject.status != "done")) | InvestmentProject.id.in_(planned or {0}),
     ).order_by(InvestmentProject.name))
-    articles = plan_articles(db, "inv")
+    articles = plan_articles(db, budget.organization_id, "inv")
     rows = []
     for project in projects:
         limit = f"{project.limit_amount:,.2f}".replace(",", " ").replace(".", ",")
@@ -323,7 +325,7 @@ def executor_grid(db: Session, version: BudgetVersion, executor_id: int, branch:
         "rows": [{"article_id": a.id, "name": a.name, "group": group, "values": totals.get(a.id, {}),
                   "parts": [{"cfo_id": c, "name": labels.get(c, "?"), "values": v}
                             for c, v in sorted(parts.get(a.id, {}).items(), key=lambda kv: labels.get(kv[0], "").lower())]}
-                 for a, group in plan_articles(db, "pl")],
+                 for a, group in plan_articles(db, budget.organization_id, "pl")],
     }
 
 
@@ -363,7 +365,7 @@ def branch_grid(db: Session, version: BudgetVersion, kind: str, cfo_id: int) -> 
         "rows": [{"article_id": a.id, "name": a.name, "group": group, "values": totals.get(a.id, {}),
                   "parts": [{"cfo_id": b, "name": title(b), "values": v}
                             for b, v in sorted(parts.get(a.id, {}).items(), key=lambda kv: order(kv[0]))]}
-                 for a, group in plan_articles(db, kind)],
+                 for a, group in plan_articles(db, budget.organization_id, kind)],
     }
 
 
@@ -445,7 +447,7 @@ def import_plan(db: Session, version: BudgetVersion, kind: str, raw: bytes, user
     by_name: dict[str, list[int]] = {}
     for cfo_id, label in labels.items():
         by_name.setdefault(label.split(" / ")[-1].lower(), []).append(cfo_id)
-    articles = {a.name.lower(): a for a, _ in plan_articles(db, kind)}
+    articles = {a.name.lower(): a for a, _ in plan_articles(db, budget.organization_id, kind)}
     executors = executor_labels(db, budget.organization_id)
     executor_by_label = {v.lower(): k for k, v in executors.items()}
     result = PlanImportResult(rows=len(rows))

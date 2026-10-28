@@ -20,6 +20,7 @@ from app.models import (
     PaymentRequest,
 )
 from app.services import reports
+from app.services.articles import is_group
 from app.services.ledger import select_lines
 
 
@@ -74,8 +75,11 @@ def validate(db: Session, req: PaymentRequest, branch: set[int] | None) -> None:
     if req.article_id is not None:
         article = db.get(Article, req.article_id)
         direction = "outflow" if req.direction == "out" else "inflow"
-        if article is None or not article.is_cash_flow or article.is_transfer or article.cash_flow_direction != direction:
+        if article is None or article.organization_id != org or not article.is_cash_flow or article.is_transfer \
+                or article.cash_flow_direction != direction:
             raise RequestError("Статья должна быть статьёй ДДС " + ("выплат" if req.direction == "out" else "поступлений"))
+        if is_group(db, article.id):
+            raise RequestError(f"«{article.name}» — группа статей, выберите подстатью")
     if branch is not None and req.cfo_id not in branch:
         raise RequestError("Укажите ЦФО своей ветки")
 

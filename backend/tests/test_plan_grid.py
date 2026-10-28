@@ -31,7 +31,7 @@ def env(client, headers_for, make_user, make_org, db, admin):  # noqa: F811
     client.put(f"/api/users/{head.id}/memberships", headers=headers_for(admin), json={
         "memberships": [{"organization_id": org.id, "role": "cfo_head", "cfo_id": trade["id"]}]})
     budget = post("budgets", {"kind": "year", "year": 2027})
-    art = {a["name"]: a["id"] for a in client.get("/api/articles", headers=h).json()}
+    art = {a["name"]: a["id"] for a in client.get(f"/api/organizations/{org.id}/articles", headers=h).json()}
     acc = {a["id"]: a["code"] for a in client.get("/api/accounts", headers=h).json()}
     return {"org": org, "le": le, "o": o, "h": h, "ceo": headers_for(ceo), "head": headers_for(head),
             "company": company, "trade": trade, "shop": shop, "logistics": logistics, "budget": budget,
