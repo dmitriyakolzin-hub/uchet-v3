@@ -20,6 +20,7 @@ from app.models.reference import (
     Unit,
     Warehouse,
 )
+from app.models.report_form import ReportFormRow
 from app.models.user import User
 
 __all__ = [
@@ -54,6 +55,7 @@ __all__ = [
     "PayrollLine",
     "PayrollRun",
     "Posting",
+    "ReportFormRow",
     "ResultClosing",
     "RoutineRule",
     "RoutineRun",

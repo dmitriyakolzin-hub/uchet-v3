@@ -4,6 +4,7 @@ import { balanceReport } from "../reports/balance.js";
 import { ddsReport } from "../reports/dds.js";
 import { debtsReport } from "../reports/debts.js";
 import { investmentsReport } from "../reports/investments.js";
+import { managementReport } from "../reports/management.js";
 import { osvReport } from "../reports/osv.js";
 import { planFactReport } from "../reports/planfact.js";
 import { plReport } from "../reports/pl.js";
@@ -26,6 +27,7 @@ const REPORTS = {
   osv: { title: "ОСВ", make: osvReport },
   dds: { title: "ДДС", make: ddsReport },
   pl: { title: "ОПиУ", make: plReport },
+  management: { title: "Управленческий", make: managementReport },
   balance: { title: "Баланс", make: balanceReport },
   debts: { title: "Дебиторка и кредиторка", make: debtsReport },
   stock: { title: "Склад", make: stockReport },
