@@ -1,7 +1,10 @@
 """Статьи ДДС и ОПиУ организации деревом (docs/TZ.md, раздел 8 и раздел 19, «Детали 9.1»).
 Смотрят все с доступом к организации, правят финансовый директор и администратор (право «справочники»)."""
 
+from typing import Annotated
+
 from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel, StringConstraints
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -9,9 +12,10 @@ from sqlalchemy.orm import Session
 from app.api.access import get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import Account, Article, User
+from app.models import Account, Article, ReportFormRow, User
 from app.schemas.article import ArticleIn, ArticleOut
 from app.services import articles as tree
+from app.services.management_report import FormulaError, parse_formula
 
 router = APIRouter(prefix="/api", tags=["Статьи"])
 
@@ -110,3 +114,43 @@ def create_article(organization_id: int, body: ArticleIn, user: CurrentUser, db:
 def update_article(article_id: int, body: ArticleIn, user: CurrentUser, db: DbSession):
     article = _article(db, user, article_id, Perm.EDIT_REFERENCE)
     return _save(db, article, body, creating=False)
+
+
+# --- Форма управленческого отчёта: формула и знак строки (docs/TZ.md, раздел 19, «Детали 9.4») ---
+
+
+class FormRowIn(BaseModel):
+    formula: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] = ""
+    invert: bool = False
+
+
+class FormRowOut(BaseModel):
+    id: int
+    code: str | None
+    name: str
+    kind: str
+    formula: str
+    invert: bool
+
+
+@router.put("/report-form-rows/{row_id}", response_model=FormRowOut)
+def update_form_row(row_id: int, body: FormRowIn, user: CurrentUser, db: DbSession):
+    row = db.get(ReportFormRow, row_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Строка формы не найдена")
+    try:
+        get_organization_for(db, user, row.organization_id, Perm.EDIT_REFERENCE)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_404_NOT_FOUND:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Строка формы не найдена") from None
+        raise
+    if body.formula:
+        if row.kind != "indicator":
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Формула бывает только у показателя")
+        try:
+            parse_formula(body.formula)
+        except FormulaError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"Формула: {exc}") from None
+    row.formula, row.invert = body.formula, body.invert
+    db.commit()
+    return FormRowOut(id=row.id, code=row.code, name=row.name, kind=row.kind, formula=row.formula, invert=row.invert)

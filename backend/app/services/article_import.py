@@ -10,11 +10,11 @@ import zipfile
 from dataclasses import dataclass, field
 
 from openpyxl import load_workbook
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Account, Article, Posting
+from app.models import Account, Article, Posting, ReportFormRow
 from app.services import articles as tree
 from app.services.excel_import import _text
 
@@ -71,6 +71,22 @@ SYNONYMS = {
     "поступление": "получение кредитов и займов",
     "погашение": "погашение кредитов и займов",
 }
+
+
+# Стартовые формулы показателей (решения владельца, docs/TZ.md, раздел 19) и строки с обратным знаком
+DEFAULT_FORMULAS = {
+    "1.0": "1.1 - 1.2",
+    "2.0": "2.2 + 2.3 + 2.4 + 2.5 + 2.6 + 2.7 + 2.8",
+    "3.1": "1.0 - 2.1",
+    "3.2": "3.1 - 2.0",
+    "3.3": "3.2 + 1.3",
+    "3.4": "3.3 - 2.12",
+    "4.1.1": "3.4",
+    "4.1": "4.1.1",
+    "3.5": "4.1 - 4.2",
+    "3.6": "3.5 - 4.3",
+}
+DEFAULT_INVERT = {"1.2"}
 
 
 class ArticleImportError(Exception):
@@ -338,5 +354,24 @@ def apply(db: Session, organization_id: int, rows: list[Row]) -> ApplyResult:
             result.errors.append((r.row, str(exc)))
         except IntegrityError:
             result.errors.append((r.row, "статья с таким кодом или таким названием в этой группе уже есть"))
+    save_form(db, organization_id, rows, created)
     return result
+
+
+def save_form(db: Session, organization_id: int, rows: list[Row], created: dict[str, Article]) -> None:
+    """Форма управленческого отчёта — все строки файла по порядку; исправленные формулы и знак сохраняются."""
+    old = {r.code: r for r in db.scalars(select(ReportFormRow).where(ReportFormRow.organization_id == organization_id))
+           if r.code}
+    db.execute(delete(ReportFormRow).where(ReportFormRow.organization_id == organization_id))
+    for position, r in enumerate(rows, start=1):
+        kept = old.get(r.code)
+        article = created.get(r.code) if r.kind == "article" else None
+        db.add(ReportFormRow(
+            organization_id=organization_id, position=position, code=r.code, name=r.name, kind=r.kind,
+            article_id=article.id if article else None, note=r.note,
+            formula=kept.formula if kept and kept.kind == r.kind else
+            (DEFAULT_FORMULAS.get(r.code, "") if r.kind == "indicator" else ""),
+            invert=kept.invert if kept else r.code in DEFAULT_INVERT,
+        ))
+    db.flush()
 

@@ -28,7 +28,7 @@ from app.models import (
 )
 from app.models.journal import ANALYTIC_COLUMNS
 from app.services import report_xlsx as xlsx
-from app.services import reports
+from app.services import management_report, reports
 from app.services.articles import subtree_ids
 from app.services.excel_import import XLSX_TYPE
 from app.services.reports import ReportFilter
@@ -603,3 +603,75 @@ def get_plan_fact_xlsx(f: Filter, db: DbSession, kind: Literal["pl", "cf"] = "pl
     title = "План/факт: " + ("ОПиУ" if kind == "pl" else "ДДС")
     content = xlsx.build(title, _subtitle(db, f), columns, rows)
     return _xlsx(content, f"plan_fact_{kind}_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
+
+
+# --- Управленческий отчёт по форме организации (docs/TZ.md, раздел 19, «Детали 9.4») ---
+
+
+class ManagementRowOut(BaseModel):
+    key: str
+    id: int
+    code: str | None
+    title: str
+    kind: str
+    level: int
+    parent: str | None
+    note: str
+    formula: str
+    invert: bool
+    error: str
+    values: dict[str, dict[str, Decimal | None]]
+    drill: dict | None
+
+
+class ManagementOut(BaseModel):
+    form_loaded: bool
+    mode: str
+    columns: list[ColumnOut]
+    rows: list[ManagementRowOut]
+
+
+def _management(db: Session, f: ReportFilter, mode: str, version_id: int | None) -> ManagementOut:
+    if version_id is not None:
+        _check_version(db, f.organization_id, version_id)
+    plan_pl, plan_cf = management_report.plan_filters(db, f, version_id) if mode != "fact" else (None, None)
+    columns, results = management_report.build(db, f, plan_pl, plan_cf)
+    rows = []
+    for r in results:
+        values = {}
+        for c in columns:
+            fact, plan = r.fact[c.key], r.plan[c.key]
+            values[c.key] = {"fact": fact if mode != "plan" else None, "plan": plan if mode != "fact" else None,
+                             "dev": fact - plan if mode == "plan_fact" else None}
+        rows.append(ManagementRowOut(
+            key=f"row:{r.row.id}", id=r.row.id, code=r.row.code, title=r.row.name, kind=r.row.kind, level=r.level,
+            parent=r.parent, note=r.row.note, formula=r.row.formula, invert=r.row.invert, error=r.error,
+            values=values if r.row.kind != "header" else {}, drill=r.drill,
+        ))
+    return ManagementOut(form_loaded=bool(results), mode=mode, columns=[c.__dict__ for c in columns], rows=rows)
+
+
+@router.get("/management", response_model=ManagementOut)
+def get_management(f: Filter, db: DbSession, mode: Literal["fact", "plan", "plan_fact"] = "fact",
+                   version_id: int | None = None):
+    return _management(db, f, mode, version_id)
+
+
+@router.get("/management.xlsx")
+def get_management_xlsx(f: Filter, db: DbSession, mode: Literal["fact", "plan", "plan_fact"] = "fact",
+                        version_id: int | None = None):
+    data = _management(db, f, mode, version_id)
+    parts = {"fact": [("fact", "факт")], "plan": [("plan", "план")],
+             "plan_fact": [("plan", "план"), ("fact", "факт"), ("dev", "отклонение")]}[mode]
+    columns = [xlsx.XlsxColumn("Код", 12), xlsx.XlsxColumn("Строка", 50)]
+    for c in data.columns:
+        columns += [xlsx.XlsxColumn(f"{c.title}: {title}" if mode == "plan_fact" else c.title, 15, True)
+                    for _, title in parts]
+    rows = []
+    for r in data.rows:
+        values = [r.code, r.title]
+        for c in data.columns:
+            values += [r.values.get(c.key, {}).get(part) for part, _ in parts]
+        rows.append((r.level, values, r.kind != "article"))
+    content = xlsx.build("Управленческий отчёт", _subtitle(db, f), columns, rows)
+    return _xlsx(content, f"management_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
