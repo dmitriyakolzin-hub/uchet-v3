@@ -45,6 +45,7 @@ class OperationIn(BaseModel):
     article_id: int | None = None
     description: Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)] = ""
     postings: list[PostingIn] = Field(default_factory=list, max_length=100)
+    payout_sheet_id: int | None = None  # выплата по ведомости; не передано — не меняется
 
 
 class PostingOut(BaseModel):
@@ -73,6 +74,8 @@ class OperationOut(BaseModel):
     status: Literal["draft", "posted", "cancelled"]
     total_rub: Decimal
     postings: list[PostingOut]
+    payout_sheet_id: int | None = None
+    payout_sheet_number: int | None = None
     created_by: int
     created_at: dt.datetime
     updated_by: int | None

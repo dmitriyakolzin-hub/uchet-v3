@@ -285,3 +285,4 @@ table.article-import th, table.article-import td { text-align: left; }
 .tabulator .tabulator-row.row-group { font-weight: 600; }
 .bulk-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
 .bulk-row select, .bulk-row input { max-width: 320px; }
+.row-actions { display: flex; gap: 20px; flex-wrap: wrap; }

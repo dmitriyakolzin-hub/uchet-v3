@@ -398,3 +398,75 @@ def test_payout_sheets(client, bank_env):
     assert len(calendar_expected(client, env, **feb)["rows"]) == 1
     client.post(f"/api/payout-sheets/{adv['id']}/pay", headers=env["h"], json={"paid_on": "2026-02-15"})
     assert calendar_expected(client, env, **feb)["rows"] == []
+
+
+def test_operation_filled_by_sheet(client, bank_env):
+    """Шаг 11.2: один платёж — одна ведомость — много сотрудников (docs/TZ.md, раздел 21)."""
+    env = bank_env
+    h = env["h"]
+    adv = sheet(client, env, "advance", advance_percent="40")  # черновик: Андреев 40 000, Борисов 24 000
+    # назначение без слов о зарплате — выписка ведомость не узнаёт, платёж грузится черновиком
+    raw = statement(OUR, [("502", "16.02.2026", "64000", us(), BANK, "Перевод на карты сотрудников")],
+                    opening="100000", date_from="01.02.2026", date_to="28.02.2026")
+    result = client.post(f"{env['o']}/bank-statements", headers={**h, "Content-Type": "application/octet-stream"},
+                         content=raw).json()
+    assert result["confirmed_sheets"] == [] and len(result["created"]) == 1
+    op = next(o for o in client.get(f"{env['o']}/operations", headers=h).json()["items"]
+              if o["number"] == result["created"][0])
+
+    def body(amounts, sheet_id=adv["id"], **extra):
+        return {"legal_entity_id": env["le"].id, "op_date": op["op_date"], "article_id": op["article_id"],
+                "description": op["description"], "payout_sheet_id": sheet_id, **extra,
+                "postings": [{"debit_account_id": env["acc"]["70"], "credit_account_id": env["acc"]["51"],
+                              "amount": amount, "debit": {"employee": emp["id"]},
+                              "credit": {"bank_account": env["bank_acc"]["id"], "cash_flow_item": env["art"][
+                                  "Выплата заработной платы"]}}
+                             for emp, amount in amounts]}
+
+    url = f"/api/operations/{op['id']}"
+    # сумма по сотруднику не совпадает — черновик сохраняется, провести нельзя
+    resp = client.put(url + "?post=true", headers=h, json=body([(env["a"], "40000"), (env["b"], "20000")]))
+    assert resp.status_code == 422
+    assert "Борисов Б.: в ведомости 24 000,00, в операции 20 000,00" in resp.text, resp.text
+    assert "итого 64 000,00, в операции по счёту 70 — 60 000,00" in resp.text
+    # ведомость другого юрлица к операции не привязать
+    resp = client.post(f"{env['o']}/operations", headers=h, json={
+        "legal_entity_id": env["le2"].id, "op_date": "2026-02-16", "payout_sheet_id": adv["id"], "postings": []})
+    assert resp.status_code == 422 and "другого юрлица" in resp.text
+
+    resp = client.put(url + "?post=true", headers=h, json=body([(env["a"], "40000"), (env["b"], "24000")]))
+    assert resp.status_code == 200, resp.text
+    assert (resp.json()["payout_sheet_id"], resp.json()["payout_sheet_number"]) == (adv["id"], adv["number"])
+    paid = client.get(f"/api/payout-sheets/{adv['id']}", headers=h).json()
+    assert (paid["status"], paid["operation_id"], paid["paid_on"], paid["confirmed_by_statement"]) == (
+        "paid", op["id"], "2026-02-16", True)  # операция из выписки — оплата подтверждена банком
+
+    # вторая операция по той же ведомости не проводится
+    resp = client.post(f"{env['o']}/operations?post=true", headers=h,
+                       json=body([(env["a"], "40000"), (env["b"], "24000")], op_date="2026-02-17"))
+    assert resp.status_code == 422 and f"уже оплачена операцией № {op['number']}" in resp.text
+
+    # возврат в черновик снимает отметку; сохранение без поля ведомости ссылку не теряет
+    assert client.post(f"{url}/unpost", headers=h).status_code == 200
+    assert client.get(f"/api/payout-sheets/{adv['id']}", headers=h).json()["status"] == "sent"
+    resave = body([(env["a"], "40000"), (env["b"], "24000")])
+    del resave["payout_sheet_id"]
+    assert client.put(url, headers=h, json=resave).json()["payout_sheet_id"] == adv["id"]
+    assert client.post(f"{url}/post", headers=h).status_code == 200
+    assert client.get(f"/api/payout-sheets/{adv['id']}", headers=h).json()["status"] == "paid"
+    assert client.post(f"{url}/cancel", headers=h).status_code == 200
+    assert client.get(f"/api/payout-sheets/{adv['id']}", headers=h).json()["status"] == "sent"
+
+
+def test_draft_sheet_matched_by_statement(client, bank_env):
+    """Выписка находит и ведомость-черновик (не отправленную в банк)."""
+    env = bank_env
+    adv = sheet(client, env, "advance", advance_percent="40")
+    raw = statement(OUR, [("503", "16.02.2026", "64000", us(), BANK, "Аванс за февраль по реестру")],
+                    opening="100000", date_from="01.02.2026", date_to="28.02.2026")
+    result = client.post(f"{env['o']}/bank-statements", headers={**env["h"], "Content-Type": "application/octet-stream"},
+                         content=raw).json()
+    assert result["confirmed_sheets"] == [adv["number"]]
+    paid = client.get(f"/api/payout-sheets/{adv['id']}", headers=env["h"]).json()
+    op = client.get(f"/api/operations/{paid['operation_id']}", headers=env["h"]).json()
+    assert paid["status"] == "paid" and op["payout_sheet_id"] == adv["id"] and len(op["postings"]) == 2

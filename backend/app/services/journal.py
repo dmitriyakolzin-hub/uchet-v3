@@ -29,6 +29,8 @@ from app.models import (
     Operation,
     OperationEvent,
     Organization,
+    PayoutLine,
+    PayoutSheet,
     Posting,
     User,
     Warehouse,
@@ -114,6 +116,14 @@ def save_draft(db: Session, op: Operation, body: OperationIn, user: User) -> Non
         op.op_date = opening_date
     op.article_id = body.article_id
     op.description = body.description
+    if "payout_sheet_id" in body.model_fields_set:  # не передано — ссылка на ведомость не меняется
+        if body.payout_sheet_id is not None:
+            sheet = db.get(PayoutSheet, body.payout_sheet_id)
+            if sheet is None or sheet.organization_id != op.organization_id:
+                raise JournalError("Ведомость не найдена в этой организации")
+            if sheet.legal_entity_id != body.legal_entity_id:
+                raise JournalError(f"Ведомость № {sheet.number} другого юрлица")
+        op.payout_sheet_id = body.payout_sheet_id
     if op.id is not None:
         op.updated_by = user.id
         op.updated_at = _now()
@@ -218,7 +228,57 @@ def posting_errors(db: Session, op: Operation) -> list[str]:
             errors.append(f"{where}: на количественном счёте нужно указать количество")
         if not quantitative and p.quantity is not None:
             errors.append(f"{where}: количество указывается только на количественных счетах (10, 41, 43)")
+    if op.payout_sheet_id is not None:
+        errors.extend(_sheet_errors(db, op))
     return errors
+
+
+def _ru(value: Decimal) -> str:
+    return f"{value:,.2f}".replace(",", " ").replace(".", ",")
+
+
+def _sheet_errors(db: Session, op: Operation) -> list[str]:
+    """Выплата по ведомости: суммы Дт 70 по сотрудникам — те же, что в ведомости; ведомость ещё не оплачена другой операцией."""
+    sheet = db.get(PayoutSheet, op.payout_sheet_id)
+    where = f"Ведомость № {sheet.number}"
+    if sheet.status == "paid" and sheet.operation_id not in (None, op.id):
+        other = db.get(Operation, sheet.operation_id)
+        return [f"{where} уже оплачена операцией № {other.number if other else sheet.operation_id}"]
+    expected: dict[int, Decimal] = {}
+    for line in db.scalars(select(PayoutLine).where(PayoutLine.sheet_id == sheet.id)):
+        expected[line.employee_id] = expected.get(line.employee_id, Decimal(0)) + line.amount
+    salary = db.scalar(select(Account.id).where(Account.code == "70"))
+    actual: dict[int | None, Decimal] = {}
+    for p in op.postings:
+        if p.debit_account_id == salary and p.amount is not None:
+            actual[p.dt_employee_id] = actual.get(p.dt_employee_id, Decimal(0)) + p.amount
+    if actual == expected:
+        return []
+    errors = []
+    total_expected, total_actual = sum(expected.values(), Decimal(0)), sum(actual.values(), Decimal(0))
+    if total_expected != total_actual:
+        errors.append(f"{where}: итого {_ru(total_expected)}, в операции по счёту 70 — {_ru(total_actual)}")
+    names = dict(db.execute(select(Employee.id, Employee.full_name).where(
+        Employee.id.in_([k for k in {*expected, *actual} if k is not None]))).all())
+    diffs = [k for k in sorted({*expected, *actual}, key=lambda k: names.get(k, "")) if expected.get(k) != actual.get(k)]
+    for k in diffs[:5]:
+        errors.append(f"{where}, {names.get(k, 'без сотрудника')}: в ведомости {_ru(expected.get(k, Decimal(0)))}, "
+                      f"в операции {_ru(actual.get(k, Decimal(0)))}")
+    if len(diffs) > 5:
+        errors.append(f"{where}: расхождений ещё {len(diffs) - 5}")
+    return errors
+
+
+def _mark_sheet(db: Session, op: Operation, paid: bool) -> None:
+    """Проведение отмечает ведомость оплаченной; возврат в черновик и аннулирование — снимают отметку."""
+    sheet = db.get(PayoutSheet, op.payout_sheet_id) if op.payout_sheet_id else None
+    if sheet is None:
+        return
+    if paid:
+        sheet.status, sheet.operation_id, sheet.paid_on = "paid", op.id, op.op_date
+        sheet.confirmed_by_statement = op.import_key is not None  # операция из банковской выписки
+    elif sheet.operation_id == op.id:
+        sheet.status, sheet.operation_id, sheet.paid_on, sheet.confirmed_by_statement = "sent", None, None, False
 
 
 def _entity_errors(db: Session, op: Operation, p: Posting, side: str, where: str) -> list[str]:
@@ -248,6 +308,7 @@ def post(db: Session, op: Operation, user: User) -> None:
     if errors:
         raise JournalError("; ".join(errors))
     op.status, op.posted_by, op.posted_at = "posted", user.id, _now()
+    _mark_sheet(db, op, paid=True)
     _event(db, op, user, "posted")
 
 
@@ -268,6 +329,7 @@ def unpost(db: Session, op: Operation, user: User) -> None:
     if op.status != "posted":
         raise JournalError("Вернуть в черновик можно только проведённую операцию")
     op.status, op.posted_by, op.posted_at = "draft", None, None
+    _mark_sheet(db, op, paid=False)
     _event(db, op, user, "unposted")
 
 
@@ -275,6 +337,7 @@ def cancel(db: Session, op: Operation, user: User) -> None:
     if op.status == "cancelled":
         raise JournalError("Операция уже аннулирована")
     op.status, op.posted_by, op.posted_at = "cancelled", None, None
+    _mark_sheet(db, op, paid=False)
     _event(db, op, user, "cancelled")
 
 

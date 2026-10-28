@@ -704,6 +704,21 @@ with sync_playwright() as p:
     expect(page.locator("text=Статус: отправлена в банк")).to_be_visible()
     page.click("text=← К списку")
 
+    # шаг 11.2: операция заполняется по ведомости (здесь не сохраняем — проведение проверяют тесты API)
+    page.click("#nav a[data-page=journal]")
+    page.click("text=Новая операция")
+    d = page.locator("dialog[open]")
+    d.locator("button:has-text('Заполнить по ведомости')").click()
+    sheet_dialog = page.locator("dialog[open]", has_text="Заполнить по ведомости").last
+    expect(sheet_dialog.locator("select[aria-label='Ведомость'] option:checked")).to_contain_text("87 000,00")
+    sheet_dialog.locator("button:has-text('Заполнить')").click()
+    expect(d.locator(".posting")).to_have_count(1)
+    expect(d.locator("[aria-label='Сотрудник (дебет)'] option:checked")).to_have_text("Иванов Иван")
+    expect(d.locator("[name=amount]")).to_have_value("87 000,00")
+    expect(d.locator(".sheet-link")).to_contain_text("Выплата по ведомости №")
+    expect(d.locator("[name=article_id] option:checked")).to_contain_text("Выплата заработной платы")
+    d.locator("button:has-text('Отмена')").click()
+
     # основные средства: карточка, поступление на 08 в журнале, ввод в эксплуатацию, амортизация
     page.click("#nav a[data-page=fixedassets]")
     page.click("text=Новое основное средство")

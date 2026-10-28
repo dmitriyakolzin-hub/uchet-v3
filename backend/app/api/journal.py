@@ -10,12 +10,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import Operation, OperationEvent, User
+from app.models import Operation, OperationEvent, PayoutSheet, User
 from app.models.journal import ANALYTIC_COLUMNS, analytic_column
 from app.schemas.journal import (
     BulkEditIn,
@@ -62,7 +62,9 @@ def operation_out(op: Operation) -> OperationOut:
         number=op.number, op_date=op.op_date, is_opening=op.is_opening,
         article_id=op.article_id, description=op.description,
         status=op.status, total_rub=sum((p.amount_rub or Decimal(0) for p in op.postings), Decimal(0)),
-        postings=postings, created_by=op.created_by, created_at=op.created_at,
+        postings=postings, payout_sheet_id=op.payout_sheet_id,
+        payout_sheet_number=object_session(op).get(PayoutSheet, op.payout_sheet_id).number if op.payout_sheet_id else None,
+        created_by=op.created_by, created_at=op.created_at,
         updated_by=op.updated_by, updated_at=op.updated_at, posted_by=op.posted_by, posted_at=op.posted_at,
     )
 
