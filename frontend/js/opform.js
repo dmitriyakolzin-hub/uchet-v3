@@ -20,6 +20,7 @@ const STATUS_TITLES = { draft: "Черновик", posted: "Проведена",
 const ACTION_TITLES = {
   created: "создал(а)", updated: "изменил(а)", posted: "провёл(а)",
   unposted: "вернул(а) в черновик", cancelled: "аннулировал(а)", restored: "восстановил(а)",
+  bulk_edited: "изменил(а) массово",
 };
 
 function select(options, value, attrs = {}) {
@@ -320,7 +321,8 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
     const events = await api.get(`/api/operations/${op.id}/history`);
     historyBox.replaceChildren(
       el("h3", {}, "История"),
-      el("ul", {}, ...events.map((e) => el("li", {}, `${new Date(e.at).toLocaleString("ru-RU")} — ${e.user_name} ${ACTION_TITLES[e.action] ?? e.action}`))),
+      el("ul", {}, ...events.map((e) => el("li", {}, `${new Date(e.at).toLocaleString("ru-RU")} — ${e.user_name} ${ACTION_TITLES[e.action] ?? e.action}`,
+        e.details ? el("div", { class: "muted small" }, e.details) : null))),
     );
   }
 

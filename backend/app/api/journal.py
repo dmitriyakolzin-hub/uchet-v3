@@ -18,6 +18,9 @@ from app.core.permissions import Perm
 from app.models import Operation, OperationEvent, User
 from app.models.journal import ANALYTIC_COLUMNS, analytic_column
 from app.schemas.journal import (
+    BulkEditIn,
+    BulkEditOut,
+    BulkEditResult,
     BulkIn,
     BulkOut,
     BulkResult,
@@ -27,6 +30,7 @@ from app.schemas.journal import (
     OperationOut,
     PostingOut,
 )
+from app.services import bulk_edit as bulk_edit_service
 from app.services import journal
 from app.services.journal import JournalError
 from app.services.ledger import select_lines
@@ -207,7 +211,7 @@ def operation_history(operation_id: int, user: CurrentUser, db: DbSession) -> li
         .order_by(OperationEvent.at, OperationEvent.id)
     )
     return [
-        EventOut(action=e.action, at=e.at, user_id=u.id, user_name=u.full_name or u.login)
+        EventOut(action=e.action, at=e.at, user_id=u.id, user_name=u.full_name or u.login, details=e.details)
         for e, u in rows
     ]
 
@@ -340,3 +344,62 @@ def bulk_action(organization_id: int, body: BulkIn, user: CurrentUser, db: DbSes
     db.commit()
     done = sum(r.ok for r in results)
     return BulkOut(done=done, failed=len(results) - done, results=results)
+
+
+# --- Массовое изменение: замены полей во всех выбранных операциях ---
+
+
+@router.post("/organizations/{organization_id}/operations/bulk-edit", response_model=BulkEditOut)
+def bulk_edit(organization_id: int, body: BulkEditIn, user: CurrentUser, db: DbSession) -> BulkEditOut:
+    get_organization_for(db, user, organization_id, Perm.DRAFT)
+    perms = org_permissions(db, user, organization_id)
+    branch = _branch(db, user, organization_id)
+    changes = []
+    for c in body.changes:
+        new, old = c.new, c.old
+        if c.field == "op_date":
+            try:
+                new = dt.date.fromisoformat(str(new))
+            except ValueError:
+                raise _unprocessable("Новая дата — в виде ГГГГ-ММ-ДД") from None
+        elif c.field != "description":
+            if not isinstance(new, int) or (old is not None and not isinstance(old, int)):
+                raise _unprocessable("Укажите значение из справочника")
+        changes.append(bulk_edit_service.Change(field=c.field, new=new, side=c.side, old=old, mode=c.mode))
+
+    ops, missing = [], []
+    for operation_id in dict.fromkeys(body.ids):
+        op = db.get(Operation, operation_id)
+        if (op is None or op.organization_id != organization_id or op.budget_version_id is not None
+                or (branch is not None and not _operation_cfos(op) & branch)):
+            missing.append(operation_id)
+        else:
+            ops.append(op)
+
+    def can_change_draft(op: Operation) -> None:
+        if Perm.POST not in perms and op.created_by != user.id:
+            raise JournalError("Можно изменять только свои черновики")
+
+    def branch_check(op: Operation) -> None:
+        try:
+            _check_branch(_operation_cfos(op), branch)
+        except HTTPException as exc:
+            raise JournalError(exc.detail) from None
+
+    try:
+        results = bulk_edit_service.run(db, user, organization_id, ops, changes, can_post=Perm.POST in perms,
+                                        can_change_draft=can_change_draft, branch_check=branch_check,
+                                        dry_run=body.dry_run)
+    except JournalError as exc:
+        db.rollback()
+        raise _unprocessable(str(exc)) from None
+    if body.dry_run:
+        db.rollback()
+    else:
+        db.commit()
+    out = [BulkEditResult(id=r.id, number=r.number, ok=r.ok, changed=r.changed, error=r.error, details=r.details)
+           for r in results]
+    out += [BulkEditResult(id=i, number=None, ok=False, changed=False, error="Операция не найдена") for i in missing]
+    return BulkEditOut(dry_run=body.dry_run, changed=sum(r.changed for r in out),
+                       unchanged=sum(r.ok and not r.changed for r in out), failed=sum(not r.ok for r in out),
+                       results=out)

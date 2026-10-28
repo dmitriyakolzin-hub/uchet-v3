@@ -91,6 +91,7 @@ class EventOut(BaseModel):
     at: dt.datetime
     user_id: int
     user_name: str
+    details: str = ""  # что изменилось (массовое изменение)
 
 
 BulkAction = Literal["post", "unpost", "cancel", "restore", "delete"]
@@ -111,3 +112,41 @@ class BulkOut(BaseModel):
     done: int
     failed: int
     results: list[BulkResult]
+
+
+# --- Массовое изменение (docs/TZ.md, раздел 20, «Детали 10.1») ---
+
+BulkField = Literal["article", "description", "op_date", "account", "bank_account", "counterparty", "contract",
+                    "employee", "nomenclature", "warehouse", "fixed_asset", "cfo", "executor", "cash_flow_item",
+                    "pl_item"]
+
+
+class BulkChangeIn(BaseModel):
+    field: BulkField
+    new: int | str | None = None  # id записи, текст описания или дата «ГГГГ-ММ-ДД»
+    side: Literal["debit", "credit", "both"] = "both"
+    old: int | str | None = None  # менять только там, где сейчас это значение
+    mode: Literal["replace", "append", "substitute"] = "replace"
+
+
+class BulkEditIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=1000)
+    changes: list[BulkChangeIn] = Field(min_length=1, max_length=20)
+    dry_run: bool = False  # только посчитать, что изменится
+
+
+class BulkEditResult(BaseModel):
+    id: int
+    number: int | None
+    ok: bool
+    changed: bool
+    error: str = ""
+    details: list[str] = []
+
+
+class BulkEditOut(BaseModel):
+    dry_run: bool
+    changed: int
+    unchanged: int
+    failed: int
+    results: list[BulkEditResult]

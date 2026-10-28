@@ -1,6 +1,7 @@
 // «Журнал операций»: фильтры, таблица операций, массовые действия, форма операции.
 import { api } from "../api.js";
 import { articleIndex } from "../articles.js";
+import { openBulkEdit } from "../bulkedit.js";
 import { date, isoDate, money, monthBounds, sumMoney } from "../format.js";
 import { openOperation } from "../opform.js";
 import { el, makeTable, toast } from "../ui.js";
@@ -150,6 +151,7 @@ export async function renderJournal(view) {
     bulkBar.replaceChildren(
       el("span", {}, `Отмечено: ${selected.length}`),
       ...allowed.map((b) => el("button", { type: "button", class: "secondary", onclick: () => runBulk(b, selected) }, b.label)),
+      el("button", { type: "button", onclick: () => openBulkEdit({ ref, org, ops: selected, onDone: load }) }, "Изменить выбранные"),
     );
   }
 
