@@ -1,8 +1,9 @@
 // План/факт: ОПиУ или ДДС; по месяцам план, факт, отклонение; в итоге — % выполнения.
 import { api } from "../api.js";
 import { money } from "../format.js";
-import { el, makeTable } from "../ui.js";
-import { nestRows, openDrill, TREE_OPTIONS } from "./common.js";
+import { el, makeTable, toast } from "../ui.js";
+import { openPlanCells } from "../plancells.js";
+import { nestRows, openDrill, planArticle, TREE_OPTIONS } from "./common.js";
 
 const BOLD = new Set(["title", "section", "total"]);
 
@@ -62,22 +63,35 @@ export function planFactReport({ box, ctx }) {
     const [colKey, part] = cell.getField().split("|");
     const r = cell.getRow().getData();
     const col = data?.columns.find((c) => c.key === colKey);
-    if (!col || !r.drill || !["plan", "fact"].includes(part) || Number(cellValue(r, colKey, part) ?? 0) === 0) return;
-    const planVersion = part === "plan"
-      ? (col.version_id ?? (versionId ? Number(versionId) : null))
-      : null;
-    if (part === "plan" && !planVersion) return; // итог по разным версиям — расшифровка по месяцам
+    if (!col || !r.drill || !["plan", "fact"].includes(part)) return;
+    if (part === "plan") {
+      // план — окно плановых операций (просмотр, правка, добавление); у итога — если версия у всех месяцев одна
+      const articleId = planArticle(r.drill);
+      const monthCols = colKey === "total" ? data.columns.filter((c) => c.key !== "total") : [col];
+      const versions = new Set(monthCols.map((c) => (versionId ? Number(versionId) : c.version_id)).filter(Boolean));
+      if (!articleId) return;
+      if (versions.size !== 1) {
+        toast(versions.size ? "Месяцы взяты из разных бюджетов — щёлкните по плану нужного месяца" : "Нет плана на этот период");
+        return;
+      }
+      openPlanCells({
+        org: ctx.org(), ref: ctx.ref(), versionId: [...versions][0], kind, articleId, scope: ctx.filters.scope(),
+        months: monthCols.filter((c) => versionId || c.version_id).map((c) => c.key),
+        title: `${r.title}, ${col.key === "total" ? "весь период" : col.title.toLowerCase()}`, onChanged: () => load(),
+      });
+      return;
+    }
+    if (Number(cellValue(r, colKey, part) ?? 0) === 0) return;
     const m = data.money_account_ids;
     openDrill({
       org: ctx.org(), ref: ctx.ref(), filters: ctx.filters, onChanged: () => ctx.reload(),
-      title: `${r.title}, ${col.title.toLowerCase()}, ${part === "plan" ? "план" : "факт"}`,
+      title: `${r.title}, ${col.title.toLowerCase()}, факт`,
       extra: {
         period: r.drill.period, a: r.drill.a, a_tree: r.drill.a_tree, opening: r.drill.opening,
         date_from: col.date_from, date_to: col.date_to,
         ...(m.length ? { account_id: m } : {}),
         ...(r.drill.exclude_corr ? { exclude_corr_account_id: m } : {}),
         ...(r.drill.exclude_corr_ids?.length ? { exclude_corr_account_id: r.drill.exclude_corr_ids } : {}),
-        ...(planVersion ? { plan_version_id: planVersion } : {}),
       },
     });
   });
@@ -87,14 +101,16 @@ export function planFactReport({ box, ctx }) {
     data = await api.get(`/api/organizations/${ctx.org().id}/reports/plan-fact?${params}`);
     const noPlan = data.columns.filter((c) => c.key !== "total" && !c.version_id).map((c) => c.title.toLowerCase());
     hint.textContent = "План и факт считаются одинаково: факт — проведённые операции, план — плановые операции бюджета. "
-      + "Отклонение = факт − план; расходы — со знаком минус. Щёлкните по сумме плана или факта — откроются операции."
+      + "Отклонение = факт − план; расходы — со знаком минус. Щёлкните по сумме факта — откроются операции, "
+      + "по плану (или «·») — плановые операции: их можно поправить и добавить."
       + (noPlan.length ? ` Нет утверждённого плана: ${noPlan.join(", ")}.` : "");
     const money0 = (c) => {
       const v = c.getValue();
       const r = c.getRow().getData();
       const [, part] = c.getField().split("|");
       const text = v === null || v === undefined || Number(v) === 0 ? "" : money(v);
-      return text && r.drill && ["plan", "fact"].includes(part) ? `<span class="drill">${text}</span>` : text;
+      if (part === "plan" && r.drill && planArticle(r.drill)) return `<span class="drill">${text || "·"}</span>`;
+      return text && r.drill && part === "fact" ? `<span class="drill">${text}</span>` : text;
     };
     const sub = (c, part, title) => ({
       title, field: `${c.key}|${part}`, hozAlign: "right", minWidth: 100, headerSort: false, formatter: money0,

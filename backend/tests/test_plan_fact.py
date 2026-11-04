@@ -112,3 +112,37 @@ def test_plan_fact_access_and_excel(client, env, make_org, headers_for, make_use
     resp = client.get(f"/api/organizations/{foreign.id}/reports/plan-fact", headers=headers_for(other),
                       params={**PERIOD, "version_id": env["version"]["id"]})
     assert resp.status_code == 404
+
+
+def cells(client, env, version, h=None, **params):
+    return client.get(f"/api/budget-versions/{version['id']}/cells", headers=h or env["h"],
+                      params={"kind": "pl", "article_id": env["art"]["Аренда"], "month": ["2027-01", "2027-02"], **params})
+
+
+def test_plan_cells_window(client, env):
+    """Шаг 12.1: окно «Плановые операции» из отчёта — те же суммы, правка в черновике (docs/TZ.md, раздел 22)."""
+    year = env["version"]
+    data = cells(client, env, year).json()
+    assert (data["months"], data["total"], data["editable"]) == ([1, 2], "2000.00", False)  # версия утверждена
+    assert [(c["cfo_id"], c["month"], c["amount"]) for c in data["cells"]] == [
+        (env["shop"]["id"], 1, "1000.00"), (env["shop"]["id"], 2, "1000.00")]
+    assert [a["id"] for a in data["articles"]] == [env["art"]["Аренда"]]
+    # итог окна = цифра плана в отчёте за выбранную версию
+    row = report(client, env, version_id=year["id"])["by_key"][f"art:{env['art']['Аренда']}"]
+    assert row["values"]["total"]["plan"] == "-" + data["total"]
+    # фильтры отчёта: ЦФО вне ветки — пусто; месяцы вне бюджета игнорируются
+    other = client.post(f"{env['o']}/cfos", headers=env["h"], json={"name": "Другая компания"}).json()
+    assert cells(client, env, year, cfo_id=other["id"]).json()["cells"] == []
+    assert cells(client, env, year, month=["2026-12"]).json()["months"] == []
+
+    # новая версия-черновик: окно можно править через ту же запись ячеек
+    draft = client.post(f"/api/budgets/{year['budget_id']}/versions", headers=env["h"],
+                        json={"name": "Пересмотр", "copy_from_id": year["id"]}).json()
+    data = cells(client, env, draft).json()
+    assert data["editable"] is True and data["total"] == "2000.00", data
+    put(client, env, [{"article_id": env["art"]["Аренда"], "month": 2, "amount": "1500"}], cfo="shop", version=draft)
+    assert cells(client, env, draft).json()["total"] == "2500.00"
+    # CEO смотрит, но не правит; статья не этой организации — не найдено
+    ceo = cells(client, env, draft, h=env["ceo"]).json()
+    assert ceo["editable"] is False and ceo["total"] == "2500.00"
+    assert cells(client, env, draft, article_id=10**9).status_code == 404

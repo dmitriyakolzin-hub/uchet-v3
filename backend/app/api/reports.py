@@ -629,6 +629,8 @@ class ManagementOut(BaseModel):
     mode: str
     columns: list[ColumnOut]
     rows: list[ManagementRowOut]
+    # версия плана по месяцам («YYYY-MM» → id) — для окна плановых операций: ОПиУ и ДДС — свои версии
+    plan_versions: dict[str, dict[str, int]] = {}
 
 
 def _management(db: Session, f: ReportFilter, mode: str, version_id: int | None) -> ManagementOut:
@@ -648,7 +650,9 @@ def _management(db: Session, f: ReportFilter, mode: str, version_id: int | None)
             parent=r.parent, note=r.row.note, formula=r.row.formula, invert=r.row.invert, error=r.error,
             values=values if r.row.kind != "header" else {}, drill=r.drill,
         ))
-    return ManagementOut(form_loaded=bool(results), mode=mode, columns=[c.__dict__ for c in columns], rows=rows)
+    versions = {kind: dict(pf.plan_versions) for kind, pf in (("pl", plan_pl), ("cf", plan_cf)) if pf is not None}
+    return ManagementOut(form_loaded=bool(results), mode=mode, columns=[c.__dict__ for c in columns], rows=rows,
+                         plan_versions=versions)
 
 
 @router.get("/management", response_model=ManagementOut)
