@@ -619,3 +619,12 @@
   ячейки не трогаются; `today` — параметр для тестов), API `POST /budget-versions/{id}/retrospective`
   (kind, cfo_id, branch, base 1/3/6/12). Интерфейс: кнопка «По среднему» в сетке плана. Тестов 371, ui_smoke дополнен.
   Дальше: шаг 12.5 — утверждение по ЦФО и правка после утверждения (админ и фин. директор, история).
+- 2026-11-04 — 12.4 влита (PR 55). Шаг 12.5 (ветка `etap-12-5-cfo-approval`), «Детали 12.5». Миграция 0037:
+  `plan_changes` (история правок плана после утверждения). `app/services/plan_access.py`: `locked_cfo_ids` (утверждённые
+  ЦФО с ветками), `Guard` (`guard(cfo_id)`: архив — нельзя; закрыто — только право проводить, возвращает True = писать
+  историю; иначе — право черновиков). `plan.set_cells(..., guard=)` пишет `PlanChange`; guard прокинут в `import_plan`,
+  `plan_methods.distribute/retrospective`. API: `_guard`, `GridOut.locked`, в окне плановых операций — `editable`
+  у ячейки и `locked_cfo_ids`, `CfoStatusOut.approved_*`/`locked`, `POST .../cfo-statuses/{cfo}/approve|unapprove`
+  (право проводить), `GET /budget-versions/{id}/changes`. Интерфейс: в сетке — «Утвердить ЦФО» / «Снять утверждение»,
+  бейдж «Утверждён», «История изменений»; колонка «Утверждение» в «Кто сдал план». Тестов 372, ui_smoke дополнен.
+  Этап 12 готов.

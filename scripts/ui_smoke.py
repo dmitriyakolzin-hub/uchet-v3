@@ -657,6 +657,22 @@ with sync_playwright() as p:
     rent = page.locator(".tabulator-row", has_text="Аренда").first
     expect(rent.locator(".tabulator-cell[tabulator-field='2027-01']")).to_have_text("1 500,50")
     expect(rent.locator(".tabulator-cell[tabulator-field='2027-02']")).to_have_text("1 500,50")  # среднее — по плану января
+    # шаг 12.5: утвердить ЦФО — правка администратора попадает в историю; затем снять утверждение
+    page.locator(".submit-box button", has_text="Утвердить ЦФО с подчинёнными").click()
+    expect(page.locator(".submit-box .badge.approved")).to_contain_text("Утверждён")
+    expect(page.locator("p.muted", has_text="каждое изменение записывается")).to_be_visible()
+    rent = page.locator(".tabulator-row", has_text="Аренда").first
+    rent.locator(".tabulator-cell[tabulator-field='2027-02']").click()
+    page.keyboard.type("2 000")
+    page.keyboard.press("Enter")
+    expect(rent.locator(".tabulator-cell[tabulator-field='2027-02']")).to_have_text("2 000,00")
+    page.click("button:has-text('История изменений')")
+    d = page.locator("dialog[open]", has_text="История изменений плана")
+    expect(d.locator("tbody tr").first).to_contain_text("1 500,50")
+    expect(d.locator("tbody tr").first).to_contain_text("2 000,00")
+    d.locator("button", has_text="Закрыть").click()
+    page.locator(".submit-box button", has_text="Снять утверждение").click()
+    expect(page.locator(".submit-box .badge.approved")).to_have_count(0)
     page.screenshot(path=f"{OUT}/28_plan_grid.png", full_page=True)
     # план инвестиций
     page.click("button.tab:has-text('План инвестиций')")
@@ -692,12 +708,12 @@ with sync_playwright() as p:
     page.locator("input[aria-label='По дату']").dispatch_event("change")
     rent = page.locator(".tabulator-row", has_text="Аренда")
     expect(rent).to_contain_text("-1 500,50")
-    # шаг 12.1: план открывает окно плановых операций (версия утверждена — только просмотр)
+    # шаг 12.1: план открывает окно плановых операций; версия утверждена — администратор правит с историей (12.5)
     rent.locator(".tabulator-cell[tabulator-field='2027-01|plan'] .drill").click()
     d = page.locator("dialog[open]", has_text="Плановые операции")
-    expect(d).to_contain_text("Итого 1 500,50 — только просмотр")
+    expect(d).to_contain_text("Итого 1 500,50. Правки утверждённого плана записываются в историю.")
     expect(d.locator("table.plan-cells tbody tr")).to_have_count(1)
-    expect(d.locator("input[aria-label='Сумма плана']")).to_be_disabled()
+    expect(d.locator("input[aria-label='Сумма плана']")).to_be_enabled()
     page.screenshot(path=f"{OUT}/29_plan_fact.png", full_page=True)
     d.locator("button", has_text="Закрыть").click()
     rent.locator(".tabulator-cell[tabulator-field='2027-01|fact']").click()  # факт — ноль, расшифровки нет

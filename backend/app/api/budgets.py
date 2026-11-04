@@ -24,10 +24,12 @@ from app.models import (
     Executor,
     LegalEntity,
     Operation,
+    PlanChange,
     Posting,
     User,
 )
-from app.services import plan, plan_methods
+from app.services import plan, plan_access, plan_methods
+from app.services.articles import labels as article_labels
 from app.services.articles import subtree_ids
 from app.services.journal import JournalError
 
@@ -258,6 +260,7 @@ class GridOut(BaseModel):
     mode: str  # own — план ЦФО (ввод); branch — свод с подчинёнными; executor — план ЦФУ по всем ЦФО (просмотр)
     has_children: bool
     editable: bool
+    locked: bool = False  # ЦФО (или версия) утверждён: правка — только администратор и фин. директор, с историей
     months: list[dict]
     rows: list[dict]
 
@@ -267,6 +270,13 @@ def _check_plan_cfo(db: Session, user: User, organization_id: int, cfo_id: int |
     scope = cfo_scope(db, user, organization_id)
     if scope is not None and (cfo_id is None or cfo_id not in branch_ids(db, scope)):
         raise _not_found("ЦФО")
+
+
+def _guard(db: Session, user: User, version: BudgetVersion) -> plan_access.Guard:
+    """Права на правку плана версии (docs/TZ.md, раздел 22, «Детали 12.5»): после утверждения ЦФО или версии —
+    только право проводить (администратор, финансовый директор), с историей."""
+    perms = org_permissions(db, user, db.get(Budget, version.budget_id).organization_id)
+    return plan_access.Guard(db, version, supervisor=Perm.POST in perms, can_draft=Perm.DRAFT in perms)
 
 
 @router.get("/budget-versions/{version_id}/grid", response_model=GridOut)
@@ -284,20 +294,22 @@ def get_grid(version_id: int, user: CurrentUser, db: DbSession, kind: PlanKind =
         return GridOut(version=_version_out(version), budget_title=budget.title, kind="pl", cfo_id=None,
                        executor_id=executor.id, mode="executor", has_children=False, editable=False, **data)
     _check_plan_cfo(db, user, budget.organization_id, cfo_id)
-    editable = version.status == "draft" and Perm.DRAFT in org_permissions(db, user, budget.organization_id)
+    guard = _guard(db, user, version)
     if kind == "inv":
         return GridOut(version=_version_out(version), budget_title=budget.title, kind=kind, cfo_id=None,
-                       mode="own", has_children=False, editable=editable, **plan.investment_grid(db, version))
+                       mode="own", has_children=False, editable=guard.can_edit(None),
+                       **plan.investment_grid(db, version))
     branch = mode == "branch" and kind == "pl" and cfo_id is not None
     if cfo_id is not None:
         cfo = db.get(Cfo, cfo_id)
         if cfo is None or cfo.organization_id != budget.organization_id:
             raise _not_found("ЦФО")
     data = plan.branch_grid(db, version, kind, cfo_id) if branch else plan.grid(db, version, kind, cfo_id)
-    editable = version.status == "draft" and Perm.DRAFT in org_permissions(db, user, budget.organization_id)
+    editable = guard.can_edit(cfo_id if kind == "pl" else None)
     return GridOut(version=_version_out(version), budget_title=budget.title, kind=kind, cfo_id=cfo_id,
                    mode="branch" if branch else "own", has_children=plan.has_children(db, cfo_id),
-                   editable=editable and not branch and (kind == "cf" or cfo_id is not None), **data)
+                   editable=editable and not branch and (kind == "cf" or cfo_id is not None),
+                   locked=guard.is_locked(cfo_id if kind == "pl" else None), **data)
 
 
 @router.get("/budget-versions/{version_id}/branch.xlsx")
@@ -323,7 +335,7 @@ def put_cells(version_id: int, body: CellsIn, user: CurrentUser, db: DbSession) 
     try:
         changed = plan.set_cells(db, version, body.kind, body.cfo_id,
                                  [plan.Cell(c.article_id, c.month, c.amount) for c in body.cells], user,
-                                 body.executor_id, body.project_id)
+                                 body.executor_id, body.project_id, guard=_guard(db, user, version))
     except (plan.PlanError, JournalError) as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
@@ -339,6 +351,7 @@ class PlanCellOut(BaseModel):
     article_id: int
     month: int
     amount: Decimal
+    editable: bool = False  # этот пользователь может менять ячейку (ЦФО не утверждён или он — администратор / фин. директор)
 
 
 class PlanCellsOut(BaseModel):
@@ -350,6 +363,8 @@ class PlanCellsOut(BaseModel):
     articles: list[dict]  # статьи плана из ветки запрошенной статьи: {id, label}
     cells: list[PlanCellOut]
     total: Decimal
+    locked_cfo_ids: list[int] = []  # ЦФО, которые этому пользователю менять нельзя (утверждены)
+    audited: bool = False  # правки записываются в историю (версия утверждена)
 
 
 @router.get("/budget-versions/{version_id}/cells", response_model=PlanCellsOut)
@@ -381,10 +396,16 @@ def get_cells(version_id: int, user: CurrentUser, db: DbSession, kind: PlanKind,
     articles = [a for a, _ in plan.plan_articles(db, org_id, kind) if a.id in tree]
     cells = plan.cell_list(db, version, kind, [a.id for a in articles] or [article.id], months, cfo_ids=cfo_ids,
                            executor_ids=executor_ids, legal_entity_id=legal_entity_id)
-    editable = version.status == "draft" and Perm.DRAFT in org_permissions(db, user, org_id)
+    guard = _guard(db, user, version)
+    editable = kind != "inv" and version.status != "archived" and (
+        guard.supervisor or (guard.can_draft and version.status == "draft"))
+    for c in cells:
+        c["editable"] = editable and not c["project_id"] and guard.can_edit(c["cfo_id"])
     return PlanCellsOut(version=_version_out(version), budget_title=budget.title, year=budget.year, months=months,
-                        editable=editable and kind != "inv", articles=[{"id": a.id, "label": a.display_name} for a in articles],
-                        cells=cells, total=sum((c["amount"] for c in cells), Decimal("0.00")))
+                        editable=editable, articles=[{"id": a.id, "label": a.display_name} for a in articles],
+                        cells=cells, total=sum((c["amount"] for c in cells), Decimal("0.00")),
+                        locked_cfo_ids=[] if guard.supervisor else sorted(guard.locked),
+                        audited=version.status == "approved")
 
 
 # --- Снизу вверх: «план сдан» по ЦФО (docs/TZ.md, раздел 22, «Детали 12.2») ---
@@ -400,6 +421,9 @@ class CfoStatusOut(BaseModel):
     submitted_at: dt.datetime | None
     submitted_by: str | None
     changed_after: bool  # план менялся после отметки «сдан»
+    approved_at: dt.datetime | None = None  # утверждён сам ЦФО (12.5)
+    approved_by: str | None = None
+    locked: bool = False  # утверждён он или вышестоящий ЦФО — руководители ЦФО план не меняют
 
 
 def _status_row(db: Session, version_id: int, cfo_id: int) -> BudgetCfoStatus | None:
@@ -425,7 +449,8 @@ def _cfo_statuses(db: Session, user: User, version: BudgetVersion) -> list[CfoSt
     statuses = {s.cfo_id: s for s in db.scalars(select(BudgetCfoStatus).where(BudgetCfoStatus.version_id == version.id))}
     names = {uid: full_name or login for uid, full_name, login in db.execute(
         select(User.id, User.full_name, User.login).where(
-            User.id.in_([s.submitted_by for s in statuses.values() if s.submitted_by])))}
+            User.id.in_([u for s in statuses.values() for u in (s.submitted_by, s.approved_by) if u])))}
+    locked = plan_access.locked_cfo_ids(db, version)
     result = []
     for c in cfos:
         st = statuses.get(c.id)
@@ -434,7 +459,9 @@ def _cfo_statuses(db: Session, user: User, version: BudgetVersion) -> list[CfoSt
             cfo_id=c.id, parent_id=c.parent_id, level=c.level, name=c.name, is_leaf=c.id not in parents,
             plan_total=Decimal(totals.get(c.id, 0)) + Decimal("0.00"), submitted_at=submitted,
             submitted_by=names.get(st.submitted_by) if st and st.submitted_by else None,
-            changed_after=bool(submitted and changed.get(c.id) and changed[c.id] > submitted)))
+            changed_after=bool(submitted and changed.get(c.id) and changed[c.id] > submitted),
+            approved_at=st.approved_at if st else None,
+            approved_by=names.get(st.approved_by) if st and st.approved_by else None, locked=c.id in locked))
     return result
 
 
@@ -454,6 +481,8 @@ def _cfo_for_status(db: Session, user: User, version_id: int, cfo_id: int) -> tu
     if version.status != "draft":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
                             detail="Отмечать сдачу плана можно только в черновике версии")
+    if cfo.id in plan_access.locked_cfo_ids(db, version):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="План ЦФО уже утверждён")
     return version, cfo
 
 
@@ -477,6 +506,72 @@ def unsubmit_cfo_plan(version_id: int, cfo_id: int, user: CurrentUser, db: DbSes
     row.submitted_by, row.submitted_at = None, None
     db.commit()
     return _cfo_statuses(db, user, version)
+
+
+# --- Утверждение по ЦФО (docs/TZ.md, раздел 22, «Детали 12.5») ---
+
+
+def _cfo_for_approval(db: Session, user: User, version_id: int, cfo_id: int) -> tuple[BudgetVersion, Cfo]:
+    version = _get_version(db, user, version_id, Perm.POST)
+    cfo = db.get(Cfo, cfo_id)
+    if cfo is None or cfo.organization_id != db.get(Budget, version.budget_id).organization_id:
+        raise _not_found("ЦФО")
+    if version.status == "archived":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Версия в архиве")
+    return version, cfo
+
+
+@router.post("/budget-versions/{version_id}/cfo-statuses/{cfo_id}/approve", response_model=list[CfoStatusOut])
+def approve_cfo_plan(version_id: int, cfo_id: int, user: CurrentUser, db: DbSession):
+    """Утвердить план ЦФО вместе с подчинёнными: дальше его меняют только администратор и фин. директор."""
+    version, cfo = _cfo_for_approval(db, user, version_id, cfo_id)
+    row = _status_row(db, version.id, cfo.id) or BudgetCfoStatus(version_id=version.id, cfo_id=cfo.id)
+    row.approved_by, row.approved_at = user.id, dt.datetime.now(dt.UTC)
+    db.add(row)
+    db.commit()
+    return _cfo_statuses(db, user, version)
+
+
+@router.post("/budget-versions/{version_id}/cfo-statuses/{cfo_id}/unapprove", response_model=list[CfoStatusOut])
+def unapprove_cfo_plan(version_id: int, cfo_id: int, user: CurrentUser, db: DbSession):
+    version, cfo = _cfo_for_approval(db, user, version_id, cfo_id)
+    row = _status_row(db, version.id, cfo.id)
+    if row is None or row.approved_at is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail="Этот ЦФО не утверждён (возможно, утверждён вышестоящий — снимите утверждение у него)")
+    row.approved_by, row.approved_at = None, None
+    db.commit()
+    return _cfo_statuses(db, user, version)
+
+
+class PlanChangeOut(BaseModel):
+    changed_at: dt.datetime
+    user: str
+    kind: str
+    cfo_id: int | None
+    executor_id: int | None
+    article_id: int
+    article: str
+    month: int
+    old_amount: Decimal | None
+    new_amount: Decimal | None
+
+
+@router.get("/budget-versions/{version_id}/changes", response_model=list[PlanChangeOut])
+def list_plan_changes(version_id: int, user: CurrentUser, db: DbSession):
+    """История правок плана после утверждения: кто, когда, ЦФО, статья, месяц, было → стало (новые — сверху)."""
+    version = _get_version(db, user, version_id, Perm.VIEW)
+    org_id = db.get(Budget, version.budget_id).organization_id
+    scope = cfo_scope(db, user, org_id)
+    visible = branch_ids(db, scope) if scope is not None else None
+    labels = article_labels(db, org_id)
+    rows = db.execute(select(PlanChange, User).join(User, User.id == PlanChange.user_id)
+                      .where(PlanChange.version_id == version.id)
+                      .order_by(PlanChange.changed_at.desc(), PlanChange.id.desc()).limit(1000)).all()
+    return [PlanChangeOut(changed_at=ch.changed_at, user=u.full_name or u.login, kind=ch.kind, cfo_id=ch.cfo_id,
+                          executor_id=ch.executor_id, article_id=ch.article_id, article=labels.get(ch.article_id, ""),
+                          month=ch.month, old_amount=ch.old_amount, new_amount=ch.new_amount)
+            for ch, u in rows if visible is None or ch.cfo_id in visible]
 
 
 # --- Сверху вниз: цель ЦФО → нижние ЦФО (docs/TZ.md, раздел 22, «Детали 12.3») ---
@@ -540,7 +635,8 @@ def distribute_targets(version_id: int, body: DistributeIn, user: CurrentUser, d
     if article is None or article.organization_id != cfo.organization_id:
         raise _not_found("Статья")
     try:
-        months = plan_methods.distribute(db, version, cfo, article, {t.month: t.amount for t in body.targets}, user)
+        months = plan_methods.distribute(db, version, cfo, article, {t.month: t.amount for t in body.targets}, user,
+                                         guard=_guard(db, user, version))
     except (plan.PlanError, JournalError) as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
@@ -573,7 +669,7 @@ def fill_retrospective(version_id: int, body: RetroIn, user: CurrentUser, db: Db
         _check_plan_cfo(db, user, db.get(Budget, version.budget_id).organization_id, None)  # ДДС — не руководителю ЦФО
     try:
         result = plan_methods.retrospective(db, version, body.kind, cfo if body.kind == "pl" else None,
-                                            body.branch, body.base, user)
+                                            body.branch, body.base, user, guard=_guard(db, user, version))
     except (plan.PlanError, JournalError) as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
@@ -629,7 +725,8 @@ async def upload_plan(version_id: int, request: Request, user: CurrentUser, db: 
     if len(raw) > 10 * 1024 * 1024:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, detail="Файл больше 10 МБ")
     try:
-        result = await run_in_threadpool(plan.import_plan, db, version, kind, raw, user, branch)
+        result = await run_in_threadpool(plan.import_plan, db, version, kind, raw, user, branch,
+                                         _guard(db, user, version))
     except (ExcelError, plan.PlanError) as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None

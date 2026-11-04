@@ -47,10 +47,14 @@ export async function openPlanCells({ org, ref, versionId, kind, articleId, mont
     const articleName = new Map(data.articles.map((a) => [a.id, a.label]));
     const many = data.articles.length > 1;
     summary.textContent = `${data.budget_title}: ${data.version.name} (${STATUS[data.version.status]}). `
-      + `Итого ${money(data.total)}` + (data.editable ? "" : " — только просмотр"
-        + (data.version.status !== "draft" ? ": версия не черновик" : ""));
+      + `Итого ${money(data.total)}` + (data.editable
+        ? (data.audited || data.locked_cfo_ids.length ? ". Правки утверждённого плана записываются в историю." : "")
+        : " — только просмотр" + (data.version.status === "approved"
+          ? ": версия утверждена — менять могут администратор и финансовый директор"
+          : data.version.status !== "draft" ? ": версия в архиве" : ""));
     const rows = data.cells.map((c) => {
-      const canEdit = data.editable && !c.project_id && (!org.cfo_scope || ref.cfos.some((x) => x.id === c.cfo_id && inBranch(x)));
+      // сервер говорит, можно ли менять ячейку (утверждённый ЦФО — только администратор и фин. директор)
+      const canEdit = c.editable && (!org.cfo_scope || ref.cfos.some((x) => x.id === c.cfo_id && inBranch(x)));
       const amount = el("input", { inputmode: "decimal", value: money(c.amount), "aria-label": "Сумма плана", disabled: !canEdit });
       amount.addEventListener("change", () => write(c, parseNumber(amount.value)));
       return el("tr", {},
@@ -69,7 +73,8 @@ export async function openPlanCells({ org, ref, versionId, kind, articleId, mont
     let add = null;
     if (data.editable && data.months.length && data.articles.length) {
       const cfo = select([...(kind === "cf" ? [["", "— без ЦФО —"]] : []),
-        ...ref.cfos.filter(inBranch).map((c) => [c.id, ref.cfoLabel.get(c.id)])], scope.cfo_id ?? "", "ЦФО новой операции");
+        ...ref.cfos.filter((c) => inBranch(c) && !data.locked_cfo_ids.includes(c.id)).map((c) => [c.id, ref.cfoLabel.get(c.id)])],
+      scope.cfo_id ?? "", "ЦФО новой операции");
       const executor = kind === "pl"
         ? select([["", "— без ЦФУ —"], ...ref.executors.map((e) => [e.id, ref.executorLabel.get(e.id)])], "", "ЦФУ новой операции")
         : null;

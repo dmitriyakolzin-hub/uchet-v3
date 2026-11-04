@@ -146,3 +146,21 @@ class PlanTarget(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PlanChange(Base):
+    """Правка плана после утверждения (docs/TZ.md, раздел 22, «Детали 12.5»): кто, когда, ячейка, было → стало."""
+
+    __tablename__ = "plan_changes"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    version_id: Mapped[int] = mapped_column(ForeignKey("budget_versions.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(3))
+    cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="SET NULL"))
+    executor_id: Mapped[int | None] = mapped_column(ForeignKey("executors.id", ondelete="SET NULL"))
+    article_id: Mapped[int] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"))
+    month: Mapped[int] = mapped_column(SmallInteger)
+    old_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    new_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
