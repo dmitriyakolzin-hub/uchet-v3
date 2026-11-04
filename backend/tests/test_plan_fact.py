@@ -193,3 +193,41 @@ def test_top_down_distribution(client, env):
         "cfo_id": company, "article_id": rent, "targets": [{"month": 1, "amount": "1"}]}).status_code == 403
     assert client.post(f"/api/budget-versions/{year['id']}/targets/distribute", headers=h, json={
         "cfo_id": company, "article_id": rent, "targets": [{"month": 1, "amount": "1"}]}).status_code == 422
+
+
+def test_retrospective_average(client, env, db):
+    """Шаг 12.4: пустые ячейки — среднее за N месяцев перед каждым месяцем; прошедшие — факт, будущие — план;
+    заполненные ячейки не меняются (docs/TZ.md, раздел 22). Сегодня — 10.03.2027 (факт аренды: январь 900, февраль 1100)."""
+    import datetime as dt
+
+    from app.models import BudgetVersion, Cfo, User
+    from app.services import plan_methods
+
+    h, rent = env["h"], env["art"]["Аренда"]
+    year = env["version"]
+    draft = client.post(f"/api/budgets/{year['budget_id']}/versions", headers=h, json={"name": "По среднему"}).json()
+    put(client, env, [{"article_id": rent, "month": 5, "amount": "5"}], cfo="shop", version=draft)
+    version, shop = db.get(BudgetVersion, draft["id"]), db.get(Cfo, env["shop"]["id"])
+    user = db.query(User).filter_by(login="fd").one()
+    result = plan_methods.retrospective(db, version, "pl", shop, False, 3, user, today=dt.date(2027, 3, 10))
+    db.commit()
+    assert result.kept == 1 and result.filled > 0
+    grid = client.get(f"/api/budget-versions/{draft['id']}/grid", headers=h,
+                      params={"kind": "pl", "cfo_id": env["shop"]["id"]}).json()
+    values = next(r for r in grid["rows"] if r["article_id"] == rent)["values"]
+    assert "2027-01" not in values  # база окт–дек 2026 — факта нет
+    assert (values["2027-02"], values["2027-03"]) == ("300.00", "666.67")  # (0 + 0 + 900) / 3; (0 + 900 + 1100) / 3
+    assert values["2027-04"] == "888.89"  # март — текущий: берётся план марта
+    assert values["2027-05"] == "5.00"  # заполненное не тронуто
+    assert values["2027-06"] == "520.19"  # (666,67 + 888,89 + 5) / 3
+
+    # через API: ДДС без ЦФО; база не из списка — ошибка; CEO — нельзя
+    url = f"/api/budget-versions/{draft['id']}/retrospective"
+    resp = client.post(url, headers=h, json={"kind": "cf", "base": 6})
+    assert resp.status_code == 200 and resp.json()["cfos"] == 1, resp.text
+    assert client.post(url, headers=h, json={"kind": "pl", "cfo_id": env["company"]["id"], "branch": True,
+                                             "base": 12}).json()["cfos"] == 4
+    assert client.post(url, headers=h, json={"kind": "pl", "cfo_id": env["shop"]["id"], "base": 2}).status_code == 422
+    assert client.post(url, headers=env["ceo"], json={"kind": "pl", "cfo_id": env["shop"]["id"],
+                                                      "base": 3}).status_code == 403
+    assert client.post(url, headers=env["head"], json={"kind": "cf", "base": 3}).status_code == 404

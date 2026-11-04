@@ -548,6 +548,39 @@ def distribute_targets(version_id: int, body: DistributeIn, user: CurrentUser, d
     return DistributeOut(months=[m.__dict__ for m in months], targets=plan_methods.targets(db, version, cfo))
 
 
+# --- Ретроспективный: среднее за 1 / 3 / 6 / 12 месяцев (docs/TZ.md, раздел 22, «Детали 12.4») ---
+
+
+class RetroIn(BaseModel):
+    kind: Literal["pl", "cf"]
+    cfo_id: int | None = None
+    branch: bool = False  # вместе с подчинёнными ЦФО (каждый — по своему факту)
+    base: Literal[1, 3, 6, 12]
+
+
+class RetroOut(BaseModel):
+    filled: int
+    kept: int
+    cfos: int
+
+
+@router.post("/budget-versions/{version_id}/retrospective", response_model=RetroOut)
+def fill_retrospective(version_id: int, body: RetroIn, user: CurrentUser, db: DbSession):
+    """Пустые ячейки плана — средним фактом за base месяцев перед каждым месяцем; заполненные не меняются."""
+    version = _get_version(db, user, version_id, Perm.DRAFT)
+    cfo = _target_cfo(db, user, version, body.cfo_id) if body.cfo_id is not None else None
+    if cfo is None:
+        _check_plan_cfo(db, user, db.get(Budget, version.budget_id).organization_id, None)  # ДДС — не руководителю ЦФО
+    try:
+        result = plan_methods.retrospective(db, version, body.kind, cfo if body.kind == "pl" else None,
+                                            body.branch, body.base, user)
+    except (plan.PlanError, JournalError) as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    db.commit()
+    return RetroOut(**result.__dict__)
+
+
 # --- План в Excel ---
 
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
