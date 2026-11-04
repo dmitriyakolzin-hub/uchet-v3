@@ -35,7 +35,7 @@ from app.models import (
     PaymentRequestFile,
     User,
 )
-from app.services import approval
+from app.services import approval, periodic
 from app.services import payment_requests as service
 from app.services.payment_requests import STATUS_TITLES, RequestError
 from app.services.report_xlsx import XlsxColumn, build
@@ -285,6 +285,8 @@ def list_requests(organization_id: int, user: CurrentUser, db: DbSession, date_f
     """Заявки организации (руководителю ЦФО — его ветки, руководителю ЦФУ — его ЦФУ и поданные им);
     to_approve — только те, что ждут согласования текущего пользователя."""
     get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST)
+    if periodic.ensure(db, organization_id):  # заявки периодических платежей на текущий и два следующих месяца
+        db.commit()
     branch = _branch(db, user, organization_id)
     executors = executor_scope(db, user, organization_id)
     query = select(PaymentRequest).where(PaymentRequest.organization_id == organization_id)

@@ -37,6 +37,7 @@ class PaymentRequest(Base):
         CheckConstraint("status IN ('draft', 'pending', 'revision', 'approved', 'rejected', 'paid')", name="status"),
         CheckConstraint("source IN ('request', 'periodic', 'supplier')", name="source_kind"),
         CheckConstraint("initiator IN ('cfo', 'executor', 'finance')", name="initiator"),
+        UniqueConstraint("periodic_id", "period", name="uq_payment_requests_periodic_period"),
         CheckConstraint("amount > 0", name="amount"),
         CheckConstraint("bank_account_id IS NULL OR cash_cfo_id IS NULL", name="source"),
         CheckConstraint("(status = 'paid') = (paid_on IS NOT NULL)", name="paid"),
@@ -73,6 +74,9 @@ class PaymentRequest(Base):
     initiator: Mapped[str] = mapped_column(String(10), default="finance", server_default="finance")
     route: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     step: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
+    # периодический платёж: условия договора и месяц (первое число), за который создана заявка
+    periodic_id: Mapped[int | None] = mapped_column(ForeignKey("contract_payments.id", ondelete="SET NULL"))
+    period: Mapped[date | None] = mapped_column(Date)
 
 
 class PaymentRequestEvent(Base):

@@ -30,7 +30,7 @@ def _valid_inn(inn: str) -> bool:
 ZERO = Decimal("0.00")
 MATCH_DAYS = 14  # платёж выписки ищет заявку не дальше стольких дней от даты оплаты
 OPEN_STATUSES = ("pending", "approved")  # неоплаченные заявки, которые уже занимают бюджет
-STATUS_TITLES = {"draft": "черновик", "pending": "на согласовании", "approved": "согласована",
+STATUS_TITLES = {"draft": "черновик", "pending": "на согласовании", "revision": "на доработке", "approved": "согласована",
                  "rejected": "отклонена", "paid": "оплачена"}
 
 

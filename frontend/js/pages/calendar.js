@@ -11,7 +11,8 @@ const STATUS = { draft: "Черновик", pending: "На согласован�
   rejected: "Отклонена", paid: "Оплачена" };
 const EVENT_TITLES = { created: "создал(а)", submitted: "подал(а) на согласование", approved: "согласовал(а)",
   rejected: "отклонил(а)", revision: "вернул(а) на доработку", recalled: "отозвал(а)", unapproved: "вернул(а) на согласование",
-  moved: "перенёс(ла) на", paid: "отметил(а) оплату", unpaid: "снял(а) оплату" };
+  moved: "перенёс(ла) на", paid: "отметил(а) оплату", unpaid: "снял(а) оплату", file: "приложил(а) файл",
+  file_removed: "убрал(а) файл", periodic_updated: "обновлено по договору" };
 const DIRECTION = { out: "Выплата", in: "Поступление" };
 
 function recall(key) {
@@ -86,22 +87,23 @@ export async function renderCalendar(view) {
     listBox, totalsBox,
   );
   const expectedBox = el("div");
+  const periodicBox = el("div");
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Платёжный календарь"), el("label", { class: "inline" }, "Организация ", orgSelect)),
     tabs, content,
   );
-  let tab = ["requests", "expected"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "grid";
+  let tab = ["requests", "expected", "periodic"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "grid";
   // руководитель ЦФУ и руководитель ЦФО видят только заявки
   const onlyRequests = () => org.restricted || org.role === "executor_head";
   function openTab(key) {
-    tab = onlyRequests() ? "requests" : key;
+    tab = onlyRequests() && !["requests", "periodic"].includes(key) ? "requests" : key;
     remember(TAB_KEY, tab);
-    const list = onlyRequests() ? [["requests", "Заявки"]]
-      : [["grid", "Календарь"], ["requests", "Заявки"], ["expected", "Ожидаемые платежи"]];
+    const list = onlyRequests() ? [["requests", "Заявки"], ["periodic", "Периодические платежи"]]
+      : [["grid", "Календарь"], ["requests", "Заявки"], ["periodic", "Периодические платежи"], ["expected", "Ожидаемые платежи"]];
     tabs.replaceChildren(...list.map(([k, title]) =>
       el("button", { type: "button", class: `tab${k === tab ? " active" : ""}`, onclick: () => openTab(k) }, title)));
-    content.replaceChildren({ grid: gridBox, requests: requestsBox, expected: expectedBox }[tab]);
-    return { grid: loadGrid, requests: load, expected: loadExpected }[tab]();
+    content.replaceChildren({ grid: gridBox, requests: requestsBox, expected: expectedBox, periodic: periodicBox }[tab]);
+    return { grid: loadGrid, requests: load, expected: loadExpected, periodic: loadPeriodic }[tab]();
   }
 
   function budgetCell(r) {
@@ -364,6 +366,38 @@ export async function renderCalendar(view) {
       refill(contract, contractOptions(cp.value, entity.value), contract.value);
     });
     cp.addEventListener("change", () => refill(contract, contractOptions(cp.value, entity.value), ""));
+  }
+
+  // --- периодические платежи по договорам: условия и заявки текущего и двух следующих месяцев (шаг 14.3) ---
+  async function loadPeriodic() {
+    let rows;
+    try {
+      rows = await api.get(`/api/organizations/${org.id}/periodic-payments`);
+    } catch (err) {
+      periodicBox.replaceChildren(el("p", { class: "error" }, err.message));
+      return;
+    }
+    const months = [...new Map(rows.flatMap((r) => r.months).map((m) => [m.period, m])).keys()].sort();
+    const monthTitle = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
+    periodicBox.replaceChildren(
+      el("p", { class: "muted" }, "Условия платежа заводятся в договоре («Справочники» → «Договоры» → «периодический»). "
+        + "Каждый месяц по условиям сама создаётся заявка на нужное число (выходной — рабочий день раньше); согласует её "
+        + "финансовый директор."),
+      rows.length ? el("table", { class: "recon versions periodic" },
+        el("thead", {}, el("tr", {}, ...["Контрагент / договор", "Назначение", "Сумма", "Число", "ЦФО / ЦФУ",
+          ...months.map(monthTitle)].map((t) => el("th", {}, t)))),
+        el("tbody", {}, ...rows.map((r) => el("tr", {},
+          el("td", {}, r.counterparty_name, el("div", { class: "muted" }, `Договор ${r.contract_name}`)),
+          el("td", {}, r.description || r.article_name),
+          el("td", { class: "num" }, money(r.amount)),
+          el("td", {}, String(r.day)),
+          el("td", {}, [r.cfo_name, r.executor_name].filter(Boolean).join(" · ")),
+          ...months.map((period) => {
+            const m = r.months.find((x) => x.period === period);
+            return el("td", {}, m ? [date(m.pay_date), el("div", { class: `status req-${m.status}` }, m.status_title),
+              m.paid_on ? el("div", { class: "muted" }, `оплачено ${date(m.paid_on)}`) : ""] : "");
+          })))))
+        : el("p", { class: "muted" }, "Периодических платежей пока нет."));
   }
 
   // --- ожидаемые платежи: заявки, ведомости, регламентные операции, оплаты инвестпроектов ---
