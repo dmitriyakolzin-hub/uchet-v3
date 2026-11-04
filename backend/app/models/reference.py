@@ -1,6 +1,7 @@
 """Справочники части 1.3б: банки (общие), расчётные счета, зарплатные проекты, контрагенты, договоры."""
 
 from datetime import date, datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
@@ -11,6 +12,8 @@ from sqlalchemy import (
     ForeignKey,
     Identity,
     Index,
+    Numeric,
+    SmallInteger,
     String,
     UniqueConstraint,
     func,
@@ -172,3 +175,29 @@ class Warehouse(OrgScoped, Base):
 
     name: Mapped[str] = mapped_column(String(255))
     cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"))
+
+
+class ContractPayment(Base):
+    """Периодический платёж по договору (docs/TZ.md, раздел 24, «Детали 14.3»): сумма в определённое число месяца.
+    Изменение условий — новая запись «действует с»; прежняя закрывается днём раньше (история сохраняется)."""
+
+    __tablename__ = "contract_payments"
+    __table_args__ = (
+        CheckConstraint("day BETWEEN 1 AND 31", name="day"),
+        CheckConstraint("amount > 0", name="amount"),
+        CheckConstraint("valid_to IS NULL OR valid_to >= valid_from", name="period"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    contract_id: Mapped[int] = mapped_column(ForeignKey("contracts.id", ondelete="CASCADE"), index=True)
+    valid_from: Mapped[date] = mapped_column(Date)
+    valid_to: Mapped[date | None] = mapped_column(Date)
+    day: Mapped[int] = mapped_column(SmallInteger)  # число месяца; выходной — ближайший рабочий день раньше
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    bank_account_id: Mapped[int | None] = mapped_column(ForeignKey("bank_accounts.id", ondelete="RESTRICT"))
+    article_id: Mapped[int | None] = mapped_column(ForeignKey("articles.id", ondelete="RESTRICT"))  # статья ДДС
+    cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"))
+    executor_id: Mapped[int | None] = mapped_column(ForeignKey("executors.id", ondelete="RESTRICT"))
+    description: Mapped[str] = mapped_column(String(500), default="", server_default="")
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

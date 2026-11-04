@@ -208,6 +208,17 @@ with sync_playwright() as p:
     expect(row).to_contain_text("Поставщик Плюс")
     expect(row).to_contain_text("15.01.2026")
     page.screenshot(path=f"{OUT}/7_contracts.png", full_page=True)
+    # периодический платёж по договору (шаг 14.3)
+    row.locator(".tabulator-cell[tabulator-field=_periodic]").click()
+    pd = page.locator("dialog[open]", has_text="Периодический платёж")
+    expect(pd).to_contain_text("Периодического платежа по договору нет")
+    pd.locator("button", has_text="Новые условия с даты").click()
+    fd = page.locator("dialog[open]", has_text="Новые условия платежа")
+    fd.locator("[name=amount]").fill("30 000")
+    fd.locator("[name=description]").fill("абонентское обслуживание")
+    fd.locator("button[type=submit]").click()
+    expect(pd.locator("table.plan-cells tbody tr")).to_contain_text("30 000,00")
+    pd.locator(".form-actions button", has_text="Закрыть").click()
 
     # дерево ЦФО: компания → направление → филиал, затем сотрудник в филиале
     page.click("button.tab:has-text('ЦФО')")
@@ -716,7 +727,8 @@ with sync_playwright() as p:
     rent = page.locator(".tabulator-row", has_text="Аренда").first
     rent.locator(".tabulator-cell[tabulator-field='2027-02']").click()
     page.keyboard.type("2 000")
-    page.keyboard.press("Enter")
+    with page.expect_response(lambda r: r.url.endswith("/cells") and r.request.method == "PUT"):  # дождаться записи
+        page.keyboard.press("Enter")
     expect(rent.locator(".tabulator-cell[tabulator-field='2027-02']")).to_have_text("2 000,00")
     page.click("button:has-text('История изменений')")
     d = page.locator("dialog[open]", has_text="История изменений плана")
@@ -992,6 +1004,11 @@ with sync_playwright() as p:
 
     # платёжный календарь: заявка → согласование
     page.click("#nav a[data-page=calendar]")
+    # периодические платежи: заявки месяцев созданы сами, ждут финансового директора
+    page.click("button.tab:has-text('Периодические платежи')")
+    prow = page.locator("table.periodic tbody tr", has_text="Поставщик Плюс")
+    expect(prow).to_contain_text("абонентское обслуживание")
+    expect(prow.locator(".req-pending").first).to_have_text("на согласовании")
     page.click("button.tab:has-text('Заявки')")
     page.click("button:has-text('Новая заявка')")
     d = dialog_fill(page, {"amount": "1 500,50", "description": "Оплата по счёту 77"})
@@ -1001,6 +1018,7 @@ with sync_playwright() as p:
     row = page.locator("table.requests tbody tr", has_text="Оплата по счёту 77")
     expect(row).to_contain_text("1 500,50")
     expect(row).to_contain_text("Черновик")
+    request_no = row.get_attribute("data-number")  # номера 1–3 могли занять периодические платежи
     # файл счёта к заявке (шаг 14.2)
     invoice = f"{OUT}/счёт 77.pdf"
     with open(invoice, "wb") as fh:
@@ -1024,7 +1042,7 @@ with sync_playwright() as p:
     expect(today_row).to_contain_text("ожид.")
     today_row.click()
     d = page.locator("dialog[open]")
-    expect(d).to_contain_text("Заявка № 1")
+    expect(d).to_contain_text(f"Заявка № {request_no}")
     page.screenshot(path=f"{OUT}/29_calendar_day.png")
     d.locator("button:has-text('Перенести')").click()
     d = page.locator("dialog[open]")
@@ -1035,7 +1053,7 @@ with sync_playwright() as p:
     d = page.locator("dialog[open]")
     if TODAY.day >= 15:  # ведомость с датой выплаты 15-го: просроченная показывается на сегодня
         expect(d).to_contain_text("Ведомость")
-    expect(d).not_to_contain_text("Заявка № 1")
+    expect(d).not_to_contain_text(f"Заявка № {request_no}")
     d.locator("button:has-text('Закрыть')").click()
     page.screenshot(path=f"{OUT}/30_calendar.png", full_page=True)
     page.click("button.tab:has-text('Заявки')")

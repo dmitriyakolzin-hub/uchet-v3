@@ -2,7 +2,7 @@
 import { api } from "../api.js";
 import { articleIndex } from "../articles.js";
 import { lookup, optionsOf, referenceTab } from "../reftab.js";
-import { money } from "../format.js";
+import { money, parseNumber } from "../format.js";
 import { el, makeTable, openForm, toast } from "../ui.js";
 
 const ORG_KEY = "uchet3_org";
@@ -25,6 +25,81 @@ const CONTRACT_KINDS = [
   ["other", "Прочий"],
 ];
 // История окладов сотрудника: список и добавление нового оклада с даты
+// Периодический платёж договора (docs/TZ.md, раздел 24, «Детали 14.3»): условия «действует с — по», история
+async function openContractPayments(contract, org, d) {
+  const url = `/api/contracts/${contract.id}/payments`;
+  const canEdit = org.permissions.includes("post");
+  const [banks, articles, cfos, executors] = await Promise.all([
+    api.get(`/api/organizations/${org.id}/bank-accounts`), api.get(`/api/organizations/${org.id}/articles`),
+    api.get(`/api/organizations/${org.id}/cfos`), api.get(`/api/organizations/${org.id}/executors`)]);
+  const index = articleIndex(articles);
+  const outflow = index.leaves.filter((a) => a.is_active && a.is_cash_flow && !a.is_transfer && a.cash_flow_direction === "outflow");
+  const cfoLabels = cfoPathLabels(cfos);
+  const execNames = new Map(executors.map((e) => [e.id, e.name]));
+  const execLabel = (e) => (e.parent_id ? `${execNames.get(e.parent_id)} / ${e.name}` : e.name);
+  const dateRu = (v) => (v ? v.split("-").reverse().join(".") : "");
+  const listBox = el("div");
+  const counterparty = d.counterparties.find((c) => c.id === contract.counterparty_id)?.name ?? "";
+  const fields = [
+    { name: "valid_from", label: "Действует с", type: "date", required: true },
+    { name: "valid_to", label: "Действует по (пусто — бессрочно)", type: "date" },
+    { name: "day", label: "Число месяца", type: "number", required: true,
+      hint: "Выходной или праздник — ближайший рабочий день раньше" },
+    { name: "amount", label: "Сумма", required: true, placeholder: "0,00" },
+    { name: "bank_account_id", label: "Расчётный счёт", type: "select",
+      options: [["", "— выберет финансовая служба —"], ...banks.filter((b) => b.is_active && b.legal_entity_id === contract.legal_entity_id)
+        .map((b) => [String(b.id), `${b.name} ··${b.number.slice(-4)}`])] },
+    { name: "article_id", label: "Статья ДДС", type: "select",
+      options: [["", "— не указана —"], ...outflow.map((a) => [String(a.id), index.label.get(a.id)])] },
+    { name: "cfo_id", label: "ЦФО", type: "select",
+      options: [["", "— не указан —"], ...cfos.filter((c) => c.is_active).map((c) => [String(c.id), cfoLabels.get(c.id)])] },
+    { name: "executor_id", label: "ЦФУ", type: "select",
+      options: [["", "— не указан —"], ...executors.filter((e) => e.is_active).map((e) => [String(e.id), execLabel(e)])] },
+    { name: "description", label: "Назначение", placeholder: "аренда склада" },
+  ];
+  const idOrNull = (v) => (v ? Number(v) : null);
+  const toBody = (v) => ({ valid_from: v.valid_from, valid_to: v.valid_to || null, day: Number(v.day),
+    amount: parseNumber(v.amount), bank_account_id: idOrNull(v.bank_account_id),
+    article_id: idOrNull(v.article_id), cfo_id: idOrNull(v.cfo_id), executor_id: idOrNull(v.executor_id),
+    description: v.description });
+  const toValues = (t) => ({ ...t, valid_to: t.valid_to ?? "", amount: String(t.amount).replace(".", ","),
+    bank_account_id: String(t.bank_account_id ?? ""), article_id: String(t.article_id ?? ""), cfo_id: String(t.cfo_id ?? ""),
+    executor_id: String(t.executor_id ?? "") });
+
+  async function render() {
+    const terms = await api.get(url);
+    listBox.replaceChildren(terms.length ? el("table", { class: "plain plan-cells" },
+      el("thead", {}, el("tr", {}, ...["Действует", "Число", "Сумма", "Статья", "ЦФО / ЦФУ", "Назначение", ""].map((t) => el("th", {}, t)))),
+      el("tbody", {}, ...terms.map((t) => el("tr", {},
+        el("td", {}, `с ${dateRu(t.valid_from)}${t.valid_to ? ` по ${dateRu(t.valid_to)}` : ""}`),
+        el("td", {}, String(t.day)),
+        el("td", { class: "num" }, money(t.amount)),
+        el("td", {}, t.article_id ? index.label.get(t.article_id) ?? "" : ""),
+        el("td", {}, [cfoLabels.get(t.cfo_id), t.executor_id ? execLabel(executors.find((e) => e.id === t.executor_id) ?? {}) : ""]
+          .filter(Boolean).join(" · ")),
+        el("td", {}, t.description),
+        el("td", {}, canEdit ? el("button", { type: "button", class: "link", onclick: () => openForm({
+          title: "Исправить условия", fields, values: toValues(t), submitText: "Сохранить",
+          onSubmit: async (v) => { await api.put(`/api/contract-payments/${t.id}`, toBody(v)); await render(); } }) }, "изменить") : "")))))
+      : el("p", { class: "muted" }, "Периодического платежа по договору нет."));
+  }
+  const addButton = el("button", { type: "button", hidden: !canEdit, onclick: () => openForm({
+    title: "Новые условия платежа", fields, values: { valid_from: new Date().toISOString().slice(0, 10), day: "10" },
+    submitText: "Сохранить",
+    onSubmit: async (v) => { await api.post(url, toBody(v)); toast("Условия сохранены — заявки месяцев обновлены"); await render(); },
+  }) }, "Новые условия с даты");
+  const dialog = el("dialog", { class: "dialog wide" },
+    el("div", { class: "page-head" }, el("h2", {}, `Периодический платёж: ${counterparty}, договор № ${contract.number}`), addButton),
+    el("p", { class: "muted" }, "Каждый месяц по условиям сама создаётся заявка на оплату — её согласует финансовый директор. "
+      + "Сумма изменилась — «Новые условия с даты»: прежние закроются днём раньше, история сохранится."),
+    listBox,
+    el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => dialog.close() }, "Закрыть")));
+  document.body.append(dialog);
+  dialog.addEventListener("close", () => dialog.remove());
+  await render();
+  dialog.showModal();
+}
+
 async function openSalaries(employee) {
   const url = `/api/employees/${employee.id}/salaries`;
   const tableBox = el("div");
@@ -236,6 +311,9 @@ const TABS = [
       { title: "Валюта", field: "currency_id", width: 90, formatter: lookup(d.currencies, (c) => c.code) },
       { title: "Название", field: "name", widthGrow: 2 },
       { title: "Инвестпроект", field: "project_id", widthGrow: 1, formatter: lookup(d.projects, (x) => x.name) },
+      { title: "", field: "_periodic", width: 120, headerSort: false, formatter: () => "периодический",
+        cssClass: "link-like", tooltip: () => "Периодический платёж по договору",
+        cellClick: (_e, c) => openContractPayments(c.getRow().getData(), d.org, d).catch((err) => toast(err.message, "error")) },
     ],
     fields: (d) => [
       { name: "counterparty_id", label: "Контрагент", type: "select", required: true, numeric: true,
@@ -507,7 +585,7 @@ export async function renderReferences(view) {
       need(["contracts"], () => api.get(`/api/organizations/${org.id}/investment-projects`)),
     ]);
     const d = { entities, banks, currencies, counterparties, cfos, units, articles, articleIndex: articleIndex(articles),
-      employees, executors, projects,
+      employees, executors, projects, org,
       rub: currencies.find((c) => c.is_base) };
     const state = { canEdit: org.permissions.includes("edit_reference"), ref: null };
     state.ref = await referenceTab(tabBox, {
