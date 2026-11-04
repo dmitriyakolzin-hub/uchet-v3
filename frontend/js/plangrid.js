@@ -60,6 +60,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   // снизу вверх (docs/TZ.md, раздел 22, «Детали 12.2»): отметка «план сдан» у ЦФО и список, кто сдал
   const submitBox = el("div", { class: "filters submit-box" });
   const statusesButton = el("button", { type: "button", class: "secondary", onclick: () => showStatuses() }, "Кто сдал план");
+  const topDownButton = el("button", { type: "button", class: "secondary", hidden: true, onclick: () => openTopDown() }, "Сверху вниз");
   const canDraft = org.permissions.includes("draft") && version.status === "draft";
 
   view.replaceChildren(
@@ -69,7 +70,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     kindTabs,
     el("div", { class: "filters" }, cfoLabel, executorLabel, modeTabs,
       downloadButton,
-      uploadButton, fileInput, statusesButton),
+      uploadButton, fileInput, statusesButton, topDownButton),
     submitBox,
     status,
     tableBox,
@@ -77,9 +78,79 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
 
   const when = (iso) => new Date(iso).toLocaleDateString("ru-RU");
 
+  // Сверху вниз (docs/TZ.md, раздел 22, «Детали 12.3»): цель ЦФО по статье → доли нижних ЦФО по факту 6 месяцев
+  async function openTopDown() {
+    const articles = data.rows.filter((r) => !r.executor_id).map((r) => [String(r.article_id), r.name]);
+    const article = el("select", { "aria-label": "Статья цели" }, ...articles.map(([v, t]) => el("option", { value: v }, t)));
+    const inputs = new Map(data.months.map((m) => [m.month,
+      el("input", { inputmode: "decimal", placeholder: "—", "aria-label": `Цель: ${m.title}` })]));
+    const listBox = el("div");
+    const errorBox = el("p", { class: "error", role: "alert" });
+    const monthTitle = new Map(data.months.map((m) => [m.month, m.title]));
+    const articleName = new Map(articles.map(([v, t]) => [Number(v), t]));
+    let targets = [];
+
+    const fill = () => {
+      for (const [month, input] of inputs) {
+        const t = targets.find((x) => x.article_id === Number(article.value) && x.month === month);
+        input.value = t ? money(t.target) : "";
+      }
+    };
+    const renderList = () => listBox.replaceChildren(targets.length
+      ? el("table", { class: "plain plan-cells" },
+        el("thead", {}, el("tr", {}, ...["Статья", "Месяц", "Цель", "По низу", "Откл."].map((t, i) =>
+          el("th", { class: i > 1 ? "num" : "" }, t)))),
+        el("tbody", {}, ...targets.map((t) => el("tr", {},
+          el("td", {}, articleName.get(t.article_id) ?? ""), el("td", {}, monthTitle.get(t.month) ?? ""),
+          el("td", { class: "num" }, money(t.target)), el("td", { class: "num" }, money(t.bottom)),
+          el("td", { class: `num${Number(t.deviation) ? " over-budget" : ""}` }, Number(t.deviation) ? money(t.deviation) : "")))))
+      : el("p", { class: "muted" }, "Целей у этого ЦФО пока нет."));
+    const reload = async () => {
+      targets = await api.get(`/api/budget-versions/${version.id}/targets?cfo_id=${cfoId}`);
+      renderList();
+      fill();
+    };
+    article.addEventListener("change", fill);
+
+    const apply = el("button", { type: "button" }, "Распределить");
+    apply.addEventListener("click", async () => {
+      errorBox.textContent = "";
+      const body = { cfo_id: cfoId, article_id: Number(article.value),
+        targets: [...inputs].map(([month, input]) => ({ month, amount: parseNumber(input.value) })) };
+      try {
+        const r = await api.post(`/api/budget-versions/${version.id}/targets/distribute`, body);
+        const equal = r.months.filter((m) => m.target && !m.by_fact).map((m) => monthTitle.get(m.month).toLowerCase());
+        toast("Цель распределена по нижним ЦФО" + (equal.length ? `; поровну (нет факта): ${equal.join(", ")}` : ""));
+        targets = r.targets;
+        renderList();
+        changed = true;
+      } catch (err) {
+        errorBox.textContent = err.message;
+      }
+    });
+    let changed = false;
+    const dialog = el("dialog", { class: "dialog wide" },
+      el("h2", {}, `Сверху вниз: ${cfoSelect.selectedOptions[0]?.textContent ?? ""}`),
+      el("p", { class: "muted" }, "Цель делится между самыми нижними ЦФО ветки пропорционально их факту по статье "
+        + "за 6 месяцев перед месяцем плана (если месяц в будущем — за 6 месяцев до текущего); факта нет — поровну. "
+        + "План нижних ЦФО по статье заменяется долями, потом его можно поправить вручную. Пусто — цель снимается."),
+      el("label", { class: "block" }, "Статья", article),
+      el("div", { class: "target-months" }, ...data.months.map((m) => el("label", {}, m.title, inputs.get(m.month)))),
+      errorBox,
+      el("div", { class: "form-actions" },
+        el("button", { type: "button", class: "secondary", onclick: () => dialog.close() }, "Закрыть"), apply),
+      el("h3", {}, "Цели и план по низу"),
+      listBox);
+    document.body.append(dialog);
+    dialog.addEventListener("close", async () => { dialog.remove(); if (changed) await load(); });
+    await reload();
+    dialog.showModal();
+  }
+
   async function renderSubmit() {
     const show = kind === "pl" && cfoId && mode !== "executor";
     statusesButton.hidden = kind !== "pl";
+    topDownButton.hidden = !(kind === "pl" && cfoId && hasChildren(cfoId) && canDraft && mode !== "executor");
     if (!show) { submitBox.replaceChildren(); return; }
     const rows = await api.get(`/api/budget-versions/${version.id}/cfo-statuses`);
     const row = rows.find((r) => r.cfo_id === cfoId);

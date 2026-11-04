@@ -125,3 +125,24 @@ class BudgetCfoStatus(Base):
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     approved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PlanTarget(Base):
+    """Цель вышестоящего ЦФО по статье ОПиУ на месяц (сверху вниз, docs/TZ.md, раздел 22, «Детали 12.3»).
+    Сама в план не входит: план — у нижних ЦФО, куда цель распределена; цель — для сверки «цель / по низу»."""
+
+    __tablename__ = "plan_targets"
+    __table_args__ = (
+        UniqueConstraint("version_id", "cfo_id", "article_id", "month", name="uq_plan_targets_cell"),
+        CheckConstraint("month BETWEEN 1 AND 12", name="month"),
+        CheckConstraint("amount > 0", name="amount"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    version_id: Mapped[int] = mapped_column(ForeignKey("budget_versions.id", ondelete="CASCADE"), index=True)
+    cfo_id: Mapped[int] = mapped_column(ForeignKey("cfos.id", ondelete="CASCADE"))
+    article_id: Mapped[int] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"))
+    month: Mapped[int] = mapped_column(SmallInteger)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
