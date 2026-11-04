@@ -110,3 +110,18 @@ class InvestmentProject(OrgScoped, Base):
     limit_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0, server_default="0")
     status: Mapped[str] = mapped_column(String(10), default="planned", server_default="planned")
     payment_lag_months: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
+
+
+class BudgetCfoStatus(Base):
+    """Состояние плана ЦФО в версии бюджета (docs/TZ.md, раздел 22): «план сдан» (12.2) и «утверждён» (12.5)."""
+
+    __tablename__ = "budget_cfo_statuses"
+    __table_args__ = (UniqueConstraint("version_id", "cfo_id", name="uq_budget_cfo_statuses_version_cfo"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    version_id: Mapped[int] = mapped_column(ForeignKey("budget_versions.id", ondelete="CASCADE"), index=True)
+    cfo_id: Mapped[int] = mapped_column(ForeignKey("cfos.id", ondelete="CASCADE"))
+    submitted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

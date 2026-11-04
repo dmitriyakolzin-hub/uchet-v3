@@ -1,6 +1,6 @@
 from app.models.account import Account, AccountAnalytic
 from app.models.article import Article
-from app.models.budget import Budget, BudgetVersion, InvestmentProject
+from app.models.budget import Budget, BudgetCfoStatus, BudgetVersion, InvestmentProject
 from app.models.calendar import PaymentRequest
 from app.models.cfo import Cfo, Employee, Executor
 from app.models.closing import PeriodClosing, ResultClosing, RoutineRule, RoutineRun
@@ -30,6 +30,7 @@ __all__ = [
     "Bank",
     "BankAccount",
     "Budget",
+    "BudgetCfoStatus",
     "BudgetVersion",
     "Cfo",
     "Contract",

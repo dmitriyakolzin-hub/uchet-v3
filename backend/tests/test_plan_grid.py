@@ -228,3 +228,34 @@ def test_branch_rollup(client, env):
     resp = client.get(f"/api/budget-versions/{env['version']['id']}/branch.xlsx", headers=env["h"],
                       params={"cfo_id": env["company"]["id"]})
     assert resp.status_code == 200 and resp.content[:2] == b"PK"
+
+
+def test_cfo_plan_submitted(client, env):
+    """Шаг 12.2: снизу вверх — каждый ЦФО отмечает «план сдан» (docs/TZ.md, раздел 22)."""
+    v = env["version"]["id"]
+    url = f"/api/budget-versions/{v}/cfo-statuses"
+    put(client, env, [{"article_id": env["art"]["Аренда"], "month": 1, "amount": "1000"}], cfo="shop", h=env["head"])
+    rows = {r["name"]: r for r in client.get(url, headers=env["h"]).json()}
+    assert list(rows) == ["Компания", "Торговля", "Магазин 1", "Логистика"]
+    assert (rows["Магазин 1"]["is_leaf"], rows["Торговля"]["is_leaf"]) == (True, False)
+    assert rows["Магазин 1"]["plan_total"] == "1000.00" and rows["Магазин 1"]["submitted_at"] is None
+
+    # руководитель ЦФО сдаёт план своей ветки; чужую — нельзя; видит только свою ветку
+    shop = env["shop"]["id"]
+    rows = {r["name"]: r for r in client.post(f"{url}/{shop}/submit", headers=env["head"]).json()}
+    assert list(rows) == ["Торговля", "Магазин 1"]
+    assert rows["Магазин 1"]["submitted_at"] and rows["Магазин 1"]["submitted_by"]
+    assert rows["Магазин 1"]["changed_after"] is False
+    assert client.post(f"{url}/{env['logistics']['id']}/submit", headers=env["head"]).status_code == 404
+    assert client.post(f"{url}/{shop}/submit", headers=env["ceo"]).status_code == 403
+
+    # план поменяли после сдачи — видно
+    put(client, env, [{"article_id": env["art"]["Аренда"], "month": 2, "amount": "500"}], cfo="shop", h=env["head"])
+    shop_row = next(r for r in client.get(url, headers=env["h"]).json() if r["cfo_id"] == shop)
+    assert shop_row["changed_after"] is True and shop_row["plan_total"] == "1500.00"
+    # вернуть отметку; повторно — ошибка
+    assert client.post(f"{url}/{shop}/unsubmit", headers=env["head"]).status_code == 200
+    assert client.post(f"{url}/{shop}/unsubmit", headers=env["head"]).status_code == 422
+    # утверждённая версия — отметки не меняются
+    client.post(f"/api/budget-versions/{v}/approve", headers=env["h"])
+    assert client.post(f"{url}/{shop}/submit", headers=env["h"]).status_code == 422
