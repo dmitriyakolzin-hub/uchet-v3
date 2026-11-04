@@ -317,3 +317,6 @@ table.plan-cells input { width: 130px; text-align: right; }
 .page-head .notes-button { margin-left: auto; }
 .req-revision { background: #fffaeb; color: #b54708; }
 .my-step { color: #b54708; font-weight: 600; }
+table.requests tr.over-budget-row td { background: #fef3f2; }
+table.requests tr.over-budget-row td:first-child { box-shadow: inset 3px 0 0 #d92d20; }
+.req-files { max-width: 180px; word-break: break-word; }

@@ -8,9 +8,11 @@
 
 import datetime as dt
 from decimal import Decimal
+from pathlib import PurePosixPath
+from urllib.parse import quote
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -30,6 +32,7 @@ from app.models import (
     Operation,
     PaymentRequest,
     PaymentRequestEvent,
+    PaymentRequestFile,
     User,
 )
 from app.services import approval
@@ -84,6 +87,13 @@ class BudgetOut(BaseModel):
     over: Decimal
 
 
+class FileOut(BaseModel):
+    id: int
+    filename: str
+    size: int
+    uploaded_at: dt.datetime
+
+
 class RequestOut(BaseModel):
     id: int
     number: int
@@ -124,6 +134,7 @@ class RequestOut(BaseModel):
     step: int = 0
     step_title: str = ""  # у кого сейчас на согласовании
     can_act: bool = False  # текущий пользователь может согласовать / отклонить / вернуть на доработку
+    files: list[FileOut] = []  # счёт и другие файлы заявки
 
 
 class ListOut(BaseModel):
@@ -155,6 +166,13 @@ def _out(db: Session, requests: list[PaymentRequest], scoped: bool, user: User |
     executors = _names(db, Executor, ids("executor_id"), lambda e: e.name)
     users = _names(db, User, ids("created_by") + ids("approved_by"), lambda u: u.full_name or u.login)
     operations = _names(db, Operation, ids("operation_id"), lambda o: o.number)
+    files: dict[int, list[FileOut]] = {}
+    for f in db.execute(select(PaymentRequestFile.id, PaymentRequestFile.request_id, PaymentRequestFile.filename,
+                               PaymentRequestFile.size, PaymentRequestFile.uploaded_at)
+                        .where(PaymentRequestFile.request_id.in_([r.id for r in requests]))
+                        .order_by(PaymentRequestFile.id)).all():
+        files.setdefault(f.request_id, []).append(FileOut(id=f.id, filename=f.filename, size=f.size,
+                                                          uploaded_at=f.uploaded_at))
     rows = []
     for r in requests:
         if r.cash_cfo_id is not None:
@@ -181,6 +199,7 @@ def _out(db: Session, requests: list[PaymentRequest], scoped: bool, user: User |
             route_titles=[approval.STEP_TITLES[x] for x in r.route or []], step=r.step,
             step_title=approval.STEP_TITLES.get(approval.current_step(r) or "", ""),
             can_act=user is not None and approval.can_act(db, user, r),
+            files=files.get(r.id, []),
         ))
     return rows
 
@@ -261,7 +280,8 @@ def _check_act(db: Session, user: User, req: PaymentRequest) -> None:
 @router.get("/organizations/{organization_id}/payment-requests", response_model=ListOut)
 def list_requests(organization_id: int, user: CurrentUser, db: DbSession, date_from: dt.date | None = None,
                   date_to: dt.date | None = None, status_: Annotated[str | None, Query(alias="status")] = None,
-                  direction: Literal["out", "in"] | None = None, to_approve: bool = False):
+                  direction: Literal["out", "in"] | None = None, to_approve: bool = False, mine: bool = False,
+                  channel: Literal["bank", "cash"] | None = None):
     """Заявки организации (руководителю ЦФО — его ветки, руководителю ЦФУ — его ЦФУ и поданные им);
     to_approve — только те, что ждут согласования текущего пользователя."""
     get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST)
@@ -282,6 +302,12 @@ def list_requests(organization_id: int, user: CurrentUser, db: DbSession, date_f
         query = query.where((PaymentRequest.executor_id.in_(executors)) | (PaymentRequest.created_by == user.id))
     if to_approve:
         query = query.where(PaymentRequest.status == "pending")
+    if mine:
+        query = query.where(PaymentRequest.created_by == user.id)
+    if channel == "cash":  # кассовые заявки
+        query = query.where(PaymentRequest.cash_cfo_id.is_not(None))
+    elif channel == "bank":
+        query = query.where(PaymentRequest.cash_cfo_id.is_(None))
     requests = list(db.scalars(query.order_by(PaymentRequest.pay_date, PaymentRequest.number)))
     if to_approve:
         requests = [r for r in requests if approval.can_act(db, user, r)]
@@ -473,11 +499,81 @@ def unpay_request(request_id: int, user: CurrentUser, db: DbSession):
     return _save(db, req, branch, user)
 
 
+# --- Файлы заявки: счёт, договор, акт (docs/TZ.md, раздел 24, «Детали 14.2») ---
+
+MAX_FILE_BYTES = 10 * 1024 * 1024
+FILE_TYPES = {".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+              ".xlsx": XLSX_TYPE, ".xls": "application/vnd.ms-excel", ".doc": "application/msword",
+              ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+
+
+def _can_attach(db: Session, user: User, req: PaymentRequest) -> None:
+    """Прикладывать и убирать файлы: автор заявки (право черновиков, руководитель ЦФУ) или финансовая служба."""
+    perms = org_permissions(db, user, req.organization_id)
+    if Perm.POST not in perms:
+        _check_author(db, user, req.organization_id)
+    if req.status == "paid":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Заявка оплачена — файлы не меняются")
+
+
+@router.post("/payment-requests/{request_id}/files", response_model=FileOut, status_code=201)
+async def upload_file(request_id: int, filename: Annotated[str, Query(max_length=255)], request: Request,
+                      user: CurrentUser, db: DbSession):
+    """Тело запроса — файл как есть (PDF, JPG, PNG, Excel, Word), до 10 МБ."""
+    req, _ = _request(db, user, request_id)
+    _can_attach(db, user, req)
+    name = PurePosixPath(filename.replace("\\", "/")).name.strip()[:255]
+    content_type = FILE_TYPES.get(PurePosixPath(name).suffix.lower())
+    if not name or content_type is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail="Можно приложить PDF, JPG, PNG, Excel или Word")
+    raw = await request.body()
+    if not raw:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Файл пуст")
+    if len(raw) > MAX_FILE_BYTES:
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, detail="Файл больше 10 МБ")
+    file = PaymentRequestFile(request_id=req.id, filename=name, content_type=content_type, size=len(raw), data=raw,
+                              uploaded_by=user.id)
+    db.add(file)
+    approval.event(db, req, user, "file", name)
+    db.commit()
+    db.refresh(file)
+    return FileOut(id=file.id, filename=file.filename, size=file.size, uploaded_at=file.uploaded_at)
+
+
+def _file(db: Session, user: User, file_id: int) -> tuple[PaymentRequestFile, PaymentRequest]:
+    file = db.get(PaymentRequestFile, file_id)
+    if file is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Файл не найден")
+    req, _ = _request(db, user, file.request_id)  # видимость — как у заявки
+    return file, req
+
+
+@router.get("/payment-request-files/{file_id}")
+def download_file(file_id: int, user: CurrentUser, db: DbSession):
+    file, _ = _file(db, user, file_id)
+    quoted = quote(file.filename)
+    return Response(file.data, media_type=file.content_type,
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"})
+
+
+@router.delete("/payment-request-files/{file_id}", status_code=204)
+def delete_file(file_id: int, user: CurrentUser, db: DbSession) -> Response:
+    file, req = _file(db, user, file_id)
+    _can_attach(db, user, req)
+    if file.uploaded_by != user.id and Perm.POST not in org_permissions(db, user, req.organization_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Убрать файл может тот, кто его приложил, или финансовая служба")
+    approval.event(db, req, user, "file_removed", file.filename)
+    db.delete(file)
+    db.commit()
+    return Response(status_code=204)
+
+
 @router.get("/organizations/{organization_id}/payment-requests.xlsx")
 def download_requests(organization_id: int, user: CurrentUser, db: DbSession, date_from: dt.date | None = None,
                       date_to: dt.date | None = None, status_: Annotated[str | None, Query(alias="status")] = None,
                       direction: Literal["out", "in"] | None = None):
-    data = list_requests(organization_id, user, db, date_from, date_to, status_, direction, False)
+    data = list_requests(organization_id, user, db, date_from, date_to, status_, direction, False, False, None)
     columns = [XlsxColumn("№", 7), XlsxColumn("Дата оплаты", 12), XlsxColumn("Вид", 12), XlsxColumn("Статус", 16),
                XlsxColumn("Юрлицо", 18), XlsxColumn("Счёт / касса", 22), XlsxColumn("Контрагент", 26),
                XlsxColumn("Договор", 18), XlsxColumn("Статья ДДС", 26), XlsxColumn("ЦФО", 20),

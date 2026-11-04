@@ -121,3 +121,35 @@ def test_ceo_rule_and_finance_initiator(client, env):
     assert act(client, env, "fm", small, "unapprove").status_code == 403
     back = act(client, env, "fd", small, "unapprove").json()
     assert (back["status"], back["step_title"]) == ("pending", "Финансовый директор")
+
+
+def test_request_files_and_filters(client, env):
+    """Шаг 14.2: файл счёта к заявке; «мои» заявки; кассовые заявки (docs/TZ.md, раздел 24)."""
+    req = create(client, env, "exec", description="Картриджи")
+    url = f"/api/payment-requests/{req['id']}/files"
+    pdf = b"%PDF-1.4 test"
+    resp = client.post(url, params={"filename": "C:\\\\Счета\\\\счёт 15.pdf"}, content=pdf,
+                       headers={**env["h"]["exec"], "Content-Type": "application/octet-stream"})
+    assert resp.status_code == 201, resp.text
+    file = resp.json()
+    assert (file["filename"], file["size"]) == ("счёт 15.pdf", len(pdf))
+    assert client.post(url, params={"filename": "вирус.exe"}, content=b"x", headers=env["h"]["exec"]).status_code == 422
+    assert client.post(url, params={"filename": "big.pdf"}, content=b"x" * (10 * 1024 * 1024 + 1),
+                       headers=env["h"]["exec"]).status_code == 413
+    got = client.get(f"/api/payment-requests/{req['id']}", headers=env["h"]["fd"]).json()
+    assert [f["filename"] for f in got["files"]] == ["счёт 15.pdf"]
+    down = client.get(f"/api/payment-request-files/{file['id']}", headers=env["h"]["fd"])
+    assert down.status_code == 200 and down.content == pdf and down.headers["content-type"] == "application/pdf"
+    assert "UTF-8''" in down.headers["content-disposition"]
+    assert client.get(f"/api/payment-request-files/{file['id']}", headers=env["h"]["other_exec"]).status_code == 404
+    assert client.delete(f"/api/payment-request-files/{file['id']}", headers=env["h"]["ceo"]).status_code == 403
+    assert client.delete(f"/api/payment-request-files/{file['id']}", headers=env["h"]["exec"]).status_code == 204
+
+    # «мои» и кассовые: заявка из кассы ЦФО
+    cash = client.post(f"{env['o']}/cash-desks", headers=env["h"]["fd"], json={"cfo_id": env["shop"]["id"]})
+    assert cash.status_code == 204, cash.text
+    create(client, env, "fd", cash_cfo_id=env["shop"]["id"], description="Из кассы")
+    rows = client.get(f"{env['o']}/payment-requests", headers=env["h"]["fd"], params={"channel": "cash"}).json()["rows"]
+    assert [r["description"] for r in rows] == ["Из кассы"]
+    mine = client.get(f"{env['o']}/payment-requests", headers=env["h"]["fd"], params={"mine": True}).json()["rows"]
+    assert [r["description"] for r in mine] == ["Из кассы"]
