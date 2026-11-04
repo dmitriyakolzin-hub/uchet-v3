@@ -365,6 +365,31 @@ class WarehouseOut(_Out):
     is_active: bool
 
 
+# --- Метки примечаний (docs/TZ.md, раздел 23) ---
+
+Color = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^#[0-9a-fA-F]{6}$")]
+LabelName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+
+
+class NoteLabelCreate(BaseModel):
+    name: LabelName
+    color: Color = "#f79009"
+
+
+class NoteLabelUpdate(BaseModel):
+    name: LabelName | None = None
+    color: Color | None = None
+    is_active: bool | None = None
+
+
+class NoteLabelOut(_Out):
+    id: int
+    organization_id: int
+    name: str
+    color: str
+    is_active: bool
+
+
 # --- Основные средства (карточка; остатки — из журнала) ---
 
 Cost = Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=2)]

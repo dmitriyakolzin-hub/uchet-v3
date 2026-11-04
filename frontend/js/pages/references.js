@@ -442,6 +442,22 @@ const TABS = [
       ];
     },
   },
+  {
+    // метки примечаний к цифрам отчётов и операциям (docs/TZ.md, раздел 23)
+    key: "note-labels",
+    title: "Метки примечаний",
+    addText: "Добавить метку",
+    columns: () => [
+      { title: "Метка", field: "name", widthGrow: 2,
+        formatter: (c) => `<span class="note-label" style="background:${c.getRow().getData().color}">${
+          String(c.getValue()).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch])}</span>` },
+      { title: "Цвет", field: "color", width: 110 },
+    ],
+    fields: () => [
+      { name: "name", label: "Название", required: true, placeholder: "Проверить" },
+      { name: "color", label: "Цвет", type: "color", default: "#f79009" },
+    ],
+  },
 ];
 
 export async function renderReferences(view) {

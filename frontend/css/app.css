@@ -300,3 +300,13 @@ table.plan-cells input { width: 130px; text-align: right; }
 .target-months label { display: flex; flex-direction: column; font-size: 0.9em; }
 .target-months input { text-align: right; }
 .badge.approved { background: #eff8ff; color: #175cd3; }
+/* примечания к цифрам: уголок цвета метки в ячейке */
+.tabulator-cell.has-note { position: relative; }
+.tabulator-cell.has-note::after { content: ""; position: absolute; top: 0; right: 0; border-style: solid;
+  border-width: 0 9px 9px 0; border-color: transparent var(--note-color, #f79009) transparent transparent; }
+.note-list { display: flex; flex-direction: column; gap: 10px; margin: 8px 0; max-height: 50vh; overflow: auto; }
+.note-item { border: 1px solid #eaecf0; border-radius: 8px; padding: 8px 10px; }
+.note-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.note-text { margin: 6px 0; white-space: pre-wrap; }
+.note-label { color: #fff; border-radius: 10px; padding: 1px 8px; font-size: 0.85em; }
+.op-notes { margin: 6px 0; }

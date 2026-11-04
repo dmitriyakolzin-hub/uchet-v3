@@ -1,6 +1,7 @@
 // Форма операции журнала: шапка, проводки, аналитика по выбранным счетам, шаблон статьи.
 import { api } from "./api.js";
 import { openCfoSplit } from "./cfosplit.js";
+import { operationNotes } from "./notes.js";
 import { money, parseNumber, quantity, sumMoney } from "./format.js";
 import { el, openForm, toast } from "./ui.js";
 
@@ -511,6 +512,7 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
       canPost && !isOpening ? el("button", { type: "button", class: "link", onclick: () => fillBySheet().catch(showErrors) },
         "Заполнить по ведомости") : null) : null,
     closed ? el("p", { class: "muted" }, `Период закрыт по ${org.closed_through.split("-").reverse().join(".")} — операцию изменить нельзя.`) : null,
+    op ? operationNotes({ org, op }) : null,
     errorBox,
     historyBox,
     actions,

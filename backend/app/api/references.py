@@ -17,6 +17,7 @@ from app.models import (
     Currency,
     Employee,
     Executor,
+    NoteLabel,
     FixedAsset,
     InvestmentProject,
     LegalEntity,
@@ -263,6 +264,12 @@ for resource in (
         out_schema=s.NomenclatureOut, conflict_message="Номенклатура с таким артикулом уже есть",
         order_by=lambda m: [m.name],
         refs={"unit_id": Ref(Unit, "Единица измерения", org_scoped=False)},
+    ),
+    OrgResource(
+        path="note-labels", model=NoteLabel, title="Метка",
+        create_schema=s.NoteLabelCreate, update_schema=s.NoteLabelUpdate, out_schema=s.NoteLabelOut,
+        conflict_message="Такая метка уже есть",
+        order_by=lambda m: [m.name],
     ),
     OrgResource(
         path="warehouses", model=Warehouse, title="Склад",
