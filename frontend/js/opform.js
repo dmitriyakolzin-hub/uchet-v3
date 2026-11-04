@@ -48,6 +48,7 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
   // операция закрытого периода не меняется (сервер всё равно не даст)
   const closed = Boolean(op && org.closed_through && op.op_date <= org.closed_through);
   const editable = (op === null || op.status === "draft") && canDraft && !closed;
+  const canAddRefs = editable && perms.includes("edit_reference");
   const isOpening = op ? op.is_opening : opening;
   const accountsById = new Map(ref.accounts.map((a) => [a.id, a]));
   // счёт 00 — только для ввода остатков
@@ -125,18 +126,90 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
     const kinds = account ? [...account.analytics, ...(account.analytics.includes("cfo") ? ["executor"] : [])] : [];
     box.replaceChildren(
       ...kinds.map((kind) => {
-        const empty = kind === "executor" ? "— без ЦФУ —" : `— ${KIND_TITLES[kind].toLowerCase()} —`;
+        const empty = kind === "executor" ? "— без ЦФУ —" : kind === "contract" ? "— без договора —"
+          : `— ${KIND_TITLES[kind].toLowerCase()} —`;
         const control = select([["", empty], ...optionsFor(kind, side, posting)], values[kind] ?? "", {
           "data-side": side, "data-kind": kind, "aria-label": `${KIND_TITLES[kind]} (${side === "debit" ? "дебет" : "кредит"})`,
         });
         // договоры зависят от контрагента — перерисовываем при его смене
         if (kind === "counterparty") control.addEventListener("change", () => renderAnalytics(posting, side, collectAnalytics(posting, side)));
-        return el("label", { class: "analytic" }, KIND_TITLES[kind], control);
+        // новый контрагент или договор — прямо из операции (docs/TZ.md, раздел 25)
+        const add = canAddRefs && (kind === "counterparty" || kind === "contract")
+          ? el("button", { type: "button", class: "link add-ref", "aria-label": `Новый ${KIND_TITLES[kind].toLowerCase()} (${side === "debit" ? "дебет" : "кредит"})`,
+            onclick: () => (kind === "counterparty" ? addCounterparty : addContract)(posting, side) }, "+ новый")
+          : null;
+        return el("label", { class: "analytic" }, KIND_TITLES[kind], control, add);
       }),
     );
     updateQuantityVisibility(posting);
     const split = posting.querySelector(".split");
     if (split) split.hidden = !cfoSides(posting).length; // делить по ЦФО — где ЦФО ведётся
+  }
+
+  // перерисовать аналитику всех проводок (новый контрагент / договор появляется во всех списках)
+  function refreshAnalytics(target, side, values) {
+    for (const p of postingsBox.querySelectorAll(".posting")) {
+      for (const s of ["debit", "credit"]) {
+        renderAnalytics(p, s, p === target && s === side ? values : collectAnalytics(p, s));
+      }
+    }
+  }
+
+  function addCounterparty(posting, side) {
+    openForm({
+      title: "Новый контрагент",
+      fields: [
+        { name: "name", label: "Наименование", required: true },
+        { name: "kind", label: "Вид", type: "select", options: [["legal", "Организация"], ["entrepreneur", "ИП"], ["person", "Физлицо"]] },
+        { name: "inn", label: "ИНН", hint: "Организация — 10 цифр, ИП — 12, у физлица можно не указывать" },
+        { name: "kpp", label: "КПП", hint: "9 цифр, только у организаций" },
+      ],
+      values: { kind: "legal" },
+      submitText: "Добавить",
+      onSubmit: async (v) => {
+        const code = accountsById.get(Number(posting.querySelector(`[name="${side}_account"]`).value))?.code ?? "";
+        const created = await api.post(`/api/organizations/${org.id}/counterparties`, {
+          name: v.name, kind: v.kind, inn: v.inn || null, kpp: v.kpp || null,
+          is_supplier: code.startsWith("60"), is_customer: code.startsWith("62") });
+        ref.counterparties.push(created);
+        ref.counterpartyName.set(created.id, created.name);
+        const values = collectAnalytics(posting, side);
+        values.counterparty = created.id;
+        delete values.contract;
+        refreshAnalytics(posting, side, values);
+        toast(`Контрагент «${created.name}» добавлен`);
+      },
+    });
+  }
+
+  function addContract(posting, side) {
+    const values = collectAnalytics(posting, side);
+    const entityId = Number(entitySelect.value) || null;
+    if (!values.counterparty || !entityId) {
+      showErrors(new Error("Для нового договора сначала выберите юрлицо операции и контрагента"));
+      return;
+    }
+    const code = accountsById.get(Number(posting.querySelector(`[name="${side}_account"]`).value))?.code ?? "";
+    openForm({
+      title: `Новый договор: ${ref.counterpartyName.get(values.counterparty) ?? ""}`,
+      fields: [
+        { name: "number", label: "Номер", required: true },
+        { name: "contract_date", label: "Дата", type: "date" },
+        { name: "kind", label: "Вид договора", type: "select",
+          options: [["supplier", "С поставщиком"], ["customer", "С покупателем"], ["other", "Прочий"]] },
+        { name: "name", label: "Название (необязательно)" },
+      ],
+      values: { kind: code.startsWith("62") ? "customer" : code.startsWith("60") ? "supplier" : "other" },
+      submitText: "Добавить",
+      onSubmit: async (v) => {
+        const created = await api.post(`/api/organizations/${org.id}/contracts`, {
+          counterparty_id: values.counterparty, legal_entity_id: entityId, currency_id: ref.rubId, kind: v.kind,
+          number: v.number, contract_date: v.contract_date || null, name: v.name });
+        ref.contracts.push(created);
+        refreshAnalytics(posting, side, { ...collectAnalytics(posting, side), contract: created.id });
+        toast(`Договор № ${created.number} добавлен`);
+      },
+    });
   }
 
   function collectAnalytics(posting, side) {

@@ -342,3 +342,14 @@ table.pay-sheet td[draggable="true"] { cursor: grab; }
 table.pay-sheet .fact { color: #067647; }
 table.pay-sheet .plan { color: #667085; }
 table.pay-sheet .neg, table.pay-sheet td.neg .plan, table.pay-sheet td.neg .fact { color: #b42318; }
+/* фильтр с выбором нескольких значений (раздел 25) */
+.ms { position: relative; display: inline-block; }
+.ms-button { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-button.ms-active { border-color: #2e6be6; color: #1849a9; }
+.ms-panel { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; width: 340px; max-height: 360px; overflow: auto;
+  background: var(--bg, #fff); border: 1px solid var(--border, #d0d5dd); border-radius: 8px; padding: 8px;
+  box-shadow: 0 8px 24px rgba(16, 24, 40, .12); }
+.ms-panel input[type=search] { width: 100%; box-sizing: border-box; }
+.ms-actions { text-align: right; margin: 4px 0; }
+.ms-item { display: flex; gap: 6px; align-items: flex-start; padding: 2px 0; font-weight: normal; }
+.analytic .add-ref { font-size: 12px; margin-top: 2px; }

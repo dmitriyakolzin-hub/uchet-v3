@@ -37,6 +37,8 @@ ANALYTIC_TITLES: dict[AnalyticKind, str] = {
 
 # Необязательная аналитика: вид → при каком обязательном виде её можно указать (ЦФУ — там, где ведётся ЦФО)
 OPTIONAL_ANALYTICS: dict[str, str] = {AnalyticKind.EXECUTOR: AnalyticKind.CFO}
+# Обязательная на счёте аналитика, которую можно оставить пустой: «без договора» (docs/TZ.md, раздел 25)
+EMPTY_ALLOWED: frozenset[str] = frozenset({AnalyticKind.CONTRACT})
 
 ACCOUNT_TYPES = {
     "active": "Активный",

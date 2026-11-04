@@ -143,10 +143,12 @@ def test_import_month(client, env):
     assert art[loan["article_id"]] == "Получение кредитов и займов"
     assert acc[loan["postings"][0]["credit_account_id"]] == "66"
 
-    # налог проводится сразу; где не хватает договора / ЦФО / сотрудника — неполные черновики
+    # налог проводится сразу; где не хватает ЦФО / сотрудника — неполные черновики; договор можно не указывать
+    # («без договора», docs/TZ.md, раздел 25)
     tax_number = by_text["Единый налоговый платеж"]["number"]
     assert tax_number not in result["incomplete"]
-    for text in ("Комиссия за перечисления", "Заработная плата по реестру №26", "Оплата по договору оказания услуг"):
+    assert by_text["Оплата по договору оказания услуг"]["number"] not in result["incomplete"]
+    for text in ("Комиссия за перечисления", "Заработная плата по реестру №26"):
         assert by_text[text]["number"] in result["incomplete"], text
 
     check = result["accounts"][0]

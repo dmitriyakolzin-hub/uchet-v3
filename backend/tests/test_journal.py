@@ -119,9 +119,9 @@ def test_create_and_post_at_once(client, env):
 
 
 def test_post_at_once_failure_saves_nothing(client, env):
-    body = payment(env, posting={"debit": {"counterparty": env["cp"]["id"]}})  # нет договора
+    body = payment(env, posting={"debit": {}})  # нет контрагента
     resp = create(client, env, body, post=True)
-    assert resp.status_code == 422 and "Договор" in resp.json()["detail"]
+    assert resp.status_code == 422 and "Контрагент" in resp.json()["detail"]
     assert client.get(f"{env['o']}/operations", headers=env["h"]).json()["total"] == 0
 
 
@@ -132,8 +132,16 @@ def test_incomplete_draft_is_saved_but_not_posted(client, env):
     resp = act(client, env, op["id"], "post")
     assert resp.status_code == 422
     detail = resp.json()["detail"]
-    for text in ("не указана сумма", "кредит: не указан счёт", "«Контрагент»", "«Договор»"):
+    for text in ("не указана сумма", "кредит: не указан счёт", "«Контрагент»"):
         assert text in detail, detail
+    assert "«Договор»" not in detail  # договор можно не указывать — «без договора»
+
+
+def test_without_contract(client, env):
+    """Расчёты «без договора»: договор на счёте 60 можно оставить пустым (docs/TZ.md, раздел 25)."""
+    body = payment(env, posting={"debit": {"counterparty": env["cp"]["id"]}})
+    resp = create(client, env, body, post=True)
+    assert resp.status_code == 201 and resp.json()["status"] == "posted", resp.text
 
 
 def test_no_postings_cannot_be_posted(client, env):
@@ -304,14 +312,14 @@ def test_other_org_sees_nothing(client, env):
 
 def test_bulk_post_reports_each_failure(client, env):
     good = [create(client, env, payment(env)).json()["id"] for _ in range(2)]
-    bad = create(client, env, payment(env, posting={"debit": {"counterparty": env["cp"]["id"]}})).json()["id"]
+    bad = create(client, env, payment(env, posting={"debit": {}})).json()["id"]
     resp = client.post(f"{env['o']}/operations/bulk", headers=env["h"],
                        json={"action": "post", "ids": [*good, bad, 999999]})
     assert resp.status_code == 200
     body = resp.json()
     assert body["done"] == 2 and body["failed"] == 2
     by_id = {r["id"]: r for r in body["results"]}
-    assert "Договор" in by_id[bad]["error"]
+    assert "Контрагент" in by_id[bad]["error"]
     assert by_id[999999]["error"] == "Операция не найдена"
     statuses = {o["id"]: o["status"] for o in client.get(f"{env['o']}/operations", headers=env["h"]).json()["items"]}
     assert statuses[good[0]] == statuses[good[1]] == "posted" and statuses[bad] == "draft"
@@ -359,6 +367,13 @@ def test_list_filters(client, env):
     assert ids(account_id=env["acc"]["60"]) == [b["id"], a["id"]]  # счёт 60 включает 60.01
     assert ids(counterparty_id=env["cp2"]["id"]) == []
     assert ids(article_id=env["art"]["Оплата поставщикам"]) == [b["id"], a["id"]]
+    # несколько значений — «или» (docs/TZ.md, раздел 25)
+    assert ids(counterparty_id=[env["cp2"]["id"], env["cp"]["id"]]) == [b["id"], a["id"]]
+    assert ids(status=["posted", "cancelled"]) == [a["id"]]
+    assert ids(legal_entity_id=[env["le"].id, env["le2"].id]) == [b["id"], a["id"]]
+    assert ids(legal_entity_id=[env["le2"].id]) == []
+    assert ids(account_id=[env["acc"]["62"], env["acc"]["51"]]) == [b["id"], a["id"]]
+    assert ids(article_id=[env["art"]["Аренда"]]) == []
 
 
 def test_ledger_lines_posted_only_and_subaccounts(client, env, db):

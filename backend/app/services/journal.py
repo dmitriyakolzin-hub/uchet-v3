@@ -11,7 +11,7 @@ from decimal import Decimal
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
-from app.core.analytics import ANALYTIC_TITLES, OPTIONAL_ANALYTICS, AnalyticKind
+from app.core.analytics import ANALYTIC_TITLES, EMPTY_ALLOWED, OPTIONAL_ANALYTICS, AnalyticKind
 from app.core.money import BASE_CURRENCY, to_rub
 from app.models import (
     Account,
@@ -217,7 +217,7 @@ def posting_errors(db: Session, op: Operation) -> list[str]:
             for kind in ANALYTIC_COLUMNS:
                 value = getattr(p, analytic_column(side, kind))
                 title = ANALYTIC_TITLES[AnalyticKind(kind)]
-                if kind in required and value is None:
+                if kind in required and value is None and kind not in EMPTY_ALLOWED:
                     errors.append(f"{side_where} {account.code}: не заполнено «{title}»")
                 elif kind not in required and value is not None and OPTIONAL_ANALYTICS.get(kind) not in required:
                     errors.append(f"{side_where} {account.code}: «{title}» на этом счёте не ведётся")
