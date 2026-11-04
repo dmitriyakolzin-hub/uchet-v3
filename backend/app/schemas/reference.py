@@ -111,6 +111,9 @@ class SalaryProjectOut(_Out):
 # --- Контрагенты ---
 
 
+AccountNumber = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d{20}$")]
+
+
 class CounterpartyCreate(BaseModel):
     name: Name
     full_name: LongText = ""
@@ -119,6 +122,8 @@ class CounterpartyCreate(BaseModel):
     kpp: Kpp | None = None
     is_customer: bool = False
     is_supplier: bool = False
+    account_number: AccountNumber | None = None  # расчётный счёт контрагента — для платёжки
+    bank_id: int | None = None
 
     @model_validator(mode="after")
     def _inn_matches_kind(self):
@@ -134,6 +139,8 @@ class CounterpartyUpdate(BaseModel):
     kpp: Kpp | None = None
     is_customer: bool | None = None
     is_supplier: bool | None = None
+    account_number: AccountNumber | None = None
+    bank_id: int | None = None
     is_active: bool | None = None
 
 
@@ -147,6 +154,8 @@ class CounterpartyOut(_Out):
     kpp: str | None
     is_customer: bool
     is_supplier: bool
+    account_number: str | None = None
+    bank_id: int | None = None
     is_active: bool
 
 

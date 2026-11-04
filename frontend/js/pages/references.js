@@ -286,8 +286,9 @@ const TABS = [
       { title: "КПП", field: "kpp", width: 110 },
       { title: "Покупатель", field: "is_customer", width: 110, formatter: (c) => (c.getValue() ? "да" : "") },
       { title: "Поставщик", field: "is_supplier", width: 110, formatter: (c) => (c.getValue() ? "да" : "") },
+      { title: "Расчётный счёт", field: "account_number", width: 190 },
     ],
-    fields: () => [
+    fields: (d) => [
       { name: "name", label: "Наименование", required: true, placeholder: "Ромашка" },
       { name: "full_name", label: "Полное наименование", placeholder: "ООО «Ромашка»" },
       { name: "kind", label: "Вид", type: "select", options: COUNTERPARTY_KINDS, default: "legal" },
@@ -295,6 +296,10 @@ const TABS = [
       { name: "kpp", label: "КПП", nullable: true, hint: "9 цифр, только у организаций" },
       { name: "is_customer", label: "Покупатель", type: "checkbox" },
       { name: "is_supplier", label: "Поставщик", type: "checkbox" },
+      { name: "account_number", label: "Расчётный счёт (для платёжек)", nullable: true,
+        hint: "20 цифр; подставляется сам из выписки, если пусто" },
+      { name: "bank_id", label: "Банк контрагента", type: "select", numeric: true, nullable: true,
+        options: optionsOf(d.banks, (b) => `${b.name} (${b.bic})`, { empty: "— не указан —" }) },
     ],
   },
   {
@@ -574,7 +579,7 @@ export async function renderReferences(view) {
     const need = (keys, load) => (keys.includes(tab.key) ? load() : []);
     const [entities, banks, currencies, counterparties, cfos, units, articles, employees, executors, projects] = await Promise.all([
       api.get(`/api/organizations/${org.id}/legal-entities`),
-      need(["bank-accounts", "salary-projects"], () => api.get("/api/banks")),
+      need(["bank-accounts", "salary-projects", "counterparties"], () => api.get("/api/banks")),
       need(["bank-accounts", "contracts"], () => api.get("/api/currencies")),
       need(["contracts"], () => api.get(`/api/organizations/${org.id}/counterparties`)),
       need(["cfos", "employees", "warehouses", "investment-projects"], () => api.get(`/api/organizations/${org.id}/cfos`)),

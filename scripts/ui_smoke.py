@@ -1062,6 +1062,21 @@ with sync_playwright() as p:
     page.click("button.tab:has-text('Ожидаемые платежи')")
     expect(page.locator("table.expected tbody tr", has_text="Ведомость")).to_have_count(1)
     page.screenshot(path=f"{OUT}/28_expected.png", full_page=True)
+    # реестр на оплату (шаг 14.4): согласованная заявка — в группе своего дня и счёта
+    page.click("button.tab:has-text('Реестр на оплату')")
+    rrow = page.locator(f"table.registry tbody tr[data-number='{request_no}']")
+    expect(rrow).to_contain_text("Оплата по счёту 77")
+    expect(page.locator("table.registry tr.week-row", has_text="01.01.2099")).to_contain_text("1 500,50")
+    page.click("button:has-text('Отметить отправленными')")
+    expect(page.locator(".toast")).to_have_text("Отметьте заявки в реестре")
+    box = rrow.locator("input[type=checkbox]")
+    if box.is_enabled():
+        box.check()
+        page.click("button:has-text('Отметить отправленными')")
+        expect(page.locator(f"table.registry tbody tr[data-number='{request_no}']")).to_contain_text("отправлено")
+    else:
+        expect(rrow.locator(".gap-note").first).to_contain_text("у контрагента")
+    page.screenshot(path=f"{OUT}/35_registry.png", full_page=True)
     page.click("button.tab:has-text('Заявки')")
 
     # вход под CEO

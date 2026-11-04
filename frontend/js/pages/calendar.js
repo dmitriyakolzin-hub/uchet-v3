@@ -12,7 +12,8 @@ const STATUS = { draft: "Черновик", pending: "На согласован�
 const EVENT_TITLES = { created: "создал(а)", submitted: "подал(а) на согласование", approved: "согласовал(а)",
   rejected: "отклонил(а)", revision: "вернул(а) на доработку", recalled: "отозвал(а)", unapproved: "вернул(а) на согласование",
   moved: "перенёс(ла) на", paid: "отметил(а) оплату", unpaid: "снял(а) оплату", file: "приложил(а) файл",
-  file_removed: "убрал(а) файл", periodic_updated: "обновлено по договору" };
+  file_removed: "убрал(а) файл", periodic_updated: "обновлено по договору", sent: "отправил(а) в банк",
+  unsent: "снял(а) отметку «отправлено в банк»" };
 const DIRECTION = { out: "Выплата", in: "Поступление" };
 
 function recall(key) {
@@ -92,18 +93,22 @@ export async function renderCalendar(view) {
     el("div", { class: "page-head" }, el("h1", {}, "Платёжный календарь"), el("label", { class: "inline" }, "Организация ", orgSelect)),
     tabs, content,
   );
-  let tab = ["requests", "expected", "periodic"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "grid";
+  const registryBox = el("div");
+  let tab = ["requests", "expected", "periodic", "registry"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "grid";
   // руководитель ЦФУ и руководитель ЦФО видят только заявки
   const onlyRequests = () => org.restricted || org.role === "executor_head";
   function openTab(key) {
     tab = onlyRequests() && !["requests", "periodic"].includes(key) ? "requests" : key;
+    if (tab === "registry" && !can("post")) tab = "grid";
     remember(TAB_KEY, tab);
     const list = onlyRequests() ? [["requests", "Заявки"], ["periodic", "Периодические платежи"]]
-      : [["grid", "Календарь"], ["requests", "Заявки"], ["periodic", "Периодические платежи"], ["expected", "Ожидаемые платежи"]];
+      : [["grid", "Календарь"], ["requests", "Заявки"], ...(can("post") ? [["registry", "Реестр на оплату"]] : []),
+        ["periodic", "Периодические платежи"], ["expected", "Ожидаемые платежи"]];
     tabs.replaceChildren(...list.map(([k, title]) =>
       el("button", { type: "button", class: `tab${k === tab ? " active" : ""}`, onclick: () => openTab(k) }, title)));
-    content.replaceChildren({ grid: gridBox, requests: requestsBox, expected: expectedBox, periodic: periodicBox }[tab]);
-    return { grid: loadGrid, requests: load, expected: loadExpected, periodic: loadPeriodic }[tab]();
+    content.replaceChildren({ grid: gridBox, requests: requestsBox, expected: expectedBox, periodic: periodicBox,
+      registry: registryBox }[tab]);
+    return { grid: loadGrid, requests: load, expected: loadExpected, periodic: loadPeriodic, registry: loadRegistry }[tab]();
   }
 
   function budgetCell(r) {
@@ -155,7 +160,9 @@ export async function renderCalendar(view) {
         title: `Маршрут: ${r.route_titles.join(" → ")}` }, r.can_act ? `ждёт вас (${r.step_title})` : `у: ${r.step_title}`)
       : r.status === "paid" ? el("div", { class: "muted" }, `${date(r.paid_on)}${r.operation_number ? `, операция № ${r.operation_number}` : ""}`
         + `${r.confirmed_by_statement ? " (выписка)" : ""}`) : null;
-    return el("td", {}, el("span", { class: `status req-${r.status}` }, STATUS[r.status]), note);
+    const sent = r.status === "approved" && r.sent_at
+      ? el("div", { class: "muted" }, `отправлено в банк ${new Date(r.sent_at).toLocaleDateString("ru-RU")}`) : null;
+    return el("td", {}, el("span", { class: `status req-${r.status}` }, STATUS[r.status]), note, sent);
   }
 
   // файлы заявки: скачать, приложить (автор и финансовая служба), убрать
@@ -261,7 +268,7 @@ export async function renderCalendar(view) {
     });
   }
 
-  function pay(r) {
+  function pay(r, after = load) {
     openForm({
       title: `Оплата заявки № ${r.number}`,
       fields: [
@@ -273,7 +280,7 @@ export async function renderCalendar(view) {
       submitText: "Отметить оплату",
       onSubmit: async (v) => {
         await api.post(`/api/payment-requests/${r.id}/pay`, { paid_on: v.paid_on, operation_number: idOrNull(v.operation_number) });
-        await load();
+        await after();
       },
     });
   }
@@ -398,6 +405,117 @@ export async function renderCalendar(view) {
               m.paid_on ? el("div", { class: "muted" }, `оплачено ${date(m.paid_on)}`) : ""] : "");
           })))))
         : el("p", { class: "muted" }, "Периодических платежей пока нет."));
+  }
+
+  // --- реестр на оплату: согласованные выплаты по дням и счетам, выгрузка платёжек в банк-клиент (1С) ---
+  const regFilter = { date_from: "", date_to: "", include_sent: true };
+  const regList = el("div");
+  const regInput = (key, label) => {
+    const node = el("input", { type: "date", value: regFilter[key], "aria-label": label });
+    node.addEventListener("change", () => { regFilter[key] = node.value; loadRegistry(); });
+    return node;
+  };
+  const sentBox = el("input", { type: "checkbox", checked: true, "aria-label": "С отправленными в банк" });
+  sentBox.addEventListener("change", () => { regFilter.include_sent = sentBox.checked; loadRegistry(); });
+  const regQuery = () => new URLSearchParams(Object.entries(regFilter).filter(([, v]) => v !== "")).toString();
+  const picked = new Set();
+  const pickedIds = () => {
+    if (!picked.size) toast("Отметьте заявки в реестре", "error");
+    return [...picked];
+  };
+  const regRun = async (fn) => {
+    try {
+      await fn();
+      await loadRegistry();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  };
+  registryBox.append(
+    el("p", { class: "muted" }, "Согласованные и ещё не оплаченные выплаты по дням и расчётным счетам (касса — отдельно). "
+      + "«Остаток» — остаток на счёте сегодня минус платежи этого счёта в реестре раньше; красным — не хватает денег. "
+      + "«Выгрузить в банк» — файл платёжных поручений для банк-клиента (формат 1С), заявки отмечаются «отправлено в банк». "
+      + "Для платёжки у контрагента нужны расчётный счёт и банк (карточка контрагента; из выписки подставляются сами). "
+      + "Оплаченной заявку отметит выписка."),
+    el("div", { class: "filters" },
+      el("label", { class: "inline" }, "С ", regInput("date_from", "Реестр с даты")),
+      el("label", { class: "inline" }, "по ", regInput("date_to", "Реестр по дату")),
+      el("label", { class: "check" }, sentBox, " с отправленными в банк"),
+      el("button", { type: "button", onclick: () => regRun(async () => {
+        const ids = pickedIds();
+        if (!ids.length) return;
+        await api.download(`/api/organizations/${org.id}/payment-registry/export`, "1c_to_kl.txt", { ids });
+        toast(`Выгружено платёжек: ${ids.length}`);
+      }) }, "Выгрузить в банк (1С)"),
+      el("button", { type: "button", class: "secondary", onclick: () => regRun(async () => {
+        const ids = pickedIds();
+        if (ids.length) await api.post(`/api/organizations/${org.id}/payment-registry/sent`, { ids, sent: true });
+      }) }, "Отметить отправленными"),
+      el("button", { type: "button", class: "secondary", onclick: () => regRun(async () => {
+        const ids = pickedIds();
+        if (ids.length) await api.post(`/api/organizations/${org.id}/payment-registry/sent`, { ids, sent: false });
+      }) }, "Снять отметку"),
+      el("button", { type: "button", class: "secondary",
+        onclick: () => api.download(`/api/organizations/${org.id}/payment-registry.xlsx?${regQuery()}`, "payment_registry.xlsx")
+          .catch((err) => toast(err.message, "error")) }, "Скачать в Excel")),
+    regList,
+  );
+
+  async function loadRegistry() {
+    let data;
+    try {
+      data = await api.get(`/api/organizations/${org.id}/payment-registry?${regQuery()}`);
+    } catch (err) {
+      regList.replaceChildren(el("p", { class: "error" }, err.message));
+      return;
+    }
+    picked.clear();
+    if (!data.groups.length) {
+      regList.replaceChildren(el("p", { class: "muted" }, "Согласованных неоплаченных выплат нет."));
+      return;
+    }
+    const check = (r) => {
+      const box = el("input", { type: "checkbox", "aria-label": `Заявка № ${r.number} в выгрузку`,
+        disabled: r.problems.length > 0 || r.cash_cfo_id !== null });
+      box.addEventListener("change", () => { if (box.checked) picked.add(r.id); else picked.delete(r.id); });
+      return box;
+    };
+    const body = [];
+    for (const g of data.groups) {
+      const boxes = g.rows.map(check);
+      const all = el("input", { type: "checkbox", "aria-label": `Все заявки ${date(g.pay_date)} ${g.title}`,
+        disabled: boxes.every((b) => b.disabled) });
+      all.addEventListener("change", () => boxes.forEach((b) => {
+        if (b.disabled) return;
+        b.checked = all.checked;
+        b.dispatchEvent(new Event("change"));
+      }));
+      body.push(el("tr", { class: `week-row${g.shortage !== "0.00" ? " gap-row" : ""}` },
+        el("td", {}, all),
+        el("td", { colspan: 4 }, `${date(g.pay_date)}${g.overdue ? " (просрочено)" : ""} · ${g.title}`),
+        el("td", {}, g.available === null ? "" : `остаток ${money(g.available)}`
+          + (g.shortage !== "0.00" ? ` — не хватает ${money(g.shortage)}` : "")),
+        el("td", { class: "num" }, money(g.total)), el("td", {})));
+      g.rows.forEach((r, i) => body.push(el("tr", { "data-number": r.number },
+        el("td", {}, boxes[i]),
+        el("td", {}, `№ ${r.number}`),
+        el("td", {}, r.counterparty_name || "—", r.contract_name ? el("div", { class: "muted" }, `Договор ${r.contract_name}`) : null),
+        el("td", {}, r.article_name, el("div", { class: "muted" }, [r.cfo_name, r.executor_name].filter(Boolean).join(" · "))),
+        el("td", {}, r.description,
+          ...r.problems.map((p) => el("div", { class: "gap-note" }, p)),
+          ...r.warnings.map((w) => el("div", { class: "muted" }, w))),
+        el("td", {}, r.sent_at ? `отправлено ${new Date(r.sent_at).toLocaleDateString("ru-RU")}` : ""),
+        el("td", { class: "num" }, money(r.amount)),
+        el("td", { class: "req-actions" },
+          el("button", { type: "button", class: "link", onclick: () => move(r, loadRegistry) }, "Перенести"),
+          el("button", { type: "button", class: "link", onclick: () => pay(r, loadRegistry) }, "Оплачено"),
+          el("button", { type: "button", class: "link", onclick: () => history(r) }, "История")))));
+    }
+    regList.replaceChildren(el("table", { class: "recon calendar-grid registry" },
+      el("thead", {}, el("tr", {}, ...["", "№", "Контрагент", "Статья / ЦФО", "Назначение", "В банк", "Сумма", ""]
+        .map((t) => el("th", {}, t)))),
+      el("tbody", {}, ...body)),
+    el("p", { class: "muted" }, `Всего: ${data.count} на ${money(data.total)}`));
   }
 
   // --- ожидаемые платежи: заявки, ведомости, регламентные операции, оплаты инвестпроектов ---

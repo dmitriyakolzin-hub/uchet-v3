@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    Bank,
     Account,
     Article,
     BankAccount,
@@ -174,6 +175,17 @@ class _Importer:
             self.result.new_counterparties.append(cp.name)
         return cp
 
+    def remember_requisites(self, doc, inflow: bool) -> None:
+        """Счёт и банк контрагента из платежа — для будущих платёжек (только если в карточке их ещё нет)."""
+        inn, account, bic = ((doc.payer_inn, doc.payer_account, doc.payer_bic) if inflow
+                             else (doc.payee_inn, doc.payee_account, doc.payee_bic))
+        cp = self.counterparty_for(inn, "", inflow, create=False)
+        if cp is None or cp.account_number or not re.fullmatch(r"\d{20}", account or ""):
+            return
+        cp.account_number = account
+        if bic and cp.bank_id is None:
+            cp.bank_id = self.db.scalar(select(Bank.id).where(Bank.bic == bic))
+
     # --- платёж → черновик ---
 
     def import_document(self, doc: Document) -> None:
@@ -221,6 +233,8 @@ class _Importer:
             request = payment_requests.find_for_payment(
                 self.db, self.org_id, own, "in" if inflow else "out", doc.amount,
                 doc.payer_inn if inflow else doc.payee_inn, op_date)
+        if not transfer:
+            self.remember_requisites(doc, inflow)
         posting, article = self.build_posting(doc, transfer, inflow, own, payer, payee, request)
         other_name = _clean_name(doc.payer_name if inflow else doc.payee_name)
         body = OperationIn(
