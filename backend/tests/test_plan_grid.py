@@ -119,9 +119,11 @@ def test_approved_version_is_frozen_and_copied(client, env):
     put(client, env, [{"article_id": rent, "month": 1, "amount": "1000"}], cfo="shop")
     put(client, env, [{"article_id": env["art"]["Оплата поставщикам"], "month": 1, "amount": "900"}], kind="cf")
     assert client.post(f"/api/budget-versions/{env['version']['id']}/approve", headers=env["h"]).status_code == 200
-    resp = put(client, env, [{"article_id": rent, "month": 1, "amount": "5"}], cfo="shop")
-    assert resp.status_code == 422 and "черновик" in resp.json()["detail"]
-    assert grid(client, env).json()["editable"] is False
+    # после утверждения руководитель ЦФО план не меняет (шаг 12.5); фин. директор — может, с историей (ниже)
+    resp = put(client, env, [{"article_id": rent, "month": 1, "amount": "5"}], cfo="shop", h=env["head"])
+    assert resp.status_code == 422 and "утверждён" in resp.json()["detail"]
+    assert grid(client, env, h=env["head"]).json()["editable"] is False
+    assert (grid(client, env).json()["editable"], grid(client, env).json()["locked"]) == (True, True)
 
     v2 = client.post(f"/api/budgets/{env['budget']['id']}/versions", headers=env["h"],
                      json={"copy_from_id": env["version"]["id"]}).json()
@@ -259,3 +261,40 @@ def test_cfo_plan_submitted(client, env):
     # утверждённая версия — отметки не меняются
     client.post(f"/api/budget-versions/{v}/approve", headers=env["h"])
     assert client.post(f"{url}/{shop}/submit", headers=env["h"]).status_code == 422
+
+
+def test_cfo_approval_and_history(client, env):
+    """Шаг 12.5: утверждён ЦФО — его ветку руководители не меняют; администратор и фин. директор правят,
+    каждая правка — в истории (docs/TZ.md, раздел 22)."""
+    v = env["version"]["id"]
+    rent = env["art"]["Аренда"]
+    url = f"/api/budget-versions/{v}/cfo-statuses"
+    assert put(client, env, [{"article_id": rent, "month": 1, "amount": "1000"}], cfo="shop", h=env["head"]).status_code == 200
+    trade, shop = env["trade"]["id"], env["shop"]["id"]
+    assert client.post(f"{url}/{trade}/approve", headers=env["head"]).status_code == 403  # утверждает не руководитель ЦФО
+    rows = {r["name"]: r for r in client.post(f"{url}/{trade}/approve", headers=env["h"]).json()}
+    assert rows["Торговля"]["approved_at"] and rows["Торговля"]["locked"] and rows["Магазин 1"]["locked"]
+    assert rows["Магазин 1"]["approved_at"] is None and rows["Логистика"]["locked"] is False
+
+    # руководитель ЦФО: ни правки, ни отметки «сдан»; сетка — только просмотр
+    resp = put(client, env, [{"article_id": rent, "month": 1, "amount": "1"}], cfo="shop", h=env["head"])
+    assert resp.status_code == 422 and "утверждён" in resp.json()["detail"]
+    assert client.post(f"{url}/{shop}/submit", headers=env["head"]).status_code == 422
+    assert grid(client, env, h=env["head"]).json()["editable"] is False
+    # фин. директор правит — в истории; неутверждённый ЦФО — без истории
+    assert put(client, env, [{"article_id": rent, "month": 1, "amount": "1500"}], cfo="shop").status_code == 200
+    assert put(client, env, [{"article_id": rent, "month": 1, "amount": "700"}], cfo="logistics").status_code == 200
+    changes = client.get(f"/api/budget-versions/{v}/changes", headers=env["h"]).json()
+    assert [(c["cfo_id"], c["month"], c["old_amount"], c["new_amount"]) for c in changes] == [(shop, 1, "1000.00", "1500.00")]
+    assert changes[0]["article"] == "Аренда" and changes[0]["user"]
+    assert len(client.get(f"/api/budget-versions/{v}/changes", headers=env["head"]).json()) == 1  # магазин — его ветка
+
+    # снять утверждение можно только там, где его поставили
+    assert client.post(f"{url}/{shop}/unapprove", headers=env["h"]).status_code == 422
+    assert client.post(f"{url}/{trade}/unapprove", headers=env["h"]).status_code == 200
+    assert put(client, env, [{"article_id": rent, "month": 2, "amount": "1"}], cfo="shop", h=env["head"]).status_code == 200
+    # утверждённая версия целиком: правка фин. директора — тоже в истории
+    client.post(f"/api/budget-versions/{v}/approve", headers=env["h"])
+    assert put(client, env, [{"article_id": rent, "month": 2, "amount": None}], cfo="shop").status_code == 200
+    first = client.get(f"/api/budget-versions/{v}/changes", headers=env["h"]).json()[0]
+    assert (first["month"], first["old_amount"], first["new_amount"]) == (2, "1.00", None)

@@ -27,6 +27,7 @@ from app.models import (
     InvestmentProject,
     LegalEntity,
     Operation,
+    PlanChange,
     Posting,
     User,
 )
@@ -226,10 +227,12 @@ def refresh_project(db: Session, project: InvestmentProject) -> None:
 
 
 def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None, cells: list[Cell], user: User,
-              executor_id: int | None = None, project_id: int | None = None) -> int:
+              executor_id: int | None = None, project_id: int | None = None, guard=None) -> int:
     """Записать ячейки сетки (строка: статья + ЦФУ, если указан); возвращает число изменённых ячеек.
-    Версия — только черновик."""
-    if version.status != "draft":
+    guard(cfo_id) — проверка прав пользователя (plan_access.Guard): бросает PlanError, если менять нельзя,
+    и возвращает True, если правка идёт после утверждения — тогда каждая ячейка пишется в историю.
+    Без guard — только черновик версии (программные вызовы)."""
+    if guard is None and version.status != "draft":
         raise PlanError("Менять можно только черновик версии; для пересмотра создайте новую версию")
     budget = db.get(Budget, version.budget_id)
     cfo = None
@@ -253,6 +256,7 @@ def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None
             raise PlanError("ЦФУ не найден в этой организации")
         if kind == "cf":
             raise PlanError("ЦФУ не указывается в плане ДДС")
+    audit = guard(cfo_id) if guard is not None else False
     allowed = {a.id: a for a, _ in plan_articles(db, budget.organization_id, kind)}
     entity_id = None
     changed = 0
@@ -267,6 +271,12 @@ def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None
             raise PlanError(f"«{article.name}»: сумма плана не может быть отрицательной")
         op_date = dt.date(budget.year, cell.month, 1)
         op = _cell_op(db, version.id, kind, cfo_id, article.id, op_date, executor_id, project_id)
+        if audit:
+            old_amount = sum((p.amount or Decimal(0) for p in op.postings), Decimal("0.00")) if op is not None else None
+            if (old_amount or None) != (amount or None):
+                db.add(PlanChange(version_id=version.id, kind=kind, cfo_id=cfo_id, executor_id=executor_id,
+                                  article_id=article.id, month=cell.month, old_amount=old_amount,
+                                  new_amount=amount or None, user_id=user.id))
         if not amount:
             if op is not None:
                 db.delete(op)
@@ -478,11 +488,11 @@ class PlanImportResult:
 
 
 def import_plan(db: Session, version: BudgetVersion, kind: str, raw: bytes, user: User,
-                branch: set[int] | None = None) -> PlanImportResult:
+                branch: set[int] | None = None, guard=None) -> PlanImportResult:
     """Строка файла: ЦФО + статья + суммы по месяцам; пустая ячейка или 0 — ячейка плана очищается.
-    Строка с ошибкой не загружается (номер и причина — в результате)."""
+    Строка с ошибкой не загружается (номер и причина — в результате). guard — как у set_cells."""
     budget = db.get(Budget, version.budget_id)
-    if version.status != "draft":
+    if guard is None and version.status != "draft":
         raise PlanError("Загружать план можно только в черновик версии")
     columns = [Column("ЦФО", "cfo"), Column("Статья", "article", True), Column("ЦФУ", "executor")]
     columns += [Column(MONTH_TITLES[m - 1], f"m{m}") for m in budget.months]
@@ -520,7 +530,7 @@ def import_plan(db: Session, version: BudgetVersion, kind: str, raw: bytes, user
                 amount = None if _text(value) in ("", "0") else _decimal(value, MONTH_TITLES[m - 1], 2)
                 cells.append(Cell(article.id, m, amount))
             with db.begin_nested():
-                result.changed += set_cells(db, version, kind, cfo_id, cells, user, executor_id)
+                result.changed += set_cells(db, version, kind, cfo_id, cells, user, executor_id, guard=guard)
         except (RowProblem, PlanError) as exc:
             result.errors.append(RowError(number, str(exc)))
     return result

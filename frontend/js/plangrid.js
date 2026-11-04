@@ -62,7 +62,11 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   const statusesButton = el("button", { type: "button", class: "secondary", onclick: () => showStatuses() }, "Кто сдал план");
   const topDownButton = el("button", { type: "button", class: "secondary", hidden: true, onclick: () => openTopDown() }, "Сверху вниз");
   const retroButton = el("button", { type: "button", class: "secondary", hidden: true, onclick: () => openRetro() }, "По среднему");
+  const historyButton = el("button", { type: "button", class: "secondary", onclick: () => showHistory() }, "История изменений");
   const canDraft = org.permissions.includes("draft") && version.status === "draft";
+  // администратор и фин. директор (право проводить) утверждают ЦФО и правят план после утверждения — с историей
+  const supervisor = org.permissions.includes("post");
+  const canPlan = canDraft || (supervisor && version.status !== "archived");
 
   view.replaceChildren(
     el("div", { class: "page-head" },
@@ -71,7 +75,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     kindTabs,
     el("div", { class: "filters" }, cfoLabel, executorLabel, modeTabs,
       downloadButton,
-      uploadButton, fileInput, statusesButton, topDownButton, retroButton),
+      uploadButton, fileInput, statusesButton, topDownButton, retroButton, historyButton),
     submitBox,
     status,
     tableBox,
@@ -174,8 +178,9 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   async function renderSubmit() {
     const show = kind === "pl" && cfoId && mode !== "executor";
     statusesButton.hidden = kind !== "pl";
-    topDownButton.hidden = !(kind === "pl" && cfoId && hasChildren(cfoId) && canDraft && mode !== "executor");
-    retroButton.hidden = !(canDraft && ((kind === "pl" && cfoId && mode !== "executor") || (kind === "cf" && !org.restricted)));
+    topDownButton.hidden = !(kind === "pl" && cfoId && hasChildren(cfoId) && canPlan && mode !== "executor");
+    retroButton.hidden = !(canPlan && ((kind === "pl" && cfoId && mode !== "executor") || (kind === "cf" && !org.restricted)));
+    historyButton.hidden = kind === "inv";
     if (!show) { submitBox.replaceChildren(); return; }
     const rows = await api.get(`/api/budget-versions/${version.id}/cfo-statuses`);
     const row = rows.find((r) => r.cfo_id === cfoId);
@@ -183,20 +188,55 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     const act = async (action) => {
       try {
         await api.post(`/api/budget-versions/${version.id}/cfo-statuses/${cfoId}/${action}`);
-        toast(action === "submit" ? "План ЦФО отмечен как сданный" : "Отметка снята");
-        await renderSubmit();
+        toast({ submit: "План ЦФО отмечен как сданный", unsubmit: "Отметка снята", approve: "План ЦФО утверждён",
+          unapprove: "Утверждение снято" }[action]);
+        await load();
       } catch (err) {
         toast(err.message, "error");
       }
     };
+    const approvedText = row.approved_at
+      ? `Утверждён ${when(row.approved_at)}${row.approved_by ? ` (${row.approved_by})` : ""}`
+      : row.locked ? "Утверждён вышестоящий ЦФО" : "";
     submitBox.replaceChildren(
       el("span", { class: row.submitted_at ? "badge ok" : "badge" }, row.submitted_at
         ? `План ЦФО сдан ${when(row.submitted_at)}${row.submitted_by ? ` (${row.submitted_by})` : ""}`
         : "План ЦФО не сдан"),
       row.changed_after ? el("span", { class: "over-budget" }, "изменён после сдачи") : "",
-      canDraft ? el("button", { type: "button", class: row.submitted_at ? "secondary" : "",
+      approvedText ? el("span", { class: "badge approved" }, approvedText) : "",
+      canDraft && !row.locked ? el("button", { type: "button", class: row.submitted_at ? "secondary" : "",
         onclick: () => act(row.submitted_at ? "unsubmit" : "submit") }, row.submitted_at ? "Вернуть в работу" : "Сдать план") : "",
+      supervisor && version.status !== "archived" && (row.approved_at || !row.locked)
+        ? el("button", { type: "button", class: "secondary", onclick: () => act(row.approved_at ? "unapprove" : "approve") },
+          row.approved_at ? "Снять утверждение" : hasChildren(cfoId) ? "Утвердить ЦФО с подчинёнными" : "Утвердить ЦФО")
+        : "",
     );
+  }
+
+  // История правок после утверждения (docs/TZ.md, раздел 22, «Детали 12.5»)
+  async function showHistory() {
+    const rows = await api.get(`/api/budget-versions/${version.id}/changes`);
+    const cfoName = new Map(cfos.map((c) => [c.id, label(c)]));
+    const monthTitle = (m) => ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь",
+      "октябрь", "ноябрь", "декабрь"][m - 1];
+    const dialog = el("dialog", { class: "dialog wide" },
+      el("h2", {}, "История изменений плана"),
+      el("p", { class: "muted" }, "Правки после утверждения ЦФО или версии: кто, когда, что было и что стало."),
+      rows.length ? el("table", { class: "plain plan-cells" },
+        el("thead", {}, el("tr", {}, ...["Когда", "Кто", "ЦФО", "Статья", "Месяц", "Было", "Стало"].map((t, i) =>
+          el("th", { class: i > 4 ? "num" : "" }, t)))),
+        el("tbody", {}, ...rows.map((r) => el("tr", {},
+          el("td", {}, new Date(r.changed_at).toLocaleString("ru-RU")), el("td", {}, r.user),
+          el("td", {}, r.cfo_id ? cfoName.get(r.cfo_id) ?? "" : "—"),
+          el("td", {}, r.article + (r.executor_id ? ` (${executorName.get(r.executor_id) ?? "ЦФУ"})` : "")),
+          el("td", {}, `${monthTitle(r.month)} ${budget.year}`),
+          el("td", { class: "num" }, r.old_amount ? money(r.old_amount) : "—"),
+          el("td", { class: "num" }, r.new_amount ? money(r.new_amount) : "—")))))
+        : el("p", { class: "muted" }, "Изменений после утверждения не было."),
+      el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => dialog.close() }, "Закрыть")));
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.showModal();
   }
 
   async function showStatuses() {
@@ -208,12 +248,15 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       el("h2", {}, "Кто сдал план"),
       el("p", { class: "muted" }, `Сдали ${done} из ${leaves.length} нижних ЦФО. Сумма — свой план ОПиУ ЦФО (без подчинённых).`),
       el("table", { class: "plain plan-cells" },
-        el("thead", {}, el("tr", {}, el("th", {}, "ЦФО"), el("th", { class: "num" }, "Свой план"), el("th", {}, "Статус"))),
+        el("thead", {}, el("tr", {}, el("th", {}, "ЦФО"), el("th", { class: "num" }, "Свой план"), el("th", {}, "Сдача"),
+          el("th", {}, "Утверждение"))),
         el("tbody", {}, ...rows.map((r) => el("tr", {},
           el("td", { style: `padding-left:${(r.level - minLevel) * 18 + 6}px` }, r.name),
           el("td", { class: "num" }, Number(r.plan_total) ? money(r.plan_total) : ""),
           el("td", {}, r.submitted_at ? `сдан ${when(r.submitted_at)}${r.submitted_by ? `, ${r.submitted_by}` : ""}`
-            + (r.changed_after ? " — изменён после сдачи" : "") : "не сдан"))))),
+            + (r.changed_after ? " — изменён после сдачи" : "") : "не сдан"),
+          el("td", {}, r.approved_at ? `утверждён ${when(r.approved_at)}${r.approved_by ? `, ${r.approved_by}` : ""}`
+            : r.locked ? "утверждён выше" : ""))))),
       el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => dialog.close() }, "Закрыть")));
     document.body.append(dialog);
     dialog.addEventListener("close", () => dialog.remove());
@@ -285,9 +328,12 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       ? "Введите сумму в ячейку и нажмите Enter — она сразу сохраняется. Пустая ячейка или 0 — плана нет. "
         + "Суммы — положительные: доход или расход определяется статьёй."
         + (kind === "pl" && executorChoices.length ? " «+ ЦФУ» — строка статьи с исполнителем (кто делает расход)." : "")
-      : version.status === "draft"
+        + (data.locked ? " План утверждён — каждое изменение записывается в «Историю изменений»." : "")
+      : data.locked
+        ? "Только просмотр: план утверждён — менять его могут администратор и финансовый директор."
+        : version.status === "draft"
         ? "Только просмотр: недостаточно прав."
-        : "Только просмотр: версия утверждена или в архиве. Для пересмотра создайте новую версию.";
+        : "Только просмотр: версия в архиве. Для пересмотра создайте новую версию.";
     const addExecutor = data.editable && kind === "pl" && executorChoices.length;
     table.setColumns([
       { title: "Статья", field: "name", minWidth: 240, widthGrow: 3, frozen: true, headerSort: false,

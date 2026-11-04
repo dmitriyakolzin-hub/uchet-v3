@@ -123,7 +123,10 @@ def test_plan_cells_window(client, env):
     """Шаг 12.1: окно «Плановые операции» из отчёта — те же суммы, правка в черновике (docs/TZ.md, раздел 22)."""
     year = env["version"]
     data = cells(client, env, year).json()
-    assert (data["months"], data["total"], data["editable"]) == ([1, 2], "2000.00", False)  # версия утверждена
+    # версия утверждена: фин. директор правит с историей (шаг 12.5), руководитель ЦФО — нет
+    assert (data["months"], data["total"], data["editable"], data["audited"]) == ([1, 2], "2000.00", True, True)
+    head = cells(client, env, year, h=env["head"]).json()
+    assert head["editable"] is False and not any(c["editable"] for c in head["cells"])
     assert [(c["cfo_id"], c["month"], c["amount"]) for c in data["cells"]] == [
         (env["shop"]["id"], 1, "1000.00"), (env["shop"]["id"], 2, "1000.00")]
     assert [a["id"] for a in data["articles"]] == [env["art"]["Аренда"]]
@@ -188,11 +191,11 @@ def test_top_down_distribution(client, env):
     client.post(f"{url}/distribute", headers=h, json={"cfo_id": company, "article_id": it,
                                                       "targets": [{"month": 3, "amount": None}]})
     assert [t["month"] for t in client.get(url, headers=h, params={"cfo_id": company}).json() if t["article_id"] == it] == []
-    # права: CEO — нельзя; утверждённая версия — нельзя
+    # права: CEO — нельзя; утверждённая версия — руководителю ЦФО нельзя
     assert client.post(f"{url}/distribute", headers=env["ceo"], json={
         "cfo_id": company, "article_id": rent, "targets": [{"month": 1, "amount": "1"}]}).status_code == 403
-    assert client.post(f"/api/budget-versions/{year['id']}/targets/distribute", headers=h, json={
-        "cfo_id": company, "article_id": rent, "targets": [{"month": 1, "amount": "1"}]}).status_code == 422
+    assert client.post(f"/api/budget-versions/{year['id']}/targets/distribute", headers=env["head"], json={
+        "cfo_id": env["trade"]["id"], "article_id": rent, "targets": [{"month": 1, "amount": "1"}]}).status_code == 422
 
 
 def test_retrospective_average(client, env, db):

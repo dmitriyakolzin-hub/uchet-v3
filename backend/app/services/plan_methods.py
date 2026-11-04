@@ -81,7 +81,7 @@ class MonthResult:
 
 
 def distribute(db: Session, version: BudgetVersion, cfo: Cfo, article: Article, targets: dict[int, Decimal | None],
-               user: User, today: dt.date | None = None) -> list[MonthResult]:
+               user: User, today: dt.date | None = None, guard=None) -> list[MonthResult]:
     """Записать цели ЦФО по месяцам и разложить их на нижние ЦФО (их план по статье заменяется долями).
     Пустая цель или 0 — цель снимается, план нижних ЦФО не меняется."""
     budget = db.get(Budget, version.budget_id)
@@ -117,7 +117,7 @@ def distribute(db: Session, version: BudgetVersion, cfo: Cfo, article: Article, 
         result.by_fact = sum(weights.values(), ZERO) > 0
         result.parts = split(amount, weights)
         for cfo_id, part in result.parts.items():
-            plan.set_cells(db, version, "pl", cfo_id, [plan.Cell(article.id, month, part)], user)
+            plan.set_cells(db, version, "pl", cfo_id, [plan.Cell(article.id, month, part)], user, guard=guard)
     db.flush()
     return results
 
@@ -170,7 +170,7 @@ def _monthly_fact(db: Session, organization_id: int, kind: str, cfo_ids: list[in
 
 
 def retrospective(db: Session, version: BudgetVersion, kind: str, cfo: Cfo | None, with_branch: bool, base: int,
-                  user: User, today: dt.date | None = None) -> RetroResult:
+                  user: User, today: dt.date | None = None, guard=None) -> RetroResult:
     """Заполнить пустые ячейки плана средним за base месяцев перед каждым месяцем плана. Прошедшие месяцы базы —
     факт, текущий и будущие — план (уже введённый или только что рассчитанный). Заполненные ячейки не меняются."""
     if base not in RETRO_BASES:
@@ -228,7 +228,7 @@ def retrospective(db: Session, version: BudgetVersion, kind: str, cfo: Cfo | Non
                     planned[key] = average  # следующие месяцы берут его в базу
                     cells.append(plan.Cell(article_id, month, average))
         if cells:
-            plan.set_cells(db, version, kind, cfo_id, cells, user)
+            plan.set_cells(db, version, kind, cfo_id, cells, user, guard=guard)
             result.filled += len(cells)
     db.flush()
     return result
