@@ -76,6 +76,9 @@ class PaymentRequest(Base):
     step: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
     # периодический платёж: условия договора и месяц (первое число), за который создана заявка
     periodic_id: Mapped[int | None] = mapped_column(ForeignKey("contract_payments.id", ondelete="SET NULL"))
+    # реестр на оплату: платёжка выгружена в банк-клиент (или отмечено «отправлено в банк»)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     period: Mapped[date | None] = mapped_column(Date)
 
 

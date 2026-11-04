@@ -42,6 +42,8 @@ class Document:
     purpose: str
     payment_kind: str  # ВидОплаты: 01 — платёжное поручение, 17 — банковский ордер (комиссии) …
     kbk: str  # ПоказательКБК — заполнен у налоговых платежей
+    payer_bic: str = ""
+    payee_bic: str = ""
 
 
 @dataclass
@@ -161,4 +163,6 @@ def _document(kind: str, f: dict[str, str]) -> Document:
         purpose=f.get("НазначениеПлатежа", ""),
         payment_kind=f.get("ВидОплаты", ""),
         kbk=f.get("ПоказательКБК", ""),
+        payer_bic=f.get("ПлательщикБИК", ""),
+        payee_bic=f.get("ПолучательБИК", ""),
     )

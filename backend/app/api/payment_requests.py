@@ -135,6 +135,7 @@ class RequestOut(BaseModel):
     step_title: str = ""  # у кого сейчас на согласовании
     can_act: bool = False  # текущий пользователь может согласовать / отклонить / вернуть на доработку
     files: list[FileOut] = []  # счёт и другие файлы заявки
+    sent_at: dt.datetime | None = None  # реестр на оплату: отправлено в банк
 
 
 class ListOut(BaseModel):
@@ -199,7 +200,7 @@ def _out(db: Session, requests: list[PaymentRequest], scoped: bool, user: User |
             route_titles=[approval.STEP_TITLES[x] for x in r.route or []], step=r.step,
             step_title=approval.STEP_TITLES.get(approval.current_step(r) or "", ""),
             can_act=user is not None and approval.can_act(db, user, r),
-            files=files.get(r.id, []),
+            files=files.get(r.id, []), sent_at=r.sent_at,
         ))
     return rows
 
@@ -456,7 +457,7 @@ def unapprove_request(request_id: int, user: CurrentUser, db: DbSession):
         req.status = "pending"
         req.route = list(req.route or []) or ["fd"]
         req.step = len(req.route) - 1
-    req.approved_by = req.approved_at = None
+    req.approved_by = req.approved_at = req.sent_at = req.sent_by = None
     approval.event(db, req, user, "unapproved")
     return _save(db, req, branch, user)
 

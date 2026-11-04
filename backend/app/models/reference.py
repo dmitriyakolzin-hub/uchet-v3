@@ -95,6 +95,7 @@ class Counterparty(OrgScoped, Base):
             name="inn",
         ),
         CheckConstraint("kpp IS NULL OR kpp ~ '^[0-9]{9}$'", name="kpp"),
+        CheckConstraint("account_number IS NULL OR account_number ~ '^[0-9]{20}$'", name="account_number"),
         # ИНН не повторяется внутри организации (у физлиц без ИНН ограничения нет)
         Index(
             "uq_counterparties_organization_inn",
@@ -112,6 +113,9 @@ class Counterparty(OrgScoped, Base):
     kpp: Mapped[str | None] = mapped_column(String(9))
     is_customer: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     is_supplier: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # реквизиты для платёжного поручения (docs/TZ.md, раздел 24, «Детали 14.4»); заполняются и из выписки
+    account_number: Mapped[str | None] = mapped_column(String(20))
+    bank_id: Mapped[int | None] = mapped_column(ForeignKey("banks.id", ondelete="RESTRICT"))
 
 
 class Contract(OrgScoped, Base):

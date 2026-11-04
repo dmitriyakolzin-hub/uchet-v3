@@ -84,9 +84,9 @@ async function request(method, path, body, raw = false, blob = false) {
   return blob ? resp.blob() : resp.json();
 }
 
-// Скачать файл с сервера (с токеном) и сохранить под именем fileName
-async function download(path, fileName) {
-  const data = await request("GET", path, undefined, false, true);
+// Скачать файл с сервера (с токеном) и сохранить под именем fileName; body — POST с JSON (выгрузка по выбранным)
+async function download(path, fileName, body) {
+  const data = await request(body === undefined ? "GET" : "POST", path, body, false, true);
   const url = URL.createObjectURL(data);
   const link = Object.assign(document.createElement("a"), { href: url, download: fileName });
   document.body.append(link);

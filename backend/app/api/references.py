@@ -229,7 +229,8 @@ for resource in (
         path="counterparties", model=Counterparty, title="Контрагент",
         create_schema=s.CounterpartyCreate, update_schema=s.CounterpartyUpdate,
         out_schema=s.CounterpartyOut, conflict_message="Контрагент с таким ИНН уже есть",
-        order_by=lambda m: [m.name], nullable_fields={"inn", "kpp"}, check=_check_counterparty,
+        order_by=lambda m: [m.name], nullable_fields={"inn", "kpp", "account_number", "bank_id"},
+        refs={"bank_id": Ref(Bank, "Банк", org_scoped=False)}, check=_check_counterparty,
     ),
     OrgResource(
         path="contracts", model=Contract, title="Договор",
