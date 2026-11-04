@@ -494,9 +494,33 @@ def move_request(request_id: int, body: MoveIn, user: CurrentUser, db: DbSession
     _status(req, "pending", "approved")
     if req.linked_id is not None and body.pay_date != req.pay_date:
         _not_linked(req)
+    if body.pay_date != req.pay_date:
+        req.adjusted = True  # периодический платёж больше не возвращает дату по договору
     req.pay_date, req.bank_account_id, req.cash_cfo_id = body.pay_date, body.bank_account_id, body.cash_cfo_id
     approval.event(db, req, user, "moved", f"{body.pay_date:%d.%m.%Y}")
     return _save(db, req, _branch(db, user, req.organization_id), user)
+
+
+class AmountIn(BaseModel):
+    amount: Amount
+    comment: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] = ""
+
+
+@router.post("/payment-requests/{request_id}/amount", response_model=RequestOut)
+def change_amount(request_id: int, body: AmountIn, user: CurrentUser, db: DbSession):
+    """Поправить сумму в календаре (docs/TZ.md, раздел 24, «Детали 14.6»): заявка на согласовании или согласованная,
+    статус не меняется, в истории — «было → стало»."""
+    req, branch = _request(db, user, request_id, Perm.POST)
+    _status(req, "pending", "approved")
+    _not_linked(req)
+    if req.source == "supplier":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail="Сумма оплаты поставщику — из накладных: запланируйте оплату заново")
+    if body.amount != req.amount:
+        comment = f"{req.amount:.2f} → {body.amount:.2f}" + (f": {body.comment}" if body.comment else "")
+        req.amount, req.adjusted, req.sent_at, req.sent_by = body.amount, True, None, None
+        approval.event(db, req, user, "amount", comment)
+    return _save(db, req, branch, user)
 
 
 @router.post("/payment-requests/{request_id}/pay", response_model=RequestOut)

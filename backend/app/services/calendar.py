@@ -42,6 +42,7 @@ class Item:
     article_id: int | None = None
     status: str = ""
     overdue: bool = False
+    contract_id: int | None = None
 
 
 def _months(date_from: dt.date, date_to: dt.date) -> list[tuple[int, int]]:
@@ -57,7 +58,7 @@ def _requests(db: Session, organization_id: int, date_from, date_to, include_pen
     return [
         Item("request", r.id, f"Заявка № {r.number}" + (f": {r.description}" if r.description else ""), r.pay_date,
              r.direction, r.amount, r.legal_entity_id, r.bank_account_id, r.cash_cfo_id, r.counterparty_id,
-             r.article_id, r.status)
+             r.article_id, r.status, contract_id=r.contract_id)
         for r in db.scalars(select(PaymentRequest).where(
             PaymentRequest.organization_id == organization_id, PaymentRequest.status.in_(statuses),
             PaymentRequest.pay_date.between(date_from, date_to)))
@@ -96,7 +97,8 @@ def _routines(db: Session, organization_id: int, date_from, date_to, money_ids: 
                     "routine", rule.id, f"Регламентная: {rule.name}", day, "in" if inflow else "out",
                     Decimal(posting["amount"]), rule.legal_entity_id, money.get("bank_account"),
                     money.get("cfo") if not money.get("bank_account") else None, other.get("counterparty"),
-                    money.get("cash_flow_item") or rule.template.get("article_id"), "rule"))
+                    money.get("cash_flow_item") or rule.template.get("article_id"), "rule",
+                    contract_id=other.get("contract")))
     return items
 
 

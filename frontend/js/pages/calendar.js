@@ -11,7 +11,7 @@ const STATUS = { draft: "Черновик", pending: "На согласован�
   rejected: "Отклонена", paid: "Оплачена" };
 const EVENT_TITLES = { created: "создал(а)", submitted: "подал(а) на согласование", approved: "согласовал(а)",
   rejected: "отклонил(а)", revision: "вернул(а) на доработку", recalled: "отозвал(а)", unapproved: "вернул(а) на согласование",
-  moved: "перенёс(ла) на", paid: "отметил(а) оплату", unpaid: "снял(а) оплату", file: "приложил(а) файл",
+  moved: "перенёс(ла) на", amount: "изменил(а) сумму", paid: "отметил(а) оплату", unpaid: "снял(а) оплату", file: "приложил(а) файл",
   file_removed: "убрал(а) файл", periodic_updated: "обновлено по договору", sent: "отправил(а) в банк",
   unsent: "снял(а) отметку «отправлено в банк»" };
 const DIRECTION = { out: "Выплата", in: "Поступление" };
@@ -95,21 +95,22 @@ export async function renderCalendar(view) {
   );
   const registryBox = el("div");
   const suppliersBox = el("div");
-  let tab = ["requests", "expected", "periodic", "registry", "suppliers"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "grid";
+  const sheetBox = el("div");
+  let tab = ["grid", "requests", "expected", "periodic", "registry", "suppliers"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "sheet";
   // руководитель ЦФУ и руководитель ЦФО видят только заявки
   const onlyRequests = () => org.restricted || org.role === "executor_head";
   function openTab(key) {
     tab = onlyRequests() && !["requests", "periodic"].includes(key) ? "requests" : key;
-    if (["registry", "suppliers"].includes(tab) && !can("post")) tab = "grid";
+    if (["registry", "suppliers"].includes(tab) && !can("post")) tab = "sheet";
     remember(TAB_KEY, tab);
     const list = onlyRequests() ? [["requests", "Заявки"], ["periodic", "Периодические платежи"]]
-      : [["grid", "Календарь"], ["requests", "Заявки"], ...(can("post") ? [["suppliers", "Накладные поставщиков"], ["registry", "Реестр на оплату"]] : []),
+      : [["sheet", "Календарь"], ["grid", "Итоги по дням"], ["requests", "Заявки"], ...(can("post") ? [["suppliers", "Накладные поставщиков"], ["registry", "Реестр на оплату"]] : []),
         ["periodic", "Периодические платежи"], ["expected", "Ожидаемые платежи"]];
     tabs.replaceChildren(...list.map(([k, title]) =>
       el("button", { type: "button", class: `tab${k === tab ? " active" : ""}`, onclick: () => openTab(k) }, title)));
     content.replaceChildren({ grid: gridBox, requests: requestsBox, expected: expectedBox, periodic: periodicBox,
-      registry: registryBox, suppliers: suppliersBox }[tab]);
-    return { grid: loadGrid, requests: load, expected: loadExpected, periodic: loadPeriodic, registry: loadRegistry,
+      registry: registryBox, suppliers: suppliersBox, sheet: sheetBox }[tab]);
+    return { sheet: loadSheet, grid: loadGrid, requests: load, expected: loadExpected, periodic: loadPeriodic, registry: loadRegistry,
       suppliers: loadSuppliers }[tab]();
   }
 
@@ -409,6 +410,201 @@ export async function renderCalendar(view) {
               m.paid_on ? el("div", { class: "muted" }, `оплачено ${date(m.paid_on)}`) : ""] : "");
           })))))
         : el("p", { class: "muted" }, "Периодических платежей пока нет."));
+  }
+
+  // --- календарь по форме владельца («лист 1»): дни колонками, статьи → контрагент + договор (шаг 14.6) ---
+  const DAY_NAMES = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+  const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const shiftDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return isoDay(d); };
+  const sheetFilter = { date_from: shiftDays(-2), date_to: shiftDays(28), legal_entity_id: "", include_pending: false };
+  const sheetTable = el("div", { class: "sheet-scroll" });
+  const sheetInput = (key, label) => {
+    const node = el("input", { type: "date", value: sheetFilter[key], "aria-label": label });
+    node.addEventListener("change", () => { sheetFilter[key] = node.value; loadSheet(); });
+    return node;
+  };
+  const sheetEntity = el("select", { "aria-label": "Юрлицо календаря" });
+  sheetEntity.addEventListener("change", () => { sheetFilter.legal_entity_id = sheetEntity.value; loadSheet(); });
+  const sheetPending = el("input", { type: "checkbox", "aria-label": "С заявками на согласовании" });
+  sheetPending.addEventListener("change", () => { sheetFilter.include_pending = sheetPending.checked; loadSheet(); });
+  const sheetQuery = () => new URLSearchParams(Object.entries(sheetFilter).filter(([, v]) => v !== "" && v !== false)).toString();
+  sheetBox.append(
+    el("p", { class: "muted" }, "Как лист 1: колонки — дни, строки — остатки по счетам и кассам, поступления и платежи "
+      + "по статьям ДДС (строка — контрагент и договор). В ячейке зелёным — факт из выписки (журнал), серым — план "
+      + "календаря (заявки, ведомости, регламентные, инвестпроекты; просроченные — на сегодня). Щелчок по ячейке — "
+      + "что в ней; заявку можно перетащить на другой день или поправить сумму. Щелчок по остатку счёта — ввести остаток "
+      + "по банк-клиенту."),
+    el("div", { class: "filters" },
+      el("label", { class: "inline" }, "С ", sheetInput("date_from", "Календарь с")),
+      el("label", { class: "inline" }, "по ", sheetInput("date_to", "Календарь по")),
+      sheetEntity, el("label", { class: "check" }, sheetPending, " с заявками на согласовании"),
+      el("button", { type: "button", class: "secondary",
+        onclick: () => api.download(`/api/organizations/${org.id}/payment-calendar/sheet.xlsx?${sheetQuery()}`,
+          "payment_calendar.xlsx").catch((err) => toast(err.message, "error")) }, "Скачать в Excel")),
+    sheetTable,
+  );
+
+  function pairNode(p, negative) {
+    if (!p) return "";
+    const parts = [];
+    if (p.fact !== null && p.fact !== undefined) parts.push(el("div", { class: "fact" }, money(p.fact)));
+    if (p.plan !== null && p.plan !== undefined) parts.push(el("div", { class: `plan${negative && Number(p.plan) < 0 ? " neg" : ""}` }, money(p.plan)));
+    return parts;
+  }
+
+  async function loadSheet() {
+    sheetEntity.replaceChildren(...[["", "Все юрлица"], ...ref.entities.map((e) => [String(e.id), e.short_name])]
+      .map(([v, t]) => el("option", { value: v, selected: v === sheetFilter.legal_entity_id }, t)));
+    let data;
+    try {
+      data = await api.get(`/api/organizations/${org.id}/payment-calendar/sheet?${sheetQuery()}`);
+    } catch (err) {
+      sheetTable.replaceChildren(el("p", { class: "error" }, err.message));
+      return;
+    }
+    const dayClass = (d) => {
+      const wd = new Date(`${d}T00:00:00`).getDay();
+      return [wd === 0 || wd === 6 ? "weekend" : "", d === data.today ? "today" : ""].filter(Boolean).join(" ");
+    };
+    const head = el("tr", {}, ...["Статья / контрагент", "Договор", "Безнал", "Касса", "Всего"].map((t, i) =>
+      el("th", { class: i === 0 ? "sticky" : "" }, t)),
+    ...data.days.map((d) => el("th", { class: dayClass(d) }, d.slice(8, 10) + "." + d.slice(5, 7),
+      el("div", { class: "small" }, DAY_NAMES[new Date(`${d}T00:00:00`).getDay()]))));
+    const rows = [];
+    const left = (title, cls = "", contract = "", totals = null) => [
+      el("td", { class: `sticky ${cls}` }, title), el("td", {}, contract),
+      el("td", { class: "num" }, totals ? money(totals[0]) : ""), el("td", { class: "num" }, totals ? money(totals[1]) : ""),
+      el("td", { class: "num" }, totals ? money((Number(totals[0]) + Number(totals[1])).toFixed(2)) : "")];
+    const section = (title) => rows.push(el("tr", { class: "sheet-section" }, el("td", { class: "sticky" }, title),
+      el("td", { colspan: 4 + data.days.length })));
+
+    for (const [kind, title] of [["bank", "р/с"], ["cash", "касса"]]) {
+      const own = data.sources.filter((src) => src.kind === kind);
+      if (!own.length) continue;
+      const t = data.totals[kind];
+      rows.push(el("tr", { class: "sheet-total" }, ...left(`НА НАЧАЛО ${title.toUpperCase()}`),
+        ...data.days.map((d) => el("td", { class: `num ${dayClass(d)}` }, pairNode(t.opening[d])))));
+      for (const src of own) {
+        const [type, id] = src.key.split(":");
+        const editable = can("post") && id !== "none";
+        rows.push(el("tr", { "data-source": src.title }, ...left(src.title, "indent"),
+          ...data.days.map((d) => el("td", { class: `num ${dayClass(d)}${editable ? " clickable" : ""}`,
+            title: editable ? "Ввести остаток на начало дня" : "",
+            onclick: editable ? () => balanceForm(src, type, Number(id), d) : undefined }, pairNode(src.opening[d])))));
+      }
+      rows.push(el("tr", {}, ...left(`Поступления ${title}`), ...data.days.map((d) => el("td", { class: `num ${dayClass(d)}` }, pairNode(t.inflow[d])))));
+      rows.push(el("tr", {}, ...left(`Платежи ${title}`), ...data.days.map((d) => el("td", { class: `num ${dayClass(d)}` }, pairNode(t.outflow[d])))));
+      rows.push(el("tr", { class: "sheet-total" }, ...left(`НА КОНЕЦ ${title.toUpperCase()}`),
+        ...data.days.map((d) => el("td", { class: `num ${dayClass(d)}${Number(t.closing[d]) < 0 ? " neg" : ""}` },
+          d < data.today ? el("div", { class: "fact" }, money(t.closing[d])) : el("div", { class: "plan" }, money(t.closing[d]))))));
+    }
+    for (const [direction, title] of [["in", "ПОСТУПЛЕНИЯ"], ["out", "ПЛАТЕЖИ"]]) {
+      const groups = data.groups.filter((g) => g.direction === direction);
+      if (!groups.length) continue;
+      section(title);
+      for (const g of groups) {
+        rows.push(el("tr", { class: "sheet-group" }, ...left(g.title, "", "", [g.bank, g.cash]),
+          ...data.days.map((d) => el("td", { class: `num ${dayClass(d)}` }, pairNode(g.cells[d])))));
+        for (const line of g.lines) {
+          const tr = el("tr", { "data-line": `${g.title}|${line.title}` }, ...left(line.title, "indent", line.contract_title, [line.bank, line.cash]));
+          for (const d of data.days) {
+            const cell = line.cells[d];
+            const movable = cell?.items.filter((i) => i.movable) ?? [];
+            const td = el("td", { class: `num ${dayClass(d)}${cell ? " clickable" : ""}`, "data-day": d,
+              draggable: movable.length && can("post") ? "true" : undefined,
+              onclick: cell ? () => cellDetails(g, line, d, cell) : undefined }, pairNode(cell));
+            if (movable.length && can("post")) {
+              td.addEventListener("dragstart", (e) => e.dataTransfer.setData("text/plain", JSON.stringify(movable.map((i) => i.source_id))));
+            }
+            td.addEventListener("dragover", (e) => { if (can("post")) e.preventDefault(); });
+            td.addEventListener("drop", (e) => {
+              e.preventDefault();
+              let ids = [];
+              try { ids = JSON.parse(e.dataTransfer.getData("text/plain")); } catch { return; }
+              moveRequests(ids, d);
+            });
+            tr.append(td);
+          }
+          rows.push(tr);
+        }
+      }
+    }
+    if (!data.groups.length) rows.push(el("tr", {}, el("td", { class: "sticky muted" }, "Платежей за период нет."), el("td", { colspan: 4 + data.days.length })));
+    sheetTable.replaceChildren(el("table", { class: "pay-sheet" }, el("thead", {}, head), el("tbody", {}, ...rows)));
+  }
+
+  async function moveRequests(ids, day) {
+    try {
+      for (const id of ids) {
+        const r = await api.get(`/api/payment-requests/${id}`);
+        if (r.pay_date === day) continue;
+        await api.post(`/api/payment-requests/${id}/move`, { pay_date: day, bank_account_id: r.bank_account_id, cash_cfo_id: r.cash_cfo_id });
+      }
+      toast(`Перенесено на ${date(day)}`);
+    } catch (err) {
+      toast(err.message, "error");
+    }
+    await loadSheet();
+  }
+
+  function balanceForm(src, type, id, day) {
+    const current = src.opening[day];
+    openForm({
+      title: `Остаток на начало ${date(day)}: ${src.title}`,
+      fields: [{ name: "amount", label: "Остаток по банк-клиенту, ₽",
+        hint: `По журналу: ${current?.fact !== null && current?.fact !== undefined ? money(current.fact) : "—"}. Пусто — убрать ручной остаток` }],
+      submitText: "Сохранить",
+      onSubmit: async (v) => {
+        const amount = v.amount === "" ? null : parseNumber(v.amount);
+        if (v.amount !== "" && amount === null) throw new Error("Остаток — число, например 1 250 000,00");
+        await api.put(`/api/organizations/${org.id}/calendar-balances`, {
+          [type === "bank" ? "bank_account_id" : "cash_cfo_id"]: id, day, amount });
+        await loadSheet();
+      },
+    });
+  }
+
+  function cellDetails(g, line, day, cell) {
+    const close = () => dialog.close();
+    const ops = cell.ops.length ? el("ul", {}, ...cell.ops.map((o) => el("li", {},
+      el("button", { type: "button", class: "link", onclick: async () => {
+        close();
+        openOperation({ ref, org, op: await api.get(`/api/operations/${o.operation_id}`), perms: org.permissions, onChanged: loadSheet });
+      } }, `Операция № ${o.number}`), ` — ${money(o.amount)}`))) : el("p", { class: "muted" }, "Нет.");
+    const items = cell.items.length ? el("ul", {}, ...cell.items.map((i) => el("li", {},
+      `${i.title} — ${money(i.amount)}`, i.overdue ? el("span", { class: "over-budget" }, ` (просрочен, ${date(i.date)})`) : "",
+      i.amount_editable && can("post") ? el("button", { type: "button", class: "link", onclick: () => { close(); amountForm(i); } }, " Сумма") : "",
+      i.movable && can("post") ? el("button", { type: "button", class: "link", onclick: async () => {
+        close();
+        move(await api.get(`/api/payment-requests/${i.source_id}`), loadSheet);
+      } }, " Перенести") : "",
+      i.source === "request" ? el("button", { type: "button", class: "link", onclick: async () => {
+        history(await api.get(`/api/payment-requests/${i.source_id}`));
+      } }, " История") : ""))) : el("p", { class: "muted" }, "Нет.");
+    const dialog = el("dialog", { class: "dialog wide" },
+      el("h2", {}, `${date(day)}: ${line.title}${line.contract_title ? `, договор ${line.contract_title}` : ""}`),
+      el("p", { class: "muted" }, g.title),
+      el("h3", {}, "Факт (выписка, журнал)"), ops,
+      el("h3", {}, "План (календарь)"), items,
+      el("div", { class: "form-actions" }, el("button", { type: "button", onclick: close }, "Закрыть")));
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.showModal();
+  }
+
+  function amountForm(i) {
+    openForm({
+      title: `Сумма: ${i.title}`,
+      fields: [{ name: "amount", label: "Новая сумма", required: true }, { name: "comment", label: "Почему (в историю)" }],
+      values: { amount: String(i.amount).replace(".", ",") },
+      submitText: "Сохранить",
+      onSubmit: async (v) => {
+        const amount = parseNumber(v.amount);
+        if (amount === null) throw new Error("Сумма — число");
+        await api.post(`/api/payment-requests/${i.source_id}/amount`, { amount, comment: v.comment });
+        await loadSheet();
+      },
+    });
   }
 
   // --- накладные поставщиков: долг по накладным, срок оплаты, лимит; оплата планируется заявкой ---
