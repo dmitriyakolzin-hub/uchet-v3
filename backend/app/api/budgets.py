@@ -27,7 +27,7 @@ from app.models import (
     Posting,
     User,
 )
-from app.services import plan
+from app.services import plan, plan_methods
 from app.services.articles import subtree_ids
 from app.services.journal import JournalError
 
@@ -477,6 +477,75 @@ def unsubmit_cfo_plan(version_id: int, cfo_id: int, user: CurrentUser, db: DbSes
     row.submitted_by, row.submitted_at = None, None
     db.commit()
     return _cfo_statuses(db, user, version)
+
+
+# --- Сверху вниз: цель ЦФО → нижние ЦФО (docs/TZ.md, раздел 22, «Детали 12.3») ---
+
+
+class TargetIn(BaseModel):
+    month: Annotated[int, Field(ge=1, le=12)]
+    amount: Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=2)] | None = None
+
+
+class DistributeIn(BaseModel):
+    cfo_id: int
+    article_id: int
+    targets: list[TargetIn] = Field(min_length=1, max_length=12)
+
+
+class TargetOut(BaseModel):
+    article_id: int
+    month: int
+    target: Decimal
+    bottom: Decimal  # план ветки ЦФО по статье и месяцу
+    deviation: Decimal  # по низу − цель
+
+
+class DistributedMonth(BaseModel):
+    month: int
+    target: Decimal | None
+    base_from: dt.date
+    base_to: dt.date
+    by_fact: bool
+    parts: dict[int, Decimal]
+
+
+class DistributeOut(BaseModel):
+    months: list[DistributedMonth]
+    targets: list[TargetOut]
+
+
+def _target_cfo(db: Session, user: User, version: BudgetVersion, cfo_id: int) -> Cfo:
+    budget = db.get(Budget, version.budget_id)
+    cfo = db.get(Cfo, cfo_id)
+    if cfo is None or cfo.organization_id != budget.organization_id:
+        raise _not_found("ЦФО")
+    _check_plan_cfo(db, user, budget.organization_id, cfo_id)
+    return cfo
+
+
+@router.get("/budget-versions/{version_id}/targets", response_model=list[TargetOut])
+def list_targets(version_id: int, cfo_id: int, user: CurrentUser, db: DbSession):
+    """Цели ЦФО и «по низу» (план его ветки) с отклонением."""
+    version = _get_version(db, user, version_id, Perm.VIEW)
+    return plan_methods.targets(db, version, _target_cfo(db, user, version, cfo_id))
+
+
+@router.post("/budget-versions/{version_id}/targets/distribute", response_model=DistributeOut)
+def distribute_targets(version_id: int, body: DistributeIn, user: CurrentUser, db: DbSession):
+    """Цель по статье на месяцы → доли нижних ЦФО пропорционально факту за 6 месяцев (нет факта — поровну)."""
+    version = _get_version(db, user, version_id, Perm.DRAFT)
+    cfo = _target_cfo(db, user, version, body.cfo_id)
+    article = db.get(Article, body.article_id)
+    if article is None or article.organization_id != cfo.organization_id:
+        raise _not_found("Статья")
+    try:
+        months = plan_methods.distribute(db, version, cfo, article, {t.month: t.amount for t in body.targets}, user)
+    except (plan.PlanError, JournalError) as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    db.commit()
+    return DistributeOut(months=[m.__dict__ for m in months], targets=plan_methods.targets(db, version, cfo))
 
 
 # --- План в Excel ---

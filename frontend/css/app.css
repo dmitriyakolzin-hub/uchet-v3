@@ -296,3 +296,6 @@ table.plan-cells input { width: 130px; text-align: right; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; background: #f2f4f7; color: #475467; font-size: 0.9em; }
 .badge.ok { background: #ecfdf3; color: #067647; }
 .submit-box { align-items: center; }
+.target-months { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin: 8px 0; }
+.target-months label { display: flex; flex-direction: column; font-size: 0.9em; }
+.target-months input { text-align: right; }

@@ -146,3 +146,50 @@ def test_plan_cells_window(client, env):
     ceo = cells(client, env, draft, h=env["ceo"]).json()
     assert ceo["editable"] is False and ceo["total"] == "2500.00"
     assert cells(client, env, draft, article_id=10**9).status_code == 404
+
+
+def test_top_down_distribution(client, env):
+    """Шаг 12.3: цель компании делится на нижние ЦФО по факту 6 месяцев; факта нет — поровну (раздел 22)."""
+    h, o = env["h"], env["o"]
+    acc = {v: k for k, v in env["acc"].items()}
+    rent, it = env["art"]["Аренда"], env["art"]["Связь и IT"]
+    # факт аренды в октябре 2026 (база для плана 2027): магазин 900, логистика 300
+    for cfo, amount in (("shop", "900"), ("logistics", "300")):
+        resp = client.post(f"{o}/operations?post=true", headers=h, json={
+            "legal_entity_id": env["le"].id, "op_date": "2026-10-15", "postings": [{
+                "debit_account_id": acc["44"], "credit_account_id": acc["60.01"], "amount": amount,
+                "debit": {"cfo": env[cfo]["id"], "pl_item": rent},
+                "credit": {"counterparty": env["cp"]["id"], "contract": env["contract"]["id"]}}]})
+        assert resp.status_code == 201, resp.text
+    year = env["version"]
+    draft = client.post(f"/api/budgets/{year['budget_id']}/versions", headers=h, json={"name": "Сверху вниз"}).json()
+    url = f"/api/budget-versions/{draft['id']}/targets"
+    company = env["company"]["id"]
+    resp = client.post(f"{url}/distribute", headers=h, json={
+        "cfo_id": company, "article_id": rent, "targets": [{"month": 1, "amount": "1200"}, {"month": 2, "amount": "1000.01"}]})
+    assert resp.status_code == 200, resp.text
+    months = {m["month"]: m for m in resp.json()["months"]}
+    shop, logistics = str(env["shop"]["id"]), str(env["logistics"]["id"])
+    assert months[1]["by_fact"] is True and months[1]["parts"] == {shop: "900.00", logistics: "300.00"}
+    assert months[2]["parts"] == {shop: "750.01", logistics: "250.00"}  # копейка — самой крупной доле
+    assert months[1]["base_to"] < "2027-01-01"
+    # нижние ЦФО получили план; цель и «по низу» совпадают
+    targets = {t["month"]: t for t in resp.json()["targets"]}
+    assert (targets[1]["target"], targets[1]["bottom"], targets[1]["deviation"]) == ("1200.00", "1200.00", "0.00")
+    # правка внизу вручную — видно отклонение от цели
+    put(client, env, [{"article_id": rent, "month": 1, "amount": "1000"}], cfo="shop", version=draft)
+    jan = next(t for t in client.get(url, headers=h, params={"cfo_id": company}).json() if t["month"] == 1)
+    assert (jan["bottom"], jan["deviation"]) == ("1300.00", "100.00")
+    # нет факта — поровну
+    months = client.post(f"{url}/distribute", headers=h, json={
+        "cfo_id": company, "article_id": it, "targets": [{"month": 3, "amount": "100.01"}]}).json()["months"]
+    assert months[0]["by_fact"] is False and sorted(months[0]["parts"].values()) == ["50.00", "50.01"]
+    # пустая цель — снимается, план внизу остаётся
+    client.post(f"{url}/distribute", headers=h, json={"cfo_id": company, "article_id": it,
+                                                      "targets": [{"month": 3, "amount": None}]})
+    assert [t["month"] for t in client.get(url, headers=h, params={"cfo_id": company}).json() if t["article_id"] == it] == []
+    # права: CEO — нельзя; утверждённая версия — нельзя
+    assert client.post(f"{url}/distribute", headers=env["ceo"], json={
+        "cfo_id": company, "article_id": rent, "targets": [{"month": 1, "amount": "1"}]}).status_code == 403
+    assert client.post(f"/api/budget-versions/{year['id']}/targets/distribute", headers=h, json={
+        "cfo_id": company, "article_id": rent, "targets": [{"month": 1, "amount": "1"}]}).status_code == 422

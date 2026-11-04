@@ -637,6 +637,17 @@ with sync_playwright() as p:
     expect(d.locator("tr", has_text="АВМВ")).to_contain_text("2 200,50")
     expect(d.locator("tr", has_text="АВМВ")).to_contain_text(f"сдан {TODAY:%d.%m.%Y}")
     d.locator("button", has_text="Закрыть").click()
+    # шаг 12.3: сверху вниз — цель АВМВ на февраль уходит нижнему ЦФО (факта нет — поровну)
+    page.click("button:has-text('Сверху вниз')")
+    d = page.locator("dialog[open]", has_text="Сверху вниз")
+    d.locator("[aria-label='Статья цели']").select_option(label="2.6.20.1. Связь и IT / Электричество")
+    d.locator("[aria-label='Цель: Февраль']").fill("1 000")
+    d.locator("button", has_text="Распределить").click()
+    expect(page.locator(".toast")).to_contain_text("Цель распределена")
+    row = d.locator("table.plan-cells tbody tr", has_text="Февраль")
+    expect(row).to_contain_text("1 000,00")
+    expect(row.locator("td.over-budget")).to_have_count(0)  # по низу = цели
+    d.locator("button", has_text="Закрыть").click()
     page.screenshot(path=f"{OUT}/28_plan_grid.png", full_page=True)
     # план инвестиций
     page.click("button.tab:has-text('План инвестиций')")
