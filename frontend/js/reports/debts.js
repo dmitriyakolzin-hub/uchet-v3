@@ -1,6 +1,7 @@
 // Дебиторская и кредиторская задолженность на конец периода: контрагенты → счета и договоры.
 import { api } from "../api.js";
 import { money } from "../format.js";
+import { tableNotes } from "../notes.js";
 import { el, makeTable } from "../ui.js";
 import { moneyCell, openDrill } from "./common.js";
 
@@ -57,13 +58,19 @@ export function debtsReport({ box, ctx }) {
     });
   });
 
+  // примечания к цифрам (правый щелчок / долгое нажатие)
+  const notes = tableNotes(table, { report: "debts", ctx, rowKey: (d) => d.key, rowTitle: (d) => d.title,
+    skip: (f) => ["title", "account"].includes(f) || f?.startsWith("_") });
+
   async function load() {
     const data = await api.get(`/api/organizations/${ctx.org().id}/reports/debts?${ctx.filters.params()}`);
     await table.setData([...toTree(data.rows), { key: "total", title: "Итого", account: "", ...data.total }]);
+    await notes.refresh();
     table.getRow("total")?.getElement().classList.add("row-total");
   }
 
   return {
+    notes,
     ready: table.ready,
     load,
     reset: async () => {},

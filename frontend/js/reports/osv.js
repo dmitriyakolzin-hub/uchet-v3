@@ -1,5 +1,6 @@
 // Оборотно-сальдовая ведомость: дерево счетов, разрез счёта по аналитике, расшифровка любой цифры.
 import { api } from "../api.js";
+import { tableNotes } from "../notes.js";
 import { el, makeTable, toast } from "../ui.js";
 import { moneyCell, openDrill } from "./common.js";
 
@@ -131,9 +132,14 @@ export function osvReport({ box, ctx }) {
     detailsTable.getRow("total")?.getElement().classList.add("row-total");
   }
 
+  // примечания к цифрам (правый щелчок / долгое нажатие)
+  const notes = tableNotes(table, { report: "osv", ctx, rowKey: (d) => d.account_id, rowTitle: (d) => `${d.code} ${d.name ?? ""}`.trim(),
+    skip: (f) => ["code", "name"].includes(f) || f?.startsWith("_") });
+
   async function load() {
     const data = await api.get(`/api/organizations/${ctx.org().id}/reports/osv?${ctx.filters.params()}`);
     await table.setData([...toTree(data.rows), { account_id: "total", code: "Итого", name: "", ...data.total }]);
+    await notes.refresh();
     table.getRow("total")?.getElement().classList.add("row-total");
     if (selected) {
       selected = data.rows.find((r) => r.account_id === selected.account_id) ?? null;
@@ -142,6 +148,7 @@ export function osvReport({ box, ctx }) {
   }
 
   return {
+    notes,
     ready: Promise.all([table.ready, detailsTable.ready]).then(() => { detailsBox.hidden = true; }),
     load,
     reset() { selected = null; return loadDetails(); },
