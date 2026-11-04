@@ -26,6 +26,7 @@ from app.api import (
     references,
     registry,
     reports,
+    suppliers,
     users,
 )
 from app.core.config import SettingsError, get_settings
@@ -69,6 +70,7 @@ def create_app() -> FastAPI:
     app.include_router(notes.router)
     app.include_router(periodic.router)
     app.include_router(registry.router)
+    app.include_router(suppliers.router)
 
     # Запрет изменений в закрытом периоде срабатывает при записи в базу (app/services/period.py) —
     # из любого раздела; ответ — понятная ошибка, а не «внутренняя ошибка сервера»

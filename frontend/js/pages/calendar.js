@@ -94,21 +94,23 @@ export async function renderCalendar(view) {
     tabs, content,
   );
   const registryBox = el("div");
-  let tab = ["requests", "expected", "periodic", "registry"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "grid";
+  const suppliersBox = el("div");
+  let tab = ["requests", "expected", "periodic", "registry", "suppliers"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "grid";
   // руководитель ЦФУ и руководитель ЦФО видят только заявки
   const onlyRequests = () => org.restricted || org.role === "executor_head";
   function openTab(key) {
     tab = onlyRequests() && !["requests", "periodic"].includes(key) ? "requests" : key;
-    if (tab === "registry" && !can("post")) tab = "grid";
+    if (["registry", "suppliers"].includes(tab) && !can("post")) tab = "grid";
     remember(TAB_KEY, tab);
     const list = onlyRequests() ? [["requests", "Заявки"], ["periodic", "Периодические платежи"]]
-      : [["grid", "Календарь"], ["requests", "Заявки"], ...(can("post") ? [["registry", "Реестр на оплату"]] : []),
+      : [["grid", "Календарь"], ["requests", "Заявки"], ...(can("post") ? [["suppliers", "Накладные поставщиков"], ["registry", "Реестр на оплату"]] : []),
         ["periodic", "Периодические платежи"], ["expected", "Ожидаемые платежи"]];
     tabs.replaceChildren(...list.map(([k, title]) =>
       el("button", { type: "button", class: `tab${k === tab ? " active" : ""}`, onclick: () => openTab(k) }, title)));
     content.replaceChildren({ grid: gridBox, requests: requestsBox, expected: expectedBox, periodic: periodicBox,
-      registry: registryBox }[tab]);
-    return { grid: loadGrid, requests: load, expected: loadExpected, periodic: loadPeriodic, registry: loadRegistry }[tab]();
+      registry: registryBox, suppliers: suppliersBox }[tab]);
+    return { grid: loadGrid, requests: load, expected: loadExpected, periodic: loadPeriodic, registry: loadRegistry,
+      suppliers: loadSuppliers }[tab]();
   }
 
   function budgetCell(r) {
@@ -231,7 +233,9 @@ export async function renderCalendar(view) {
           class: Number(r.budget?.over ?? 0) > 0 && r.status !== "paid" ? "over-budget-row" : "" },
           el("td", {}, String(r.number)), el("td", {}, date(r.pay_date)), el("td", {}, DIRECTION[r.direction]),
           el("td", {}, r.counterparty_name || "—", r.contract_name ? el("div", { class: "muted" }, `Договор ${r.contract_name}`) : null,
-            r.description ? el("div", { class: "muted" }, r.description) : null),
+            r.description ? el("div", { class: "muted" }, r.description) : null,
+            r.group_name ? el("div", { class: "muted" }, `внутри группы → ${r.group_name}, без согласования`) : null,
+            r.linked_number ? el("div", { class: "muted" }, `внутри группы: по выплате № ${r.linked_number}`) : null),
           el("td", {}, r.article_name), el("td", {}, r.cfo_name, r.executor_name ? el("div", { class: "muted" }, r.executor_name) : null),
           el("td", {}, r.source_name),
           el("td", { class: "num" }, money(r.amount)), el("td", {}, budgetCell(r)), filesCell(r), statusCell(r), actions(r)))))
@@ -405,6 +409,159 @@ export async function renderCalendar(view) {
               m.paid_on ? el("div", { class: "muted" }, `оплачено ${date(m.paid_on)}`) : ""] : "");
           })))))
         : el("p", { class: "muted" }, "Периодических платежей пока нет."));
+  }
+
+  // --- накладные поставщиков: долг по накладным, срок оплаты, лимит; оплата планируется заявкой ---
+  const supFilter = { legal_entity_id: "", open_only: true, search: "" };
+  const supList = el("div");
+  const supTotals = el("p", { class: "muted" });
+  const supEntity = el("select", { "aria-label": "Юрлицо-покупатель" });
+  supEntity.addEventListener("change", () => { supFilter.legal_entity_id = supEntity.value; loadSuppliers(); });
+  const supOpen = el("input", { type: "checkbox", checked: true, "aria-label": "Только неоплаченные" });
+  supOpen.addEventListener("change", () => { supFilter.open_only = supOpen.checked; loadSuppliers(); });
+  const supSearch = el("input", { type: "search", placeholder: "Контрагент", "aria-label": "Поиск контрагента" });
+  supSearch.addEventListener("input", () => { supFilter.search = supSearch.value.trim().toLowerCase(); renderSuppliers(); });
+  const supFile = el("input", { type: "file", hidden: true, accept: ".xlsx", "aria-label": "Файл накладных" });
+  supFile.addEventListener("change", async () => {
+    const file = supFile.files[0];
+    supFile.value = "";
+    if (!file) return;
+    try {
+      const r = await api.upload(`/api/organizations/${org.id}/supplier-invoices/import?legal_entity_id=${supFilter.legal_entity_id}`, file);
+      showSupplierImport(file.name, r);
+      await loadSuppliers();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  });
+  suppliersBox.append(
+    el("p", { class: "muted" }, "Накладные загружаются из Excel в формате листа «ПОСТАВЩИКИ» (тип документа, дата, №, сумма, "
+      + "контрагент) для выбранного юрлица. Срок оплаты — дата накладной + отсрочка из договора, лимит задолженности — "
+      + "тоже в договоре. «Запланировать оплату» создаёт заявку (финансовый менеджер → финансовый директор): сумма "
+      + "закрывает отмеченные накладные (или все) от старых к новым, можно оплатить частично. Поставщик — юрлицо группы: "
+      + "оплата без согласования, у получателя появится поступление."),
+    el("div", { class: "filters" }, supEntity, supSearch,
+      el("label", { class: "check" }, supOpen, " только неоплаченные"),
+      el("button", { type: "button", onclick: () => {
+        if (!supFilter.legal_entity_id) {
+          toast("Выберите юрлицо-покупателя", "error");
+          return;
+        }
+        supFile.click();
+      } }, "Загрузить из Excel"),
+      el("button", { type: "button", class: "secondary",
+        onclick: () => api.download(`/api/organizations/${org.id}/supplier-invoices/template.xlsx`, "supplier_invoices.xlsx")
+          .catch((err) => toast(err.message, "error")) }, "Скачать шаблон"), supFile),
+    supTotals, supList,
+  );
+  let supData = null;
+
+  function showSupplierImport(fileName, r) {
+    const dialog = el("dialog", { class: "dialog wide" },
+      el("h2", {}, `Загрузка накладных: ${fileName}`),
+      el("p", {}, `Строк: ${r.rows}. Загружено: ${r.created}. Уже были: ${r.duplicates}.`
+        + (r.zero ? ` С нулевой суммой (пропущены): ${r.zero}.` : "")),
+      r.missing.length ? el("div", {},
+        el("p", { class: "error" }, "Не найдены в справочнике контрагентов (добавьте и загрузите файл снова — загруженное не задвоится):"),
+        el("ul", {}, ...r.missing.map(([name, count]) => el("li", {}, `${name} — строк: ${count}`)))) : "",
+      r.errors.length ? el("div", {}, el("p", { class: "error" }, "Строки с ошибками:"),
+        el("ul", {}, ...r.errors.slice(0, 100).map(([row, text]) => el("li", {}, `строка ${row}: ${text}`)))) : "",
+      el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => dialog.close() }, "Закрыть")));
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.showModal();
+  }
+
+  async function loadSuppliers() {
+    supEntity.replaceChildren(...[["", "Все юрлица"], ...ref.entities.map((e) => [String(e.id), e.short_name])]
+      .map(([v, t]) => el("option", { value: v, selected: v === supFilter.legal_entity_id }, t)));
+    if (!supFilter.legal_entity_id && ref.entities.length === 1) {
+      supFilter.legal_entity_id = String(ref.entities[0].id);
+      supEntity.value = supFilter.legal_entity_id;
+    }
+    const p = new URLSearchParams({ open_only: supFilter.open_only });
+    if (supFilter.legal_entity_id) p.set("legal_entity_id", supFilter.legal_entity_id);
+    try {
+      supData = await api.get(`/api/organizations/${org.id}/supplier-invoices?${p}`);
+    } catch (err) {
+      supList.replaceChildren(el("p", { class: "error" }, err.message));
+      return;
+    }
+    renderSuppliers();
+  }
+
+  function renderSuppliers() {
+    const groups = supData.groups.filter((g) => !supFilter.search || g.counterparty_name.toLowerCase().includes(supFilter.search));
+    supTotals.textContent = `Долг: ${money(supData.debt)} · просрочено: ${money(supData.overdue)} · не запланировано: ${money(supData.remaining)}`;
+    if (!groups.length) {
+      supList.replaceChildren(el("p", { class: "muted" }, "Накладных нет."));
+      return;
+    }
+    const body = [];
+    for (const g of groups) {
+      const boxes = g.invoices.map((inv) => el("input", { type: "checkbox", "data-id": inv.id,
+        "aria-label": `Накладная № ${inv.number}`, disabled: Number(inv.remaining) <= 0 }));
+      const terms = [g.deferral_days !== null ? `отсрочка ${g.deferral_days} дн.` : "",
+        g.debt_limit ? `лимит ${money(g.debt_limit)}` : ""].filter(Boolean).join(" · ");
+      body.push(el("tr", { class: `week-row${g.over_limit ? " gap-row" : ""}`, "data-counterparty": g.counterparty_name },
+        el("td", { colspan: 3 }, g.counterparty_name, ` · ${g.legal_entity_name}`,
+          terms ? el("div", { class: "small" }, terms + (g.over_limit ? " — долг больше лимита" : "")) : null,
+          g.group_name ? el("div", { class: "small" }, `юрлицо группы (${g.group_name}) — без согласования`) : null),
+        el("td", { class: "num" }, money(g.debt)),
+        el("td", { class: "num" }, Number(g.overdue) > 0 ? el("span", { class: "gap-note" }, `просрочено ${money(g.overdue)}`) : ""),
+        el("td", {}),
+        el("td", { class: "num" }, money(g.remaining)),
+        el("td", {}, Number(g.remaining) > 0
+          ? el("button", { type: "button", class: "link", onclick: () => planSupplier(g, boxes) }, "Запланировать оплату") : "")));
+      g.invoices.forEach((inv, i) => body.push(el("tr", { "data-invoice": inv.number },
+        el("td", {}, boxes[i]),
+        el("td", {}, `${inv.kind === "advance" ? "Аванс" : "Накладная"} № ${inv.number}`, el("div", { class: "muted" }, `от ${date(inv.doc_date)}`)),
+        el("td", {}, `срок ${date(inv.due_date)}`, inv.overdue_days ? el("div", { class: "gap-note" }, `просрочено ${inv.overdue_days} дн.`) : null),
+        el("td", { class: "num" }, money(inv.amount)),
+        el("td", { class: "num" }, Number(inv.paid) > 0 ? `оплачено ${money(inv.paid)}` : ""),
+        el("td", {}, ...inv.payments.map((p) => el("div", { class: "small" },
+          `заявка № ${p.number} · ${date(p.pay_date)} · ${money(p.amount)} · ${p.status_title}`))),
+        el("td", { class: "num" }, money(inv.remaining)),
+        el("td", {}, inv.payments.length ? "" : el("button", { type: "button", class: "link", onclick: async () => {
+          if (!confirm(`Удалить накладную № ${inv.number}?`)) return;
+          try {
+            await api.delete(`/api/supplier-invoices/${inv.id}`);
+            await loadSuppliers();
+          } catch (err) {
+            toast(err.message, "error");
+          }
+        } }, "Удалить")))));
+    }
+    supList.replaceChildren(el("table", { class: "recon calendar-grid registry suppliers" },
+      el("thead", {}, el("tr", {}, ...["", "Документ", "Срок оплаты", "Сумма", "Оплачено", "Заявки на оплату", "Остаток", ""]
+        .map((t) => el("th", {}, t)))),
+      el("tbody", {}, ...body)));
+  }
+
+  function planSupplier(g, boxes) {
+    const ids = boxes.filter((b) => b.checked).map((b) => Number(b.dataset.id));
+    const chosen = g.invoices.filter((inv) => !ids.length || ids.includes(inv.id));
+    const total = chosen.reduce((sum, inv) => sum + Number(inv.remaining), 0);
+    const banks = ref.bankAccounts.filter((b) => b.legal_entity_id === g.legal_entity_id)
+      .map((b) => [String(b.id), `${b.name} ··${b.number.slice(-4)}`]);
+    openForm({
+      title: `Оплата: ${g.counterparty_name}`,
+      fields: [
+        { name: "pay_date", label: "Дата оплаты", type: "date", required: true },
+        { name: "amount", label: "Сумма", hint: `Пусто — весь остаток ${ids.length ? "отмеченных" : "всех"} накладных `
+          + `(${money(total.toFixed(2))}); меньше — закроет накладные от старых к новым` },
+        { name: "bank_account_id", label: "Откуда платим", type: "select", options: [["", "— выберет финансовая служба —"], ...banks] },
+      ],
+      submitText: "Создать заявку",
+      onSubmit: async (v) => {
+        if (v.amount && parseNumber(v.amount) === null) throw new Error("Сумма — число, например 15 000,00");
+        const req = await api.post(`/api/organizations/${org.id}/supplier-payments`, {
+          legal_entity_id: g.legal_entity_id, counterparty_id: g.counterparty_id, pay_date: v.pay_date,
+          amount: v.amount ? parseNumber(v.amount) : null, invoice_ids: ids, bank_account_id: idOrNull(v.bank_account_id) });
+        toast(`Заявка № ${req.number}: ${STATUS[req.status].toLowerCase()}`);
+        await loadSuppliers();
+      },
+    });
   }
 
   // --- реестр на оплату: согласованные выплаты по дням и счетам, выгрузка платёжек в банк-клиент (1С) ---
