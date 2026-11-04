@@ -71,10 +71,25 @@ export function reportFilters({ ref, scope = null, onChange, onExcel }) {
       }
       return p;
     },
+    // юрлицо, ЦФО и ЦФУ отчёта — те же ограничения для окна плановых операций
+    scope() {
+      const result = {};
+      if (entity.value) result.legal_entity_id = entity.value;
+      if (cfo.value) result.cfo_id = cfo.value;
+      if (executor.value) result.executor_id = executor.value;
+      return result;
+    },
     period() { return `${date(dateFrom.value)} — ${date(dateTo.value)}`; },
     dateFrom: () => dateFrom.value,
     dateTo: () => dateTo.value,
   };
+}
+
+/** Статья строки отчёта для окна плановых операций: из условий расшифровки (a или a_tree — «pl_item:12»). */
+export function planArticle(drill) {
+  const items = [].concat(drill?.a ?? [], drill?.a_tree ?? []);
+  const item = items.find((x) => /^(pl_item|cash_flow_item):\d+$/.test(x));
+  return item ? Number(item.split(":")[1]) : null;
 }
 
 /** Окно расшифровки: проводки, из которых сложилась цифра; итог равен цифре отчёта. */

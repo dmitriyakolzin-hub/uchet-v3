@@ -289,3 +289,7 @@ table.article-import th, table.article-import td { text-align: left; }
 .split-row { display: grid; grid-template-columns: 2fr 1.4fr 110px 130px auto; gap: 8px; align-items: center; margin: 6px 0; }
 .split-row select, .split-row input { min-width: 0; }
 @media (max-width: 700px) { .split-row { grid-template-columns: 1fr 1fr; } }
+table.plan-cells { width: 100%; border-collapse: collapse; margin: 8px 0; }
+table.plan-cells th, table.plan-cells td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border, #ddd); }
+table.plan-cells .num { text-align: right; white-space: nowrap; }
+table.plan-cells input { width: 130px; text-align: right; }

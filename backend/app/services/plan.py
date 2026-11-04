@@ -145,6 +145,27 @@ def _posting(db: Session, kind: str, article: Article, cfo_id: int | None, amoun
                      amount=amount, debit=sides["debit"], credit=sides["credit"])
 
 
+def cell_list(db: Session, version: BudgetVersion, kind: str, article_ids: list[int], months: list[int], *,
+              cfo_ids: set[int] | None = None, executor_ids: set[int] | None = None,
+              legal_entity_id: int | None = None) -> list[dict]:
+    """Плановые операции версии по статьям и месяцам (для окна «Плановые операции» из отчётов).
+    cfo_ids / executor_ids / legal_entity_id — те же ограничения, что у отчёта, чтобы итог совпал с его цифрой."""
+    budget = db.get(Budget, version.budget_id)
+    days = [dt.date(budget.year, m, 1) for m in months if m in budget.months]
+    query = select(Operation).where(Operation.budget_version_id == version.id, Operation.plan_kind == kind,
+                                    Operation.article_id.in_(article_ids), Operation.op_date.in_(days))
+    if cfo_ids is not None:
+        query = query.where(Operation.plan_cfo_id.in_(cfo_ids))
+    if executor_ids is not None:
+        query = query.where(Operation.plan_executor_id.in_(executor_ids))
+    if legal_entity_id is not None:
+        query = query.where(Operation.legal_entity_id == legal_entity_id)
+    return [{"operation_id": op.id, "cfo_id": op.plan_cfo_id, "executor_id": op.plan_executor_id,
+             "project_id": op.plan_project_id, "article_id": op.article_id, "month": op.op_date.month,
+             "amount": sum((p.amount or Decimal(0) for p in op.postings), Decimal("0.00"))}
+            for op in db.scalars(query.order_by(Operation.op_date, Operation.plan_cfo_id, Operation.id))]
+
+
 def _cell_op(db: Session, version_id: int, kind: str, cfo_id: int | None, article_id: int, op_date: dt.date,
              executor_id: int | None = None, project_id: int | None = None):
     query = select(Operation).where(Operation.budget_version_id == version_id, Operation.plan_kind == kind,

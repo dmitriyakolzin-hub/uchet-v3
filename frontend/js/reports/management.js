@@ -3,7 +3,8 @@
 import { api } from "../api.js";
 import { money } from "../format.js";
 import { el, makeTable, openForm, toast } from "../ui.js";
-import { nestRows, openDrill, TREE_OPTIONS } from "./common.js";
+import { openPlanCells } from "../plancells.js";
+import { nestRows, openDrill, planArticle, TREE_OPTIONS } from "./common.js";
 
 const MODES = [["fact", "Факт"], ["plan", "План"], ["plan_fact", "План и факт"]];
 const PARTS = { fact: [["fact", "Факт"]], plan: [["plan", "План"]], plan_fact: [["plan", "План"], ["fact", "Факт"], ["dev", "Откл."]] };
@@ -48,7 +49,27 @@ export function managementReport({ box, ctx }) {
     }
     const [colKey, part] = cell.getField().split("|");
     const col = data?.columns.find((c) => c.key === colKey);
-    if (!col || !r.drill || part !== "fact" || !Number(cell.getValue() ?? 0)) return;
+    if (!col || !r.drill) return;
+    if (part === "plan") {
+      // плановые операции статьи: ОПиУ и ДДС — из своих версий по месяцам
+      const articleId = planArticle(r.drill);
+      const kind = r.drill.a_tree?.[0]?.startsWith("pl_item") ? "pl" : "cf";
+      const byMonth = data.plan_versions?.[kind] ?? {};
+      const monthCols = colKey === "total" ? data.columns.filter((c) => c.key !== "total") : [col];
+      const versions = new Set(monthCols.map((c) => byMonth[c.key]).filter(Boolean));
+      if (!articleId) return;
+      if (versions.size !== 1) {
+        toast(versions.size ? "Месяцы взяты из разных бюджетов — щёлкните по плану нужного месяца" : "Нет утверждённого плана на этот период");
+        return;
+      }
+      openPlanCells({
+        org: ctx.org(), ref: ctx.ref(), versionId: [...versions][0], kind, articleId, scope: ctx.filters.scope(),
+        months: monthCols.filter((c) => byMonth[c.key]).map((c) => c.key),
+        title: `${r.code ?? ""} ${r.title}`.trim(), onChanged: () => load(),
+      });
+      return;
+    }
+    if (part !== "fact" || !Number(cell.getValue() ?? 0)) return;
     openDrill({
       org: ctx.org(), ref: ctx.ref(), filters: ctx.filters, onChanged: () => ctx.reload(),
       title: `${r.code ?? ""} ${r.title}, ${col.title.toLowerCase()}`,
@@ -89,12 +110,13 @@ export function managementReport({ box, ctx }) {
     hint.textContent = "Строки — в порядке загруженного справочника. Статьи: ОПиУ — по начислению, статьи только ДДС — по деньгам; "
       + "доходы, расходы, поступления и выплаты — положительными числами. Показатели считаются по формулам"
       + (canEdit() ? " (щёлкните по названию строки, чтобы поправить формулу или знак)" : "")
-      + ". Щёлкните по сумме факта статьи — откроются проводки.";
+      + ". Щёлкните по сумме факта статьи — откроются проводки, по плану (или «·») — плановые операции.";
     const parts = PARTS[mode];
     const cellText = (c) => {
       const v = c.getValue();
       const r = c.getRow().getData();
       const text = v === null || v === undefined || Number(v) === 0 ? "" : money(v);
+      if (r.drill && c.getField().endsWith("|plan") && planArticle(r.drill)) return `<span class="drill">${text || "·"}</span>`;
       return text && r.drill && c.getField().endsWith("|fact") ? `<span class="drill">${text}</span>` : text;
     };
     const sub = (c, part, title) => ({ title, field: `${c.key}|${part}`, hozAlign: "right", minWidth: 105, headerSort: false,

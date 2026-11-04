@@ -107,6 +107,8 @@ def test_management_report(client, env):
 
     # план и факт: плана нет — нули, отклонение = факт
     data = report(client, env, mode="plan_fact")
+    assert data["plan_versions"] == {"pl": {}, "cf": {}}  # утверждённого плана нет — окну плана открывать нечего
+    assert report(client, env)["plan_versions"] == {}
     total = data["by_code"]["3.1"]["values"]["total"]
     assert (total["plan"], total["fact"], total["dev"]) == ("0.00", "115000.00", "115000.00")
     assert report(client, env, mode="plan")["by_code"]["3.1"]["values"]["total"]["fact"] is None

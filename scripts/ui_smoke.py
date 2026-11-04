@@ -12,6 +12,20 @@ from playwright.sync_api import sync_playwright, expect
 BASE = os.environ.get("UI_BASE", "http://127.0.0.1:8011")
 OUT = sys.argv[1]
 errors = []
+# даты операций теста — в текущем месяце (журнал по умолчанию показывает текущий месяц), не позже сегодня
+TODAY = dt.date.today()
+MONTH_START = TODAY.replace(day=1)
+MONTH_END = (MONTH_START + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)
+
+
+NEXT_MONTH = MONTH_END + dt.timedelta(days=1)
+MONTH_NAMES = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь",
+               "Ноябрь", "Декабрь"]
+NEXT_MONTH_NAME = MONTH_NAMES[NEXT_MONTH.month - 1]
+
+
+def day(n):
+    return f"{TODAY.replace(day=min(n, TODAY.day)):%d.%m.%Y}"
 
 def login(page, user, pwd):
     page.goto(BASE + "/")
@@ -142,10 +156,10 @@ with sync_playwright() as p:
     d.locator("button[type=submit]").click()
     expect(page.locator("h2", has_text="Курсы: USD")).to_be_visible()
     page.click("text=Добавить курс")
-    d = dialog_fill(page, {"rate_date": "2026-10-01", "rate": "81,5432"})
+    d = dialog_fill(page, {"rate_date": f"{MONTH_START:%Y-%m-%d}", "rate": "81,5432"})
     d.locator("button[type=submit]").click()
     expect(page.locator(".tabulator-row", has_text="81,5432")).to_be_visible()
-    expect(page.locator(".tabulator-row", has_text="01.10.2026")).to_be_visible()
+    expect(page.locator(".tabulator-row", has_text=f"{MONTH_START:%d.%m.%Y}")).to_be_visible()
     page.screenshot(path=f"{OUT}/5_currencies.png", full_page=True)
     page.click("#nav a[data-page=organizations]")
 
@@ -387,16 +401,16 @@ with sync_playwright() as p:
 
     # загрузка выписки: два платежа, повторная загрузка не создаёт дублей
     stmt = "\n".join([
-        "1CClientBankExchange", "ВерсияФормата=1.03", "ДатаНачала=01.10.2026", "ДатаКонца=31.10.2026",
-        "РасчСчет=40702810900000012345", "СекцияРасчСчет", "ДатаНачала=01.10.2026", "ДатаКонца=31.10.2026",
+        "1CClientBankExchange", "ВерсияФормата=1.03", f"ДатаНачала={MONTH_START:%d.%m.%Y}", f"ДатаКонца={MONTH_END:%d.%m.%Y}",
+        "РасчСчет=40702810900000012345", "СекцияРасчСчет", f"ДатаНачала={MONTH_START:%d.%m.%Y}", f"ДатаКонца={MONTH_END:%d.%m.%Y}",
         "НачальныйОстаток=10000", "РасчСчет=40702810900000012345", "ВсегоСписано=300", "ВсегоПоступило=5000",
         "КонечныйОстаток=14700", "КонецРасчСчет",
-        "СекцияДокумент=Платежное поручение", "Номер=7", "Дата=10.10.2026", "Сумма=5000",
+        "СекцияДокумент=Платежное поручение", "Номер=7", f"Дата={day(10)}", "Сумма=5000",
         "ПлательщикСчет=40702810000000000077", "Плательщик=ООО Покупатель", "ПлательщикИНН=7709999999",
-        "ПолучательСчет=40702810900000012345", "ДатаПоступило=10.10.2026", "Получатель=ООО Ромашка",
+        "ПолучательСчет=40702810900000012345", f"ДатаПоступило={day(10)}", "Получатель=ООО Ромашка",
         "ПолучательИНН=7701234567", "НазначениеПлатежа=Оплата по счёту 7", "КонецДокумента",
-        "СекцияДокумент=Банковский ордер", "Номер=8", "Дата=11.10.2026", "Сумма=300",
-        "ПлательщикСчет=40702810900000012345", "ДатаСписано=11.10.2026", "Плательщик=ООО Ромашка",
+        "СекцияДокумент=Банковский ордер", "Номер=8", f"Дата={day(11)}", "Сумма=300",
+        "ПлательщикСчет=40702810900000012345", f"ДатаСписано={day(11)}", "Плательщик=ООО Ромашка",
         "ПлательщикИНН=7701234567", "ПолучательСчет=47423810000000000099", "Получатель=Банк",
         "ПолучательИНН=7707083893", "ВидОплаты=17", "НазначениеПлатежа=Комиссия за обслуживание", "КонецДокумента",
         "КонецФайла",
@@ -437,8 +451,8 @@ with sync_playwright() as p:
     d.locator("button", has_text="Понятно").click()
     op_path = f"{OUT}/operations.xlsx"
     xlsx(op_path, [["Дата*", "Счёт Дт*", "Счёт Кт*", "Сумма*", "Контрагент (ИНН или наименование)", "Описание"],
-                   ["20.10.2026", "44", "60.01", 990, "7708888888", "Реклама из Excel"],
-                   ["20.10.2026", "99.99", "60.01", 1, "", ""]])
+                   [day(20), "44", "60.01", 990, "7708888888", "Реклама из Excel"],
+                   [day(20), "99.99", "60.01", 1, "", ""]])
     page.locator("input[aria-label='Файл: Операции']").set_input_files(op_path)
     d = page.locator("dialog[open]", has_text="Файл загружен")
     expect(d).to_contain_text("Создано черновиков: 1")
@@ -648,11 +662,16 @@ with sync_playwright() as p:
     page.locator("input[aria-label='По дату']").dispatch_event("change")
     rent = page.locator(".tabulator-row", has_text="Аренда")
     expect(rent).to_contain_text("-1 500,50")
+    # шаг 12.1: план открывает окно плановых операций (версия утверждена — только просмотр)
     rent.locator(".tabulator-cell[tabulator-field='2027-01|plan'] .drill").click()
-    d = page.locator("dialog[open]", has_text="Расшифровка")
-    expect(d).to_contain_text("Дебет: 1 500,50")
+    d = page.locator("dialog[open]", has_text="Плановые операции")
+    expect(d).to_contain_text("Итого 1 500,50 — только просмотр")
+    expect(d.locator("table.plan-cells tbody tr")).to_have_count(1)
+    expect(d.locator("input[aria-label='Сумма плана']")).to_be_disabled()
     page.screenshot(path=f"{OUT}/29_plan_fact.png", full_page=True)
     d.locator("button", has_text="Закрыть").click()
+    rent.locator(".tabulator-cell[tabulator-field='2027-01|fact']").click()  # факт — ноль, расшифровки нет
+    expect(page.locator("dialog[open]")).to_have_count(0)
     page.click("button.tab:has-text('Инвестиции')")
     expect(page.locator(".tabulator-row", has_text="Новый магазин")).to_contain_text("100 000,00")
     page.screenshot(path=f"{OUT}/29b_investments.png", full_page=True)
@@ -770,14 +789,14 @@ with sync_playwright() as p:
     expect(page.locator(".toast")).to_have_text("Введено в эксплуатацию")
     expect(row).to_contain_text("3 333,33")  # в месяц
     expect(row.locator("button", has_text="Отменить ввод")).to_be_visible()
-    page.locator("select[aria-label='Месяц']").select_option(label="Ноябрь")
+    page.locator("select[aria-label='Месяц']").select_option(label=NEXT_MONTH_NAME)
     expect(page.locator("tr", has_text="Ноутбук (ОС-1)")).to_contain_text("3 333,33")
     page.once("dialog", lambda dlg: dlg.accept())
     page.click("button:has-text('Начислить за месяц')")
-    expect(page.locator("tr", has_text="Ноябрь 2026")).to_contain_text("3 333,33")
+    expect(page.locator("tr", has_text=f"{NEXT_MONTH_NAME} {NEXT_MONTH.year}")).to_contain_text("3 333,33")
     page.screenshot(path=f"{OUT}/33_fixed_assets.png", full_page=True)
     page.once("dialog", lambda dlg: dlg.accept())
-    page.locator("tr", has_text="Ноябрь 2026").locator("button", has_text="Отменить").click()
+    page.locator("tr", has_text=f"{NEXT_MONTH_NAME} {NEXT_MONTH.year}").locator("button", has_text="Отменить").click()
     expect(page.locator("text=Начислений пока нет.")).to_be_visible()
     # списание и его отмена
     page.locator("tr", has_text="Ноутбук").first.locator("button", has_text="Продать / списать").click()
@@ -807,8 +826,9 @@ with sync_playwright() as p:
     page.once("dialog", lambda dlg: dlg.accept())
     page.click("button:has-text('Закрыть месяц')")
     expect(page.locator(".closing-status")).to_have_text("Период закрыт по 30.09.2026")
-    # октябрь: черновик мешает закрыть
+    # следующий месяц выбирается сам; текущий месяц: черновик мешает закрыть
     expect(page.locator("select[aria-label='Месяц'] option:checked")).to_have_text("Октябрь")
+    page.locator("select[aria-label='Месяц']").select_option(label=MONTH_NAMES[TODAY.month - 1])
     expect(page.locator("li.check-fail", has_text="Нет черновиков")).to_be_visible()
     expect(page.locator("li.check-fail", has_text="Финансовый результат определён")).to_be_visible()  # зарплата на 44
     page.click("button:has-text('Определить финансовый результат')")
@@ -818,8 +838,8 @@ with sync_playwright() as p:
     page.locator("button.danger", has_text="Отменить").first.click()
     expect(page.locator("text=За этот месяц финансовый результат ещё не определяли.")).to_be_visible()
     expect(page.locator("button:has-text('Закрыть месяц')")).to_be_disabled()
-    # ноябрь: регламентная операция ждёт выполнения
-    page.locator("select[aria-label='Месяц']").select_option(label="Ноябрь")
+    # следующий месяц: регламентная операция ждёт выполнения
+    page.locator("select[aria-label='Месяц']").select_option(label=NEXT_MONTH_NAME)
     expect(page.locator("tr", has_text="Оплата аренды").first).to_contain_text("не выполнена")
     page.screenshot(path=f"{OUT}/34_closing.png", full_page=True)
     page.once("dialog", lambda dlg: dlg.accept())
@@ -883,7 +903,8 @@ with sync_playwright() as p:
     expect(page.locator("dialog[open]")).to_have_count(0)
     page.locator("table.calendar-grid tr.today-row").click()
     d = page.locator("dialog[open]")
-    expect(d).to_contain_text("Ведомость")
+    if TODAY.day >= 15:  # ведомость с датой выплаты 15-го: просроченная показывается на сегодня
+        expect(d).to_contain_text("Ведомость")
     expect(d).not_to_contain_text("Заявка № 1")
     d.locator("button:has-text('Закрыть')").click()
     page.screenshot(path=f"{OUT}/30_calendar.png", full_page=True)

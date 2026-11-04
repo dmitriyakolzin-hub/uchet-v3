@@ -5,7 +5,7 @@ import datetime as dt
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -15,8 +15,9 @@ from starlette.concurrency import run_in_threadpool
 from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import Budget, BudgetVersion, Cfo, Executor, User
+from app.models import Article, Budget, BudgetVersion, Cfo, Executor, LegalEntity, User
 from app.services import plan
+from app.services.articles import subtree_ids
 from app.services.journal import JournalError
 
 router = APIRouter(prefix="/api", tags=["Бюджеты"])
@@ -317,6 +318,62 @@ def put_cells(version_id: int, body: CellsIn, user: CurrentUser, db: DbSession) 
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
     db.commit()
     return {"changed": changed}
+
+
+class PlanCellOut(BaseModel):
+    operation_id: int
+    cfo_id: int | None
+    executor_id: int | None
+    project_id: int | None
+    article_id: int
+    month: int
+    amount: Decimal
+
+
+class PlanCellsOut(BaseModel):
+    version: VersionOut
+    budget_title: str
+    year: int
+    months: list[int]  # месяцы бюджета из запрошенных
+    editable: bool
+    articles: list[dict]  # статьи плана из ветки запрошенной статьи: {id, label}
+    cells: list[PlanCellOut]
+    total: Decimal
+
+
+@router.get("/budget-versions/{version_id}/cells", response_model=PlanCellsOut)
+def get_cells(version_id: int, user: CurrentUser, db: DbSession, kind: PlanKind, article_id: int,
+              month: Annotated[list[str], Query(description="месяцы отчёта: YYYY-MM")],
+              cfo_id: int | None = None, executor_id: int | None = None, legal_entity_id: int | None = None):
+    """Плановые операции версии по статье (с подстатьями) и месяцам — окно «Плановые операции» из отчётов
+    (docs/TZ.md, раздел 22, «Детали 12.1»). Фильтры — как у отчёта, итог совпадает с его цифрой."""
+    version = _get_version(db, user, version_id, Perm.VIEW)
+    budget = db.get(Budget, version.budget_id)
+    org_id = budget.organization_id
+    article = db.get(Article, article_id)
+    if article is None or article.organization_id != org_id:
+        raise _not_found("Статья")
+    for model, value, title in ((Cfo, cfo_id, "ЦФО"), (Executor, executor_id, "ЦФУ"), (LegalEntity, legal_entity_id, "Юрлицо")):
+        if value is not None and ((obj := db.get(model, value)) is None or obj.organization_id != org_id):
+            raise _not_found(title)
+    months = sorted({int(m[5:7]) for m in month if len(m) == 7 and m[:4] == str(budget.year) and m[5:7].isdigit()}
+                    & set(budget.months))
+    scope = cfo_scope(db, user, org_id)
+    cfo_ids = branch_ids(db, cfo_id) if cfo_id is not None else None
+    if scope is not None:  # руководитель ЦФО — только своя ветка
+        own = branch_ids(db, scope)
+        cfo_ids = own if cfo_ids is None else cfo_ids & own
+    executor_ids = None
+    if executor_id is not None:
+        executor_ids = {executor_id, *db.scalars(select(Executor.id).where(Executor.parent_id == executor_id))}
+    tree = set(subtree_ids(db, article.id))
+    articles = [a for a, _ in plan.plan_articles(db, org_id, kind) if a.id in tree]
+    cells = plan.cell_list(db, version, kind, [a.id for a in articles] or [article.id], months, cfo_ids=cfo_ids,
+                           executor_ids=executor_ids, legal_entity_id=legal_entity_id)
+    editable = version.status == "draft" and Perm.DRAFT in org_permissions(db, user, org_id)
+    return PlanCellsOut(version=_version_out(version), budget_title=budget.title, year=budget.year, months=months,
+                        editable=editable and kind != "inv", articles=[{"id": a.id, "label": a.display_name} for a in articles],
+                        cells=cells, total=sum((c["amount"] for c in cells), Decimal("0.00")))
 
 
 # --- План в Excel ---
