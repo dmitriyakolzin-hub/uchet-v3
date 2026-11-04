@@ -60,7 +60,7 @@ export async function referenceTab(box, options) {
     const body = {};
     for (const f of formFields) {
       let value = values[f.name];
-      if (f.money) value = parseNumber(value) ?? "0";
+      if (f.money) value = parseNumber(value) ?? (f.nullable ? null : "0");
       else if (f.numeric) value = value === "" ? null : Number(value);
       else if (f.nullable && value === "") value = null;
       body[f.name] = value;

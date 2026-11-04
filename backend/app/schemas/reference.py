@@ -171,6 +171,8 @@ class ContractCreate(BaseModel):
     contract_date: dt.date | None = None
     name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=255)] = ""
     project_id: int | None = None  # инвестпроект
+    deferral_days: Annotated[int, Field(ge=0, le=365)] | None = None  # отсрочка оплаты накладных, дней
+    debt_limit: Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=2)] | None = None  # лимит задолженности
 
 
 class ContractUpdate(BaseModel):
@@ -183,6 +185,8 @@ class ContractUpdate(BaseModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=255)] | None = None
     is_active: bool | None = None
     project_id: int | None = None
+    deferral_days: Annotated[int, Field(ge=0, le=365)] | None = None
+    debt_limit: Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=2)] | None = None
 
 
 class ContractOut(_Out):
@@ -196,6 +200,8 @@ class ContractOut(_Out):
     contract_date: dt.date | None
     name: str
     project_id: int | None = None
+    deferral_days: int | None = None
+    debt_limit: Decimal | None = None
     is_active: bool
 
 

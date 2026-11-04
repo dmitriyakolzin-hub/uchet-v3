@@ -35,7 +35,7 @@ from app.models import (
     PaymentRequestFile,
     User,
 )
-from app.services import approval, periodic
+from app.services import approval, group_payments, periodic, suppliers
 from app.services import payment_requests as service
 from app.services.payment_requests import STATUS_TITLES, RequestError
 from app.services.report_xlsx import XlsxColumn, build
@@ -136,6 +136,9 @@ class RequestOut(BaseModel):
     can_act: bool = False  # текущий пользователь может согласовать / отклонить / вернуть на доработку
     files: list[FileOut] = []  # счёт и другие файлы заявки
     sent_at: dt.datetime | None = None  # реестр на оплату: отправлено в банк
+    linked_id: int | None = None  # поступление внутри группы: выплата плательщика
+    linked_number: int | None = None
+    group_name: str = ""  # выплата внутри группы: юрлицо-получатель
 
 
 class ListOut(BaseModel):
@@ -167,6 +170,7 @@ def _out(db: Session, requests: list[PaymentRequest], scoped: bool, user: User |
     executors = _names(db, Executor, ids("executor_id"), lambda e: e.name)
     users = _names(db, User, ids("created_by") + ids("approved_by"), lambda u: u.full_name or u.login)
     operations = _names(db, Operation, ids("operation_id"), lambda o: o.number)
+    linked = _names(db, PaymentRequest, ids("linked_id"), lambda x: x.number)
     files: dict[int, list[FileOut]] = {}
     for f in db.execute(select(PaymentRequestFile.id, PaymentRequestFile.request_id, PaymentRequestFile.filename,
                                PaymentRequestFile.size, PaymentRequestFile.uploaded_at)
@@ -200,7 +204,8 @@ def _out(db: Session, requests: list[PaymentRequest], scoped: bool, user: User |
             route_titles=[approval.STEP_TITLES[x] for x in r.route or []], step=r.step,
             step_title=approval.STEP_TITLES.get(approval.current_step(r) or "", ""),
             can_act=user is not None and approval.can_act(db, user, r),
-            files=files.get(r.id, []), sent_at=r.sent_at,
+            files=files.get(r.id, []), sent_at=r.sent_at, linked_id=r.linked_id, linked_number=linked.get(r.linked_id),
+            group_name=(g.short_name if (g := group_payments.receiver(db, r)) else ""),
         ))
     return rows
 
@@ -257,6 +262,7 @@ def _save(db: Session, req: PaymentRequest, branch: set[int] | None, user: User)
         if executors is not None and req.executor_id not in executors:
             raise RequestError("ЦФУ заявки — только ваш ЦФУ")
         service.validate(db, req, branch)
+        group_payments.sync(db, req)
     except RequestError as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
@@ -269,6 +275,12 @@ def _check_author(db: Session, user: User, organization_id: int) -> None:
     """Подавать и править заявки: право черновиков или руководитель ЦФУ (CEO — только согласует)."""
     if executor_scope(db, user, organization_id) is None:
         get_organization_for(db, user, organization_id, Perm.DRAFT)
+
+
+def _not_linked(req: PaymentRequest) -> None:
+    if req.linked_id is not None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail="Поступление внутри группы меняется вместе с выплатой плательщика")
 
 
 def _check_act(db: Session, user: User, req: PaymentRequest) -> None:
@@ -369,7 +381,14 @@ def update_request(request_id: int, body: RequestIn, user: CurrentUser, db: DbSe
     req, branch = _request(db, user, request_id, Perm.DRAFT, Perm.REQUEST)
     _check_author(db, user, req.organization_id)
     _status(req, "draft", "rejected", "revision")
-    for key, value in body.model_dump().items():
+    data = body.model_dump()
+    if req.source == "supplier" and req.status == "rejected":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail="Отклонённая оплата поставщику не правится — запланируйте оплату в реестре накладных")
+    if req.source == "supplier" and any(data[k] != getattr(req, k) for k in ("amount", "legal_entity_id", "counterparty_id")):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail="Сумма и контрагент оплаты поставщику — из накладных: удалите заявку и запланируйте заново")
+    for key, value in data.items():
         setattr(req, key, value)
     req.status, req.reject_reason = "draft", ""
     return _save(db, req, branch, user)
@@ -390,6 +409,9 @@ def submit_request(request_id: int, user: CurrentUser, db: DbSession):
     req, branch = _request(db, user, request_id, Perm.DRAFT, Perm.REQUEST)
     _check_author(db, user, req.organization_id)
     _status(req, "draft", "rejected", "revision")
+    if req.source == "supplier" and req.status == "rejected":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail="Отклонённая оплата поставщику не подаётся снова — запланируйте оплату в реестре накладных")
     if req.direction == "in":
         req.status, req.approved_by, req.approved_at, req.reject_reason = "approved", user.id, func.now(), ""
         approval.event(db, req, user, "approved")
@@ -427,12 +449,15 @@ def approve_request(request_id: int, user: CurrentUser, db: DbSession, body: App
 def reject_request(request_id: int, body: RejectIn, user: CurrentUser, db: DbSession):
     """Отклонить: на своём шаге маршрута; согласованную — финансовый директор и администратор."""
     req, branch = _request(db, user, request_id)
+    _not_linked(req)
     if req.status == "approved":
         get_organization_for(db, user, req.organization_id, Perm.SUPERVISE)
     else:
         _check_act(db, user, req)
     approval.event(db, req, user, "rejected", body.reason, approval.current_step(req) or "")
     req.status, req.reject_reason, req.approved_by, req.approved_at = "rejected", body.reason, None, None
+    if req.source == "supplier":
+        suppliers.release(db, req)  # накладные снова ждут оплаты; оплату планируют заново
     return _save(db, req, branch, user)
 
 
@@ -450,6 +475,7 @@ def revise_request(request_id: int, body: RejectIn, user: CurrentUser, db: DbSes
 def unapprove_request(request_id: int, user: CurrentUser, db: DbSession):
     """Вернуть согласованную выплату на согласование финансового директора."""
     req, branch = _request(db, user, request_id, Perm.SUPERVISE)
+    _not_linked(req)
     _status(req, "approved")
     if req.direction == "in":
         req.status = "draft"
@@ -466,6 +492,8 @@ def unapprove_request(request_id: int, user: CurrentUser, db: DbSession):
 def move_request(request_id: int, body: MoveIn, user: CurrentUser, db: DbSession):
     req, _ = _request(db, user, request_id, Perm.POST)
     _status(req, "pending", "approved")
+    if req.linked_id is not None and body.pay_date != req.pay_date:
+        _not_linked(req)
     req.pay_date, req.bank_account_id, req.cash_cfo_id = body.pay_date, body.bank_account_id, body.cash_cfo_id
     approval.event(db, req, user, "moved", f"{body.pay_date:%d.%m.%Y}")
     return _save(db, req, _branch(db, user, req.organization_id), user)

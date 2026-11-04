@@ -1077,6 +1077,33 @@ with sync_playwright() as p:
     else:
         expect(rrow.locator(".gap-note").first).to_contain_text("у контрагента")
     page.screenshot(path=f"{OUT}/35_registry.png", full_page=True)
+    # накладные поставщиков (шаг 14.5): загрузка в формате листа «ПОСТАВЩИКИ», оплата частью
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "ПОСТАВЩИКИ"
+    ws.append(["Тип документа", "Дата документа", "№ документа", "Сумма без НДС, р.", "Контрагент"])
+    ws.append(["Приходная накладная", (TODAY - dt.timedelta(days=40)).strftime("%d.%m.%Y"), "Н-501", 7000, "Поставщик Плюс"])
+    ws.append(["Приходная накладная", TODAY.strftime("%d.%m.%Y"), "Н-502", 3000, "Поставщик Плюс"])
+    ws.append(["Приходная накладная", TODAY.strftime("%d.%m.%Y"), "Н-9", 100, "Нет такого"])
+    invoices_file = f"{OUT}/накладные.xlsx"
+    wb.save(invoices_file)
+    page.click("button.tab:has-text('Накладные поставщиков')")
+    page.locator("select[aria-label='Юрлицо-покупатель']").select_option(index=1)
+    page.locator("input[aria-label='Файл накладных']").set_input_files(invoices_file)
+    d = page.locator("dialog[open]")
+    expect(d).to_contain_text("Загружено: 2")
+    expect(d).to_contain_text("Нет такого — строк: 1")
+    d.locator("button:has-text('Закрыть')").click()
+    group = page.locator("table.suppliers tr.week-row", has_text="Поставщик Плюс")
+    expect(group).to_contain_text("10 000,00")
+    expect(page.locator("table.suppliers tr[data-invoice='Н-501']")).to_contain_text("просрочено 40 дн.")
+    group.locator("button:has-text('Запланировать оплату')").click()
+    d = dialog_fill(page, {"pay_date": TODAY.isoformat(), "amount": "8000"})
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".toast")).to_contain_text("на согласовании")
+    expect(page.locator("table.suppliers tr[data-invoice='Н-502']")).to_contain_text("1 000,00")  # 7 000 + 1 000 из 3 000
+    page.screenshot(path=f"{OUT}/36_suppliers.png", full_page=True)
     page.click("button.tab:has-text('Заявки')")
 
     # вход под CEO

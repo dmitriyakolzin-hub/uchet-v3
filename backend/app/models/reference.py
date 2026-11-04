@@ -124,6 +124,8 @@ class Contract(OrgScoped, Base):
     __tablename__ = "contracts"
     __table_args__ = (
         CheckConstraint("kind IN ('customer', 'supplier', 'other')", name="kind"),
+        CheckConstraint("deferral_days IS NULL OR deferral_days BETWEEN 0 AND 365", name="deferral_days"),
+        CheckConstraint("debt_limit IS NULL OR debt_limit > 0", name="debt_limit"),
     )
 
     counterparty_id: Mapped[int] = mapped_column(
@@ -136,6 +138,9 @@ class Contract(OrgScoped, Base):
     contract_date: Mapped[date | None] = mapped_column(Date)
     name: Mapped[str] = mapped_column(String(255), default="", server_default="")
     project_id: Mapped[int | None] = mapped_column(ForeignKey("investment_projects.id", ondelete="RESTRICT"))  # инвестпроект
+    # поставщику: отсрочка оплаты накладных, дней, и лимит задолженности (docs/TZ.md, раздел 24, «Детали 14.5»)
+    deferral_days: Mapped[int | None] = mapped_column(SmallInteger)
+    debt_limit: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
 
 
 class Unit(Base):

@@ -80,6 +80,9 @@ class PaymentRequest(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sent_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     period: Mapped[date | None] = mapped_column(Date)
+    # платёж внутри группы (docs/TZ.md, раздел 24, «Детали 14.5»): у поступления получателя — ссылка на выплату
+    # плательщика; такое поступление меняется вместе с выплатой
+    linked_id: Mapped[int | None] = mapped_column(ForeignKey("payment_requests.id", ondelete="CASCADE"), index=True)
 
 
 class PaymentRequestEvent(Base):
@@ -109,3 +112,43 @@ class PaymentRequestFile(Base):
     data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
     uploaded_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SupplierInvoice(Base):
+    """Накладная (или аванс) поставщика из реестра накладных: долг нашего юрлица перед контрагентом.
+    Срок оплаты — дата документа + отсрочка договора; оплачивается заявками (supplier_payments)."""
+
+    __tablename__ = "supplier_invoices"
+    __table_args__ = (
+        CheckConstraint("kind IN ('invoice', 'advance')", name="kind"),
+        CheckConstraint("amount > 0", name="amount"),
+        UniqueConstraint("legal_entity_id", "counterparty_id", "kind", "number", "doc_date",
+                         name="uq_supplier_invoices_document"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"), index=True)
+    legal_entity_id: Mapped[int] = mapped_column(ForeignKey("legal_entities.id", ondelete="RESTRICT"))
+    counterparty_id: Mapped[int] = mapped_column(ForeignKey("counterparties.id", ondelete="RESTRICT"), index=True)
+    contract_id: Mapped[int | None] = mapped_column(ForeignKey("contracts.id", ondelete="SET NULL"))
+    kind: Mapped[str] = mapped_column(String(10), default="invoice", server_default="invoice")
+    number: Mapped[str] = mapped_column(String(50))
+    doc_date: Mapped[date] = mapped_column(Date)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SupplierPayment(Base):
+    """Часть заявки на оплату, которая закрывает накладную (одна заявка может закрывать несколько накладных)."""
+
+    __tablename__ = "supplier_payments"
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="amount"),
+        UniqueConstraint("invoice_id", "request_id", name="uq_supplier_payments_invoice_request"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("supplier_invoices.id", ondelete="CASCADE"), index=True)
+    request_id: Mapped[int] = mapped_column(ForeignKey("payment_requests.id", ondelete="CASCADE"), index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))

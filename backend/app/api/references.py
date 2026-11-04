@@ -239,7 +239,7 @@ for resource in (
         order_by=lambda m: [m.contract_date.desc().nulls_last(), m.number],
         refs={"counterparty_id": Ref(Counterparty, "Контрагент"), "legal_entity_id": LEGAL_ENTITY,
               "currency_id": CURRENCY, "project_id": PROJECT},
-        nullable_fields={"contract_date", "project_id"},
+        nullable_fields={"contract_date", "project_id", "deferral_days", "debt_limit"},
     ),
     OrgResource(
         path="cfos", model=Cfo, title="ЦФО",

@@ -7,7 +7,8 @@
 - CEO — по правилу: все инвестиционные заявки и суммы больше 1 000 000 ₽, кроме оплат поставщикам
   (поставщики идут из реестра накладных);
 - финансовый директор — последним; после него заявка «согласована» и попадает в реестр на оплату.
-Периодические платежи согласует только финансовый директор. Администратор может действовать на любом шаге.
+Периодические платежи согласует только финансовый директор; платёж внутри группы — без согласования
+(app/services/group_payments.py). Администратор может действовать на любом шаге.
 """
 
 import datetime as dt
@@ -18,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.core.permissions import Role
 from app.models import Article, Cfo, Executor, Membership, PaymentRequest, PaymentRequestEvent, User
+from app.services import group_payments
 
 CEO_LIMIT = Decimal("1000000")
 STEP_TITLES = {"executor": "Руководитель ЦФУ", "cfo": "Руководитель ЦФО", "fm": "Финансовый менеджер",
@@ -114,6 +116,13 @@ def event(db: Session, req: PaymentRequest, user: User, action: str, comment: st
 
 
 def submit(db: Session, req: PaymentRequest, user: User) -> None:
+    """На согласование; платёж внутри группы согласования не требует — сразу «согласована»."""
+    if group_payments.receiver(db, req) is not None:
+        req.route, req.step, req.status, req.reject_reason = [], 0, "approved", ""
+        req.approved_by, req.approved_at = user.id, dt.datetime.now(dt.UTC)
+        event(db, req, user, "submitted", "платёж внутри группы — без согласования")
+        group_payments.sync(db, req)
+        return
     req.route, req.step, req.status, req.reject_reason = build_route(db, req), 0, "pending", ""
     event(db, req, user, "submitted")
 
