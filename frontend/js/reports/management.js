@@ -3,6 +3,7 @@
 import { api } from "../api.js";
 import { money } from "../format.js";
 import { el, makeTable, openForm, toast } from "../ui.js";
+import { tableNotes } from "../notes.js";
 import { openPlanCells } from "../plancells.js";
 import { nestRows, openDrill, planArticle, TREE_OPTIONS } from "./common.js";
 
@@ -34,6 +35,14 @@ export function managementReport({ box, ctx }) {
       row.getElement().classList.toggle("row-key", r.kind === "indicator");
     },
   });
+
+  const PART_TITLES = { plan: "план", fact: "факт", dev: "откл." };
+  const notes = tableNotes(table, { report: "management", ctx, rowTitle: (r) => `${r.code ?? ""} ${r.title}`.trim(),
+    columnTitle: (field) => {
+      const [colKey, part] = field.split("|");
+      const col = data?.columns.find((c) => c.key === colKey);
+      return `${col?.key === "total" ? "Итого" : col?.title ?? colKey}, ${PART_TITLES[part] ?? part}`;
+    } });
 
   function renderTabs() {
     modeTabs.replaceChildren(...MODES.map(([k, title]) => el("button", {
@@ -140,6 +149,7 @@ export function managementReport({ box, ctx }) {
       return flat;
     });
     await table.setData(nestRows(rows));
+    await notes.refresh();
   }
 
   return {

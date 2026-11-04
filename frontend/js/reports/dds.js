@@ -1,5 +1,6 @@
 // ДДС: остаток на начало, потоки по видам деятельности и статьям, остаток на конец; колонки по месяцам.
 import { api } from "../api.js";
+import { tableNotes } from "../notes.js";
 import { el, makeTable } from "../ui.js";
 import { moneyCell, nestRows, openDrill, TREE_OPTIONS } from "./common.js";
 
@@ -26,6 +27,9 @@ export function columnsReport({ box, ctx, path, hint, fileName, onDetails, first
       row.getElement().classList.toggle("row-key", r.kind === "total" || r.kind === "balance");
     },
   });
+  // примечания к цифрам (правый щелчок / долгое нажатие)
+  const notes = tableNotes(table, { report: path, ctx, rowTitle: (r) => r.title,
+    columnTitle: (field) => data?.columns.find((c) => c.key === field)?.title ?? field });
   table.on("cellClick", (_e, cell) => {
     const r = cell.getRow().getData();
     const col = data?.columns.find((c) => c.key === cell.getField());
@@ -65,6 +69,7 @@ export function columnsReport({ box, ctx, path, hint, fileName, onDetails, first
       })),
     ]);
     await table.setData(nestRows(data.rows.map((r) => ({ ...r, ...r.values }))));
+    await notes.refresh();
   }
 
   return {
@@ -80,6 +85,7 @@ export function ddsReport({ box, ctx }) {
   return columnsReport({
     box, ctx, path: "dds", fileName: "dds",
     hint: "Деньги — счета 50, 51, 52, 55. Переводы между своими счетами не показываются. "
-      + "Щёлкните по сумме — откроются проводки, из которых она сложилась. При фильтре по ЦФО видна только касса.",
+      + "Щёлкните по сумме — откроются проводки, из которых она сложилась. При фильтре по ЦФО видна только касса. "
+      + "Правый щелчок по цифре (на телефоне — долгое нажатие) — примечание.",
   });
 }

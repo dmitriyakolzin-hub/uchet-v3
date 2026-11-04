@@ -2,6 +2,7 @@
 import { api } from "../api.js";
 import { money } from "../format.js";
 import { el, makeTable, toast } from "../ui.js";
+import { tableNotes } from "../notes.js";
 import { openPlanCells } from "../plancells.js";
 import { nestRows, openDrill, planArticle, TREE_OPTIONS } from "./common.js";
 
@@ -37,6 +38,14 @@ export function planFactReport({ box, ctx }) {
       row.getElement().classList.toggle("row-key", r.kind === "total");
     },
   });
+
+  const PARTS = { plan: "план", fact: "факт", dev: "откл.", pct: "%" };
+  const notes = tableNotes(table, { report: "planfact", ctx, variant: () => kind, rowTitle: (r) => r.title,
+    columnTitle: (field) => {
+      const [colKey, part] = field.split("|");
+      const col = data?.columns.find((c) => c.key === colKey);
+      return `${col?.key === "total" ? "Итого" : col?.title ?? colKey}, ${PARTS[part] ?? part}`;
+    } });
 
   function renderTabs() {
     kindTabs.replaceChildren(...[["pl", "ОПиУ"], ["cf", "ДДС"]].map(([k, title]) =>
@@ -135,6 +144,7 @@ export function planFactReport({ box, ctx }) {
       return flat;
     });
     await table.setData(nestRows(rows));
+    await notes.refresh();
   }
 
   versionSelect.addEventListener("change", () => { versionId = versionSelect.value; load(); });

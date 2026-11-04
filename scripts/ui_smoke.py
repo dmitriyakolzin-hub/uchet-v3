@@ -6,6 +6,7 @@
 """
 import datetime as dt
 import os
+import re
 import sys
 from playwright.sync_api import sync_playwright, expect
 
@@ -232,6 +233,11 @@ with sync_playwright() as p:
     d.locator("[name=cfo_id]").select_option(label="АВМВ / Торговля / Филиал Юг")
     d.locator("button[type=submit]").click()
     expect(page.locator(".tabulator-row", has_text="Склад Юг")).to_contain_text("Филиал Юг")
+    # метки примечаний (шаг 13.1)
+    page.click("button.tab:has-text('Метки примечаний')")
+    page.click("text=Добавить метку")
+    dialog_fill(page, {"name": "Проверить"}).locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row .note-label", has_text="Проверить")).to_be_visible()
 
     page.click("button.tab:has-text('Номенклатура')")
     page.click("text=Добавить номенклатуру")
@@ -493,6 +499,18 @@ with sync_playwright() as p:
     expect(d).to_contain_text("кредит: 1 500,50")
     page.screenshot(path=f"{OUT}/19_dds.png", full_page=True)
     d.locator("button", has_text="Закрыть").click()
+    # примечание к цифре: правый щелчок → текст и метка → уголок у ячейки (шаг 13.1)
+    total = supplier_row.locator(".tabulator-cell[tabulator-field=total]")
+    total.click(button="right")
+    d = page.locator("dialog[open]", has_text="Примечания:")
+    d.locator("[aria-label='Новое примечание']").fill("Сверить с актом")
+    d.locator("[aria-label='Метка нового примечания']").select_option(label="Проверить")
+    d.locator("button", has_text="Добавить примечание").click()
+    expect(d.locator(".note-item")).to_contain_text("Сверить с актом")
+    expect(d.locator(".note-item .note-label")).to_have_text("Проверить")
+    d.locator("button", has_text="Закрыть").click()
+    expect(total).to_have_class(re.compile("has-note"))
+    expect(total).to_have_attribute("title", "Сверить с актом")
     # ОПиУ: в стенде расходов с «Статьёй ОПиУ» нет — отчёт строится, итоговые строки на месте
     page.click("button.tab:has-text('ОПиУ')")
     expect(page.locator(".tabulator-row", has_text="Чистая прибыль")).to_be_visible()
@@ -826,6 +844,17 @@ with sync_playwright() as p:
     d.locator("[name=description]").fill("Покупка ноутбука")
     d.locator("button", has_text="Сохранить и провести").click()
     expect(page.locator(".tabulator-row", has_text="Покупка ноутбука")).to_contain_text("Проведена")
+    # примечание к операции журнала (шаг 13.1)
+    page.locator(".tabulator-row", has_text="Покупка ноутбука").locator(".tabulator-cell").nth(2).click()
+    d = page.locator("dialog[open]", has_text="Операция №")
+    d.locator(".op-notes button", has_text="Добавить примечание").click()
+    nd = page.locator("dialog[open]", has_text="Примечания: операция")
+    nd.locator("[aria-label='Новое примечание']").fill("Нет акта приёмки")
+    nd.locator("button", has_text="Добавить примечание").click()
+    expect(nd.locator(".note-item")).to_contain_text("Нет акта приёмки")
+    nd.locator("button", has_text="Закрыть").click()
+    expect(d.locator(".op-notes")).to_contain_text("Примечания: 1 (открытых 1)")
+    d.locator(".form-actions button", has_text="Закрыть").click()
 
     page.click("#nav a[data-page=fixedassets]")
     row = page.locator("tr", has_text="Ноутбук")
