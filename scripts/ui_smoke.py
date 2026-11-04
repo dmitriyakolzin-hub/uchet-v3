@@ -648,6 +648,15 @@ with sync_playwright() as p:
     expect(row).to_contain_text("1 000,00")
     expect(row.locator("td.over-budget")).to_have_count(0)  # по низу = цели
     d.locator("button", has_text="Закрыть").click()
+    # шаг 12.4: по среднему — заполняются только пустые ячейки (аренда января уже введена — не тронута)
+    page.click("button:has-text('По среднему')")
+    d = page.locator("dialog[open]", has_text="По среднему")
+    d.locator("[name=base]").select_option("3")
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".toast")).to_contain_text("с планом не тронуто")
+    rent = page.locator(".tabulator-row", has_text="Аренда").first
+    expect(rent.locator(".tabulator-cell[tabulator-field='2027-01']")).to_have_text("1 500,50")
+    expect(rent.locator(".tabulator-cell[tabulator-field='2027-02']")).to_have_text("1 500,50")  # среднее — по плану января
     page.screenshot(path=f"{OUT}/28_plan_grid.png", full_page=True)
     # план инвестиций
     page.click("button.tab:has-text('План инвестиций')")
@@ -664,7 +673,7 @@ with sync_playwright() as p:
     expect(page.locator(".tabulator-row", has_text="Коммунальные услуги").first).to_contain_text("700,00")
     page.click("button.tab:has-text('Свод по ветке')")
     rent = page.locator(".tabulator-row", has_text="Аренда").first
-    expect(rent.locator(".tabulator-cell[tabulator-field=total]")).to_have_text("1 500,50")
+    expect(rent.locator(".tabulator-cell[tabulator-field='2027-01']")).to_have_text("1 500,50")
     rent.locator(".tabulator-data-tree-control").click()
     expect(page.locator(".tabulator-row", has_text="свой план")).to_contain_text("1 500,50")
     page.screenshot(path=f"{OUT}/28b_plan_branch.png", full_page=True)

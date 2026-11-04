@@ -61,6 +61,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   const submitBox = el("div", { class: "filters submit-box" });
   const statusesButton = el("button", { type: "button", class: "secondary", onclick: () => showStatuses() }, "Кто сдал план");
   const topDownButton = el("button", { type: "button", class: "secondary", hidden: true, onclick: () => openTopDown() }, "Сверху вниз");
+  const retroButton = el("button", { type: "button", class: "secondary", hidden: true, onclick: () => openRetro() }, "По среднему");
   const canDraft = org.permissions.includes("draft") && version.status === "draft";
 
   view.replaceChildren(
@@ -70,7 +71,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     kindTabs,
     el("div", { class: "filters" }, cfoLabel, executorLabel, modeTabs,
       downloadButton,
-      uploadButton, fileInput, statusesButton, topDownButton),
+      uploadButton, fileInput, statusesButton, topDownButton, retroButton),
     submitBox,
     status,
     tableBox,
@@ -147,10 +148,34 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     dialog.showModal();
   }
 
+  // Ретроспективный (docs/TZ.md, раздел 22, «Детали 12.4»): пустые ячейки — среднее за 1 / 3 / 6 / 12 месяцев
+  function openRetro() {
+    const withBranch = kind === "pl" && hasChildren(cfoId);
+    openForm({
+      title: kind === "pl" ? `По среднему: ${cfoSelect.selectedOptions[0]?.textContent ?? ""}` : "По среднему: план ДДС",
+      fields: [
+        { name: "base", label: "База — сколько предыдущих месяцев", type: "select", required: true,
+          options: [["1", "1 месяц"], ["3", "3 месяца"], ["6", "6 месяцев"], ["12", "12 месяцев"]],
+          hint: "У каждого месяца плана — свои предыдущие месяцы: прошедшие — по факту, месяцы этого бюджета — по плану. "
+            + "Заполняются только пустые ячейки." },
+        ...(withBranch ? [{ name: "branch", label: "Вместе с подчинёнными ЦФО (каждый — по своему факту)", type: "checkbox" }] : []),
+      ],
+      values: { base: "3", branch: false },
+      submitText: "Заполнить",
+      onSubmit: async (v) => {
+        const r = await api.post(`/api/budget-versions/${version.id}/retrospective`, {
+          kind, cfo_id: kind === "pl" ? cfoId : null, branch: Boolean(v.branch), base: Number(v.base) });
+        toast(`Заполнено ячеек: ${r.filled}; с планом не тронуто: ${r.kept}`);
+        await load();
+      },
+    });
+  }
+
   async function renderSubmit() {
     const show = kind === "pl" && cfoId && mode !== "executor";
     statusesButton.hidden = kind !== "pl";
     topDownButton.hidden = !(kind === "pl" && cfoId && hasChildren(cfoId) && canDraft && mode !== "executor");
+    retroButton.hidden = !(canDraft && ((kind === "pl" && cfoId && mode !== "executor") || (kind === "cf" && !org.restricted)));
     if (!show) { submitBox.replaceChildren(); return; }
     const rows = await api.get(`/api/budget-versions/${version.id}/cfo-statuses`);
     const row = rows.find((r) => r.cfo_id === cfoId);
