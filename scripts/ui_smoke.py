@@ -1001,6 +1001,12 @@ with sync_playwright() as p:
     row = page.locator("table.requests tbody tr", has_text="Оплата по счёту 77")
     expect(row).to_contain_text("1 500,50")
     expect(row).to_contain_text("Черновик")
+    # файл счёта к заявке (шаг 14.2)
+    invoice = f"{OUT}/счёт 77.pdf"
+    with open(invoice, "wb") as fh:
+        fh.write(b"%PDF-1.4 smoke")
+    row.locator("input[type=file]").set_input_files(invoice)
+    expect(row.locator(".req-files")).to_contain_text("счёт 77.pdf")
     row.locator("button:has-text('На согласование')").click()
     expect(row).to_contain_text("На согласовании")
     expect(row.locator(".my-step")).to_contain_text("ждёт вас (Финансовый директор)")  # маршрут (шаг 14.1)

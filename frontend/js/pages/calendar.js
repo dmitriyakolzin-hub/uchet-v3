@@ -32,7 +32,7 @@ export async function renderCalendar(view) {
   let org = orgs.find((o) => String(o.id) === recall(ORG_KEY)) ?? orgs[0];
   let ref = await loadReferences(org.id);
   const [from, to] = monthBounds();
-  const filter = { date_from: from, date_to: to, status: "", direction: "", to_approve: "" };
+  const filter = { date_from: from, date_to: to, status: "", direction: "", who: "", channel: "" };
 
   const orgSelect = el("select", { class: "inline-select", "aria-label": "Организация" },
     ...orgs.map((o) => el("option", { value: o.id, selected: o.id === org.id }, o.name)));
@@ -55,7 +55,13 @@ export async function renderCalendar(view) {
   const listBox = el("div");
   const totalsBox = el("p", { class: "muted" });
   const can = (perm) => org.permissions.includes(perm);
-  const query = () => new URLSearchParams(Object.entries(filter).filter(([, v]) => v)).toString();
+  // «чьи»: ждут моего согласования / мои; канал: безнал или касса (кассовые заявки)
+  const query = () => {
+    const { who, ...rest } = filter;
+    const p = new URLSearchParams(Object.entries(rest).filter(([, v]) => v));
+    if (who) p.set(who, "true");
+    return p.toString();
+  };
 
   const tabs = el("div", { class: "tabs" });
   const content = el("div");
@@ -69,8 +75,10 @@ export async function renderCalendar(view) {
       el("label", { class: "inline" }, "по ", input("date", "date_to", "По дату")),
       select("status", "Статус", [["", "Все статусы"], ...Object.entries(STATUS)]),
       select("direction", "Вид", [["", "Выплаты и поступления"], ["out", "Выплаты"], ["in", "Поступления"]]),
-      select("to_approve", "Чьи", [["", "Все заявки"], ["true", "Ждут моего согласования"]]),
+      select("who", "Чьи", [["", "Все заявки"], ["to_approve", "Ждут моего согласования"], ["mine", "Мои заявки"]]),
+      select("channel", "Безнал или касса", [["", "Безнал и касса"], ["bank", "Безнал"], ["cash", "Касса"]]),
       el("button", { type: "button", onclick: () => edit(null, "out") }, "Новая заявка"),
+      el("button", { type: "button", class: "secondary", onclick: () => edit(null, "out", true) }, "Кассовая заявка"),
       el("button", { type: "button", class: "secondary", onclick: () => edit(null, "in") }, "Ожидаемое поступление"),
       el("button", { type: "button", class: "secondary",
         onclick: () => api.download(`/api/organizations/${org.id}/payment-requests.xlsx?${query()}`, "payment_requests.xlsx")
@@ -148,6 +156,38 @@ export async function renderCalendar(view) {
     return el("td", {}, el("span", { class: `status req-${r.status}` }, STATUS[r.status]), note);
   }
 
+  // файлы заявки: скачать, приложить (автор и финансовая служба), убрать
+  function filesCell(r) {
+    const canAttach = r.status !== "paid" && (author() || can("post"));
+    const input = el("input", { type: "file", hidden: true, accept: ".pdf,.jpg,.jpeg,.png,.xlsx,.xls,.doc,.docx",
+      "aria-label": `Файл к заявке № ${r.number}` });
+    input.addEventListener("change", async () => {
+      const file = input.files[0];
+      if (!file) return;
+      try {
+        await api.upload(`/api/payment-requests/${r.id}/files?filename=${encodeURIComponent(file.name)}`, file);
+        toast("Файл приложен");
+        await load();
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    });
+    return el("td", { class: "req-files" },
+      ...r.files.map((f) => el("div", {},
+        el("button", { type: "button", class: "link", onclick: () => api.download(`/api/payment-request-files/${f.id}`, f.filename)
+          .catch((err) => toast(err.message, "error")) }, f.filename),
+        canAttach ? el("button", { type: "button", class: "link danger", title: "Убрать файл", onclick: async () => {
+          if (!confirm(`Убрать файл «${f.filename}»?`)) return;
+          try {
+            await api.delete(`/api/payment-request-files/${f.id}`);
+            await load();
+          } catch (err) {
+            toast(err.message, "error");
+          }
+        } }, " ×") : "")),
+      canAttach ? el("button", { type: "button", class: "link", onclick: () => input.click() }, "+ файл") : "", input);
+  }
+
   async function history(r) {
     try {
       const events = await api.get(`/api/payment-requests/${r.id}/events`);
@@ -177,14 +217,15 @@ export async function renderCalendar(view) {
     listBox.replaceChildren(data.rows.length
       ? el("table", { class: "recon versions requests" },
         el("thead", {}, el("tr", {}, ...["№", "Дата оплаты", "Вид", "Контрагент / назначение", "Статья ДДС", "ЦФО", "Счёт / касса",
-          "Сумма", "Бюджет", "Статус", ""].map((t) => el("th", {}, t)))),
-        el("tbody", {}, ...data.rows.map((r) => el("tr", { "data-number": r.number },
+          "Сумма", "Бюджет", "Счёт (файл)", "Статус", ""].map((t) => el("th", {}, t)))),
+        el("tbody", {}, ...data.rows.map((r) => el("tr", { "data-number": r.number,
+          class: Number(r.budget?.over ?? 0) > 0 && r.status !== "paid" ? "over-budget-row" : "" },
           el("td", {}, String(r.number)), el("td", {}, date(r.pay_date)), el("td", {}, DIRECTION[r.direction]),
           el("td", {}, r.counterparty_name || "—", r.contract_name ? el("div", { class: "muted" }, `Договор ${r.contract_name}`) : null,
             r.description ? el("div", { class: "muted" }, r.description) : null),
           el("td", {}, r.article_name), el("td", {}, r.cfo_name, r.executor_name ? el("div", { class: "muted" }, r.executor_name) : null),
           el("td", {}, r.source_name),
-          el("td", { class: "num" }, money(r.amount)), el("td", {}, budgetCell(r)), statusCell(r), actions(r)))))
+          el("td", { class: "num" }, money(r.amount)), el("td", {}, budgetCell(r)), filesCell(r), statusCell(r), actions(r)))))
       : el("p", { class: "muted" }, "За этот период заявок нет."));
     totalsBox.textContent = `Выплаты: ${money(data.total_out)} · Поступления: ${money(data.total_in)}`;
   }
@@ -269,7 +310,7 @@ export async function renderCalendar(view) {
     return dialog;
   }
 
-  function edit(r, direction) {
+  function edit(r, direction, cashRequest = false) {
     const entities = ref.entities.filter((e) => e.is_active);
     const flow = direction === "out" ? "outflow" : "inflow";
     const articles = ref.leafArticles.filter((a) => a.is_active && a.is_cash_flow && !a.is_transfer && a.cash_flow_direction === flow);
@@ -278,7 +319,8 @@ export async function renderCalendar(view) {
     const contractOptions = (cpId, leId) => options(ref.contracts.filter((c) => String(c.counterparty_id) === cpId
       && String(c.legal_entity_id) === leId), (c) => c.name || `№ ${c.number}`);
     const dialog = openForm({
-      title: r ? `Заявка № ${r.number}` : direction === "in" ? "Ожидаемое поступление" : "Новая заявка на оплату",
+      title: r ? `Заявка № ${r.number}` : direction === "in" ? "Ожидаемое поступление"
+        : cashRequest ? "Кассовая заявка (выдача из кассы)" : "Новая заявка на оплату",
       fields: [
         { name: "pay_date", label: direction === "in" ? "Ожидаемая дата" : "Дата оплаты", type: "date", required: true },
         { name: "legal_entity_id", label: "Юрлицо", type: "select", options: entities.map((e) => [String(e.id), e.short_name]) },
@@ -296,7 +338,8 @@ export async function renderCalendar(view) {
         { name: "description", label: "Назначение", type: "textarea" },
       ],
       values: {
-        pay_date: r?.pay_date ?? ref.today, legal_entity_id: entityId, source: sourceValue(r),
+        pay_date: r?.pay_date ?? ref.today, legal_entity_id: entityId,
+        source: r ? sourceValue(r) : cashRequest ? (sourceOptions(entityId).find(([v]) => v.startsWith("cash:"))?.[0] ?? "") : "",
         counterparty_id: String(r?.counterparty_id ?? ""), contract_id: String(r?.contract_id ?? ""),
         article_id: String(r?.article_id ?? ""), cfo_id: String(r?.cfo_id ?? (org.cfo_scope ?? "")),
         executor_id: String(r?.executor_id ?? (org.executor_scope?.[0] ?? "")), amount: r ? money(r.amount) : "",

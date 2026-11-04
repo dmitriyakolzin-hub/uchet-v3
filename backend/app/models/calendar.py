@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Identity,
+    LargeBinary,
     Numeric,
     SmallInteger,
     String,
@@ -86,3 +87,18 @@ class PaymentRequestEvent(Base):
     step: Mapped[str] = mapped_column(String(20), default="", server_default="")
     comment: Mapped[str] = mapped_column(String(1000), default="", server_default="")
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PaymentRequestFile(Base):
+    """Файл к заявке (счёт, договор, акт): хранится в базе, попадает в бэкап. До 10 МБ."""
+
+    __tablename__ = "payment_request_files"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    request_id: Mapped[int] = mapped_column(ForeignKey("payment_requests.id", ondelete="CASCADE"), index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(100))
+    size: Mapped[int] = mapped_column(BigInteger)
+    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    uploaded_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
