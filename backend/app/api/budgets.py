@@ -15,7 +15,18 @@ from starlette.concurrency import run_in_threadpool
 from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import Article, Budget, BudgetVersion, Cfo, Executor, LegalEntity, User
+from app.models import (
+    Article,
+    Budget,
+    BudgetCfoStatus,
+    BudgetVersion,
+    Cfo,
+    Executor,
+    LegalEntity,
+    Operation,
+    Posting,
+    User,
+)
 from app.services import plan
 from app.services.articles import subtree_ids
 from app.services.journal import JournalError
@@ -374,6 +385,98 @@ def get_cells(version_id: int, user: CurrentUser, db: DbSession, kind: PlanKind,
     return PlanCellsOut(version=_version_out(version), budget_title=budget.title, year=budget.year, months=months,
                         editable=editable and kind != "inv", articles=[{"id": a.id, "label": a.display_name} for a in articles],
                         cells=cells, total=sum((c["amount"] for c in cells), Decimal("0.00")))
+
+
+# --- Снизу вверх: «план сдан» по ЦФО (docs/TZ.md, раздел 22, «Детали 12.2») ---
+
+
+class CfoStatusOut(BaseModel):
+    cfo_id: int
+    parent_id: int | None
+    level: int
+    name: str
+    is_leaf: bool
+    plan_total: Decimal  # свой план ОПиУ ЦФО (без подчинённых)
+    submitted_at: dt.datetime | None
+    submitted_by: str | None
+    changed_after: bool  # план менялся после отметки «сдан»
+
+
+def _status_row(db: Session, version_id: int, cfo_id: int) -> BudgetCfoStatus | None:
+    return db.scalar(select(BudgetCfoStatus).where(BudgetCfoStatus.version_id == version_id,
+                                                   BudgetCfoStatus.cfo_id == cfo_id))
+
+
+def _cfo_statuses(db: Session, user: User, version: BudgetVersion) -> list[CfoStatusOut]:
+    org_id = db.get(Budget, version.budget_id).organization_id
+    scope = cfo_scope(db, user, org_id)
+    visible = branch_ids(db, scope) if scope is not None else None
+    cfos = [c for c in db.scalars(select(Cfo).where(Cfo.organization_id == org_id, Cfo.is_active).order_by(Cfo.path))
+            if visible is None or c.id in visible]
+    parents = {c.parent_id for c in cfos}
+    totals = dict(db.execute(
+        select(Operation.plan_cfo_id, func.coalesce(func.sum(Posting.amount), 0))
+        .join(Posting, Posting.operation_id == Operation.id)
+        .where(Operation.budget_version_id == version.id, Operation.plan_kind == "pl")
+        .group_by(Operation.plan_cfo_id)).all())
+    changed = dict(db.execute(
+        select(Operation.plan_cfo_id, func.max(func.coalesce(Operation.updated_at, Operation.created_at)))
+        .where(Operation.budget_version_id == version.id).group_by(Operation.plan_cfo_id)).all())
+    statuses = {s.cfo_id: s for s in db.scalars(select(BudgetCfoStatus).where(BudgetCfoStatus.version_id == version.id))}
+    names = {uid: full_name or login for uid, full_name, login in db.execute(
+        select(User.id, User.full_name, User.login).where(
+            User.id.in_([s.submitted_by for s in statuses.values() if s.submitted_by])))}
+    result = []
+    for c in cfos:
+        st = statuses.get(c.id)
+        submitted = st.submitted_at if st else None
+        result.append(CfoStatusOut(
+            cfo_id=c.id, parent_id=c.parent_id, level=c.level, name=c.name, is_leaf=c.id not in parents,
+            plan_total=Decimal(totals.get(c.id, 0)) + Decimal("0.00"), submitted_at=submitted,
+            submitted_by=names.get(st.submitted_by) if st and st.submitted_by else None,
+            changed_after=bool(submitted and changed.get(c.id) and changed[c.id] > submitted)))
+    return result
+
+
+@router.get("/budget-versions/{version_id}/cfo-statuses", response_model=list[CfoStatusOut])
+def list_cfo_statuses(version_id: int, user: CurrentUser, db: DbSession):
+    """ЦФО организации (руководителю ЦФО — его ветка): свой план ОПиУ и отметка «план сдан»."""
+    return _cfo_statuses(db, user, _get_version(db, user, version_id, Perm.VIEW))
+
+
+def _cfo_for_status(db: Session, user: User, version_id: int, cfo_id: int) -> tuple[BudgetVersion, Cfo]:
+    version = _get_version(db, user, version_id, Perm.DRAFT)
+    org_id = db.get(Budget, version.budget_id).organization_id
+    cfo = db.get(Cfo, cfo_id)
+    if cfo is None or cfo.organization_id != org_id:
+        raise _not_found("ЦФО")
+    _check_plan_cfo(db, user, org_id, cfo_id)
+    if version.status != "draft":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail="Отмечать сдачу плана можно только в черновике версии")
+    return version, cfo
+
+
+@router.post("/budget-versions/{version_id}/cfo-statuses/{cfo_id}/submit", response_model=list[CfoStatusOut])
+def submit_cfo_plan(version_id: int, cfo_id: int, user: CurrentUser, db: DbSession):
+    """Отметка «план ЦФО сдан» (снизу вверх): ставит тот, кто вводит план этого ЦФО."""
+    version, cfo = _cfo_for_status(db, user, version_id, cfo_id)
+    row = _status_row(db, version.id, cfo.id) or BudgetCfoStatus(version_id=version.id, cfo_id=cfo.id)
+    row.submitted_by, row.submitted_at = user.id, dt.datetime.now(dt.UTC)
+    db.add(row)
+    db.commit()
+    return _cfo_statuses(db, user, version)
+
+
+@router.post("/budget-versions/{version_id}/cfo-statuses/{cfo_id}/unsubmit", response_model=list[CfoStatusOut])
+def unsubmit_cfo_plan(version_id: int, cfo_id: int, user: CurrentUser, db: DbSession):
+    version, cfo = _cfo_for_status(db, user, version_id, cfo_id)
+    row = _status_row(db, version.id, cfo.id)
+    if row is None or row.submitted_at is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="План этого ЦФО не отмечен как сданный")
+    row.submitted_by, row.submitted_at = None, None
+    db.commit()
+    return _cfo_statuses(db, user, version)
 
 
 # --- План в Excel ---

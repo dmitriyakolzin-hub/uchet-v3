@@ -57,6 +57,10 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   const uploadButton = el("button", { type: "button", class: "secondary", onclick: () => { fileInput.value = ""; fileInput.click(); } }, "Загрузить из Excel");
   const status = el("p", { class: "muted" });
   const tableBox = el("div");
+  // снизу вверх (docs/TZ.md, раздел 22, «Детали 12.2»): отметка «план сдан» у ЦФО и список, кто сдал
+  const submitBox = el("div", { class: "filters submit-box" });
+  const statusesButton = el("button", { type: "button", class: "secondary", onclick: () => showStatuses() }, "Кто сдал план");
+  const canDraft = org.permissions.includes("draft") && version.status === "draft";
 
   view.replaceChildren(
     el("div", { class: "page-head" },
@@ -65,10 +69,60 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     kindTabs,
     el("div", { class: "filters" }, cfoLabel, executorLabel, modeTabs,
       downloadButton,
-      uploadButton, fileInput),
+      uploadButton, fileInput, statusesButton),
+    submitBox,
     status,
     tableBox,
   );
+
+  const when = (iso) => new Date(iso).toLocaleDateString("ru-RU");
+
+  async function renderSubmit() {
+    const show = kind === "pl" && cfoId && mode !== "executor";
+    statusesButton.hidden = kind !== "pl";
+    if (!show) { submitBox.replaceChildren(); return; }
+    const rows = await api.get(`/api/budget-versions/${version.id}/cfo-statuses`);
+    const row = rows.find((r) => r.cfo_id === cfoId);
+    if (!row) { submitBox.replaceChildren(); return; }
+    const act = async (action) => {
+      try {
+        await api.post(`/api/budget-versions/${version.id}/cfo-statuses/${cfoId}/${action}`);
+        toast(action === "submit" ? "План ЦФО отмечен как сданный" : "Отметка снята");
+        await renderSubmit();
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    };
+    submitBox.replaceChildren(
+      el("span", { class: row.submitted_at ? "badge ok" : "badge" }, row.submitted_at
+        ? `План ЦФО сдан ${when(row.submitted_at)}${row.submitted_by ? ` (${row.submitted_by})` : ""}`
+        : "План ЦФО не сдан"),
+      row.changed_after ? el("span", { class: "over-budget" }, "изменён после сдачи") : "",
+      canDraft ? el("button", { type: "button", class: row.submitted_at ? "secondary" : "",
+        onclick: () => act(row.submitted_at ? "unsubmit" : "submit") }, row.submitted_at ? "Вернуть в работу" : "Сдать план") : "",
+    );
+  }
+
+  async function showStatuses() {
+    const rows = await api.get(`/api/budget-versions/${version.id}/cfo-statuses`);
+    const leaves = rows.filter((r) => r.is_leaf);
+    const done = leaves.filter((r) => r.submitted_at).length;
+    const minLevel = Math.min(...rows.map((r) => r.level));
+    const dialog = el("dialog", { class: "dialog wide" },
+      el("h2", {}, "Кто сдал план"),
+      el("p", { class: "muted" }, `Сдали ${done} из ${leaves.length} нижних ЦФО. Сумма — свой план ОПиУ ЦФО (без подчинённых).`),
+      el("table", { class: "plain plan-cells" },
+        el("thead", {}, el("tr", {}, el("th", {}, "ЦФО"), el("th", { class: "num" }, "Свой план"), el("th", {}, "Статус"))),
+        el("tbody", {}, ...rows.map((r) => el("tr", {},
+          el("td", { style: `padding-left:${(r.level - minLevel) * 18 + 6}px` }, r.name),
+          el("td", { class: "num" }, Number(r.plan_total) ? money(r.plan_total) : ""),
+          el("td", {}, r.submitted_at ? `сдан ${when(r.submitted_at)}${r.submitted_by ? `, ${r.submitted_by}` : ""}`
+            + (r.changed_after ? " — изменён после сдачи" : "") : "не сдан"))))),
+      el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => dialog.close() }, "Закрыть")));
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.showModal();
+  }
 
   let table = null;
   function newTable() {
@@ -166,6 +220,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
         group: r.group, ...p.values, total: sumMoney(Object.values(p.values)) })) } : {}),
     }));
     await table.setData(rows);
+    await renderSubmit();
   }
 
   function addExecutorRow(row) {

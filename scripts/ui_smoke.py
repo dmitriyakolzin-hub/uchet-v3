@@ -627,6 +627,16 @@ with sync_playwright() as p:
     page.keyboard.press("Enter")
     expect(engineer.locator(".tabulator-cell[tabulator-field=total]")).to_have_text("700,00")
     expect(page.locator(".toast-error")).to_have_count(0)
+    # шаг 12.2: «Сдать план» и список «Кто сдал план»
+    expect(page.locator(".submit-box")).to_contain_text("План ЦФО не сдан")
+    page.locator(".submit-box button", has_text="Сдать план").click()
+    expect(page.locator(".submit-box")).to_contain_text("План ЦФО сдан")
+    page.click("button:has-text('Кто сдал план')")
+    d = page.locator("dialog[open]", has_text="Кто сдал план")
+    expect(d).to_contain_text("Сдали 0 из")  # сдан ЦФО с подчинёнными, нижние — ещё нет
+    expect(d.locator("tr", has_text="АВМВ")).to_contain_text("2 200,50")
+    expect(d.locator("tr", has_text="АВМВ")).to_contain_text(f"сдан {TODAY:%d.%m.%Y}")
+    d.locator("button", has_text="Закрыть").click()
     page.screenshot(path=f"{OUT}/28_plan_grid.png", full_page=True)
     # план инвестиций
     page.click("button.tab:has-text('План инвестиций')")

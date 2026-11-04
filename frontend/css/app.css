@@ -293,3 +293,6 @@ table.plan-cells { width: 100%; border-collapse: collapse; margin: 8px 0; }
 table.plan-cells th, table.plan-cells td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border, #ddd); }
 table.plan-cells .num { text-align: right; white-space: nowrap; }
 table.plan-cells input { width: 130px; text-align: right; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; background: #f2f4f7; color: #475467; font-size: 0.9em; }
+.badge.ok { background: #ecfdf3; color: #067647; }
+.submit-box { align-items: center; }
