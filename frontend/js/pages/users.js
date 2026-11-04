@@ -25,9 +25,27 @@ function rolesEditor(organizations, roles, memberships) {
           .map((c) => el("option", { value: c.id, selected: c.id === current[org.id]?.cfo_id }, label(c))),
       );
     }
+    // руководителю ЦФУ — его ЦФУ (отдел — вместе с исполнителями)
+    const executorSelect = el("select", { "data-executor": org.id, "aria-label": `ЦФУ в ${org.name}`, hidden: true });
+    let executorsLoaded = false;
+    async function syncExecutor() {
+      executorSelect.hidden = select.value !== "executor_head";
+      if (executorSelect.hidden || executorsLoaded) return;
+      executorsLoaded = true;
+      const executors = await api.get(`/api/organizations/${org.id}/executors`);
+      const names = new Map(executors.map((e) => [e.id, e.name]));
+      const label = (e) => (e.parent_id ? `${names.get(e.parent_id)} / ${e.name}` : e.name);
+      executorSelect.replaceChildren(
+        el("option", { value: "" }, executors.length ? "— выберите ЦФУ —" : "— в организации нет ЦФУ —"),
+        ...executors.filter((e) => e.is_active).sort((a, b) => label(a).localeCompare(label(b)))
+          .map((e) => el("option", { value: e.id, selected: e.id === current[org.id]?.executor_id }, label(e))),
+      );
+    }
     select.addEventListener("change", syncCfo);
+    select.addEventListener("change", syncExecutor);
     syncCfo();
-    return el("tr", {}, el("td", {}, org.name, org.is_active ? "" : " (архив)"), el("td", {}, select, cfoSelect));
+    syncExecutor();
+    return el("tr", {}, el("td", {}, org.name, org.is_active ? "" : " (архив)"), el("td", {}, select, cfoSelect, executorSelect));
   });
   const box = el(
     "fieldset",
@@ -36,14 +54,18 @@ function rolesEditor(organizations, roles, memberships) {
     organizations.length
       ? el("table", {}, el("tbody", {}, rows))
       : el("p", { class: "muted" }, "Организаций пока нет."),
-    el("p", { class: "muted" }, "Руководитель ЦФО видит и вводит данные только по выбранному ЦФО и его подчинённым."),
+    el("p", { class: "muted" }, "Руководитель ЦФО видит и вводит данные только по выбранному ЦФО и его подчинённым. "
+      + "Руководитель ЦФУ видит только заявки своего ЦФУ. Финансовый менеджер — деньги, заявки и календарь, "
+      + "без справочников, бюджета и пользователей."),
   );
   box.collect = () =>
     [...box.querySelectorAll("select[data-org]")]
       .filter((s) => s.value)
       .map((s) => {
         const cfo = box.querySelector(`select[data-cfo="${s.dataset.org}"]`).value;
-        return { organization_id: Number(s.dataset.org), role: s.value, cfo_id: s.value === "cfo_head" && cfo ? Number(cfo) : null };
+        const executor = box.querySelector(`select[data-executor="${s.dataset.org}"]`).value;
+        return { organization_id: Number(s.dataset.org), role: s.value, cfo_id: s.value === "cfo_head" && cfo ? Number(cfo) : null,
+          executor_id: s.value === "executor_head" && executor ? Number(executor) : null };
       });
   return box;
 }

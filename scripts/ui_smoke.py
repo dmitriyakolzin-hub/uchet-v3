@@ -1003,6 +1003,7 @@ with sync_playwright() as p:
     expect(row).to_contain_text("Черновик")
     row.locator("button:has-text('На согласование')").click()
     expect(row).to_contain_text("На согласовании")
+    expect(row.locator(".my-step")).to_contain_text("ждёт вас (Финансовый директор)")  # маршрут (шаг 14.1)
     row.locator("button:has-text('Согласовать')").click()
     expect(row).to_contain_text("Согласована")
     row.locator("button:has-text('Перенести')").click()
@@ -1139,6 +1140,7 @@ with sync_playwright() as p:
     expect(row).to_contain_text("Торговля")
     row.locator("button:has-text('На согласование')").click()
     expect(row).to_contain_text("На согласовании")
+    expect(row).to_contain_text("у: Финансовый директор")  # руководитель ЦФО ждёт следующий шаг
     expect(row.locator("button:has-text('Согласовать')")).to_have_count(0)
     browser.close()
 

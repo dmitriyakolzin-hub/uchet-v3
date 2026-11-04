@@ -9,8 +9,10 @@ class Membership(Base):
 
     __tablename__ = "memberships"
     __table_args__ = (
-        CheckConstraint("role IN ('finance_director', 'ceo', 'cfo_head')", name="role"),
+        CheckConstraint("role IN ('finance_director', 'finance_manager', 'ceo', 'cfo_head', 'executor_head')",
+                        name="role"),
         CheckConstraint("cfo_id IS NULL OR role = 'cfo_head'", name="cfo_only_for_cfo_head"),
+        CheckConstraint("executor_id IS NULL OR role = 'executor_head'", name="executor_only_for_executor_head"),
     )
 
     user_id: Mapped[int] = mapped_column(
@@ -22,3 +24,5 @@ class Membership(Base):
     role: Mapped[str] = mapped_column(String(30))
     # Руководитель ЦФО: корень его ветки дерева ЦФО (docs/TZ.md, раздел 13)
     cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"), index=True)
+    # Руководитель ЦФУ: его ЦФУ (отдел — вместе с исполнителями), docs/TZ.md, раздел 24
+    executor_id: Mapped[int | None] = mapped_column(ForeignKey("executors.id", ondelete="RESTRICT"), index=True)

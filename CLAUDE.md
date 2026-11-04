@@ -651,3 +651,15 @@
   период → null. Подключено в ОСВ, дебиторке, складе, инвестициях (`skip` — текстовые колонки) и сетке бюджета
   (`report: "plan"`, вариант `версия:вид`, свой ctx с ЦФО сетки; таблица пересоздаётся — `gridNotes` на каждую).
   Тестов 374, ui_smoke дополнен. Этап 13 готов.
+- 2026-11-04 — 13.3 влита (PR 59), этап 13 готов. Владелец прислал свой платёжный календарь (Excel, реальные фамилии —
+  в репозиторий НЕ кладём, копия в scratchpad `calendar_in/`). Этап 14 согласован — `docs/TZ.md`, раздел 24.
+  Шаг 14.1 (ветка `etap-14-1-approval-route`), «Детали 14.1». Миграция 0039: роли `finance_manager`, `executor_head`
+  (`memberships.executor_id`), в `payment_requests` — статус `revision`, `source` (request/periodic/supplier),
+  `initiator` (cfo/executor/finance), `route` (JSONB), `step`; `payment_request_events`. Права: новые `Perm.SUPERVISE`
+  (бюджет, утверждение ЦФО, примечания — вместо POST; у фин. директора) и `Perm.REQUEST` (заявки; у руководителя ЦФУ
+  только оно). `get_organization_for` — 404 без роли, 403 без права; `get_organization_any`, `executor_scope`, `role_in`.
+  `app/services/approval.py`: `build_route`, `can_act`, `approve`, `event`. API заявок: `_check_author`, `_check_act`,
+  `revise`, `events`, `to_approve`; списки справочников и юрлиц — VIEW или REQUEST. Интерфейс: статусы с шагом,
+  кнопки по маршруту, история; меню руководителя ЦФУ — только календарь; выбор ЦФУ в форме пользователя.
+  Тестов 377, ui_smoke дополнен.
+  Дальше: шаг 14.2 — файл счёта, красный — сверх бюджета, «мои заявки», кассовые заявки.

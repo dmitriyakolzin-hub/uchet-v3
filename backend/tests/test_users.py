@@ -22,7 +22,8 @@ def test_admin_creates_user_with_roles(client, headers_for, admin, make_org):
     user = resp.json()
     assert user["login"] == "petrov"
     assert user["memberships"] == [{"organization_id": org.id, "organization_name": "Группа А",
-                                    "role": "ceo", "cfo_id": None, "cfo_name": None, "permissions": ["view"]}]
+                                    "role": "ceo", "cfo_id": None, "cfo_name": None, "executor_id": None,
+                                    "executor_name": None, "permissions": ["request", "view"]}]
     assert "password" not in user and "password_hash" not in user
 
     login = client.post("/api/auth/login", json={"login": "petrov", "password": "new-password-1"})
@@ -120,12 +121,12 @@ def test_me_shows_roles(client, headers_for, make_user, make_org):
     me = client.get("/api/auth/me", headers=headers_for(user)).json()
     assert me["is_admin"] is False
     assert me["memberships"][0]["role"] == "cfo_head"
-    assert me["memberships"][0]["permissions"] == ["draft", "view"]
+    assert me["memberships"][0]["permissions"] == ["draft", "request", "view"]
 
 
 def test_roles_list(client, headers_for, make_user):
     roles = client.get("/api/roles", headers=headers_for(make_user())).json()
-    assert [r["code"] for r in roles] == ["finance_director", "ceo", "cfo_head"]
+    assert [r["code"] for r in roles] == ["finance_director", "finance_manager", "ceo", "cfo_head", "executor_head"]
     assert roles[0]["title"] == "Финансовый директор / владелец"
 
 

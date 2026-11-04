@@ -1,7 +1,9 @@
 """Заявки на оплату (docs/TZ.md, раздел 18, «Детали 8.1»).
 
-Просмотр — право VIEW; подать и править черновик — DRAFT (руководитель ЦФО — только с ЦФО своей ветки и видит
-только её заявки); согласовать, отклонить, перенести, отметить оплату — POST.
+Видеть и подавать заявки — просмотр, черновики или право «заявки» (руководитель ЦФО — только с ЦФО своей ветки,
+руководитель ЦФУ — только своего ЦФУ). Согласовать, отклонить, вернуть на доработку — тот, чей сейчас шаг маршрута
+(app/services/approval.py, docs/TZ.md, раздел 24); перенести и отметить оплату — POST; вернуть согласованную на
+согласование — SUPERVISE.
 """
 
 import datetime as dt
@@ -13,7 +15,7 @@ from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.access import branch_ids, cfo_scope, get_organization_for
+from app.api.access import branch_ids, cfo_scope, executor_scope, get_organization_any, get_organization_for, org_permissions
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.models import (
@@ -24,10 +26,13 @@ from app.models import (
     Counterparty,
     Executor,
     LegalEntity,
+    Membership,
     Operation,
     PaymentRequest,
+    PaymentRequestEvent,
     User,
 )
+from app.services import approval
 from app.services import payment_requests as service
 from app.services.payment_requests import STATUS_TITLES, RequestError
 from app.services.report_xlsx import XlsxColumn, build
@@ -112,6 +117,13 @@ class RequestOut(BaseModel):
     operation_number: int | None
     confirmed_by_statement: bool
     budget: BudgetOut | None
+    source: str = "request"
+    initiator: str = "finance"
+    route: list[str] = []  # шаги маршрута: executor, cfo, fm, ceo, fd
+    route_titles: list[str] = []
+    step: int = 0
+    step_title: str = ""  # у кого сейчас на согласовании
+    can_act: bool = False  # текущий пользователь может согласовать / отклонить / вернуть на доработку
 
 
 class ListOut(BaseModel):
@@ -127,7 +139,7 @@ def _names(db: Session, model, ids, label) -> dict[int, str]:
     return {r.id: label(r) for r in db.scalars(select(model).where(model.id.in_(ids)))}
 
 
-def _out(db: Session, requests: list[PaymentRequest], scoped: bool) -> list[RequestOut]:
+def _out(db: Session, requests: list[PaymentRequest], scoped: bool, user: User | None = None) -> list[RequestOut]:
     db.flush()
     budget = service.budget_checks(db, requests[0].organization_id, requests) if requests else {}
 
@@ -165,6 +177,10 @@ def _out(db: Session, requests: list[PaymentRequest], scoped: bool) -> list[Requ
             paid_on=r.paid_on, operation_id=r.operation_id, operation_number=operations.get(r.operation_id),
             confirmed_by_statement=r.confirmed_by_statement,
             budget=BudgetOut(**check.__dict__) if check else None,
+            source=r.source, initiator=r.initiator, route=list(r.route or []),
+            route_titles=[approval.STEP_TITLES[x] for x in r.route or []], step=r.step,
+            step_title=approval.STEP_TITLES.get(approval.current_step(r) or "", ""),
+            can_act=user is not None and approval.can_act(db, user, r),
         ))
     return rows
 
@@ -174,20 +190,34 @@ def _branch(db: Session, user: User, organization_id: int) -> set[int] | None:
     return branch_ids(db, root) if root is not None else None
 
 
-def _request(db: Session, user: User, request_id: int, perm: Perm) -> tuple[PaymentRequest, set[int] | None]:
+def _visible(req: PaymentRequest, user: User, branch: set[int] | None, executors: set[int] | None) -> bool:
+    if branch is not None and req.cfo_id not in branch:
+        return False
+    if executors is not None and req.executor_id not in executors and req.created_by != user.id:
+        return False
+    return True
+
+
+def _request(db: Session, user: User, request_id: int, *perms: Perm) -> tuple[PaymentRequest, set[int] | None]:
     req = db.get(PaymentRequest, request_id)
     not_found = HTTPException(status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
     if req is None:
         raise not_found
     try:
-        get_organization_for(db, user, req.organization_id, Perm.VIEW)
+        get_organization_any(db, user, req.organization_id, Perm.VIEW, Perm.REQUEST)
     except HTTPException:
         raise not_found from None
     branch = _branch(db, user, req.organization_id)
-    if branch is not None and req.cfo_id not in branch:
+    if not _visible(req, user, branch, executor_scope(db, user, req.organization_id)):
         raise not_found
-    get_organization_for(db, user, req.organization_id, perm)
+    if perms:
+        get_organization_any(db, user, req.organization_id, *perms)
     return req, branch
+
+
+def _scoped(db: Session, user: User, organization_id: int) -> bool:
+    """Ограничен веткой ЦФО или своим ЦФУ: расчётный счёт не видит и не выбирает."""
+    return _branch(db, user, organization_id) is not None or executor_scope(db, user, organization_id) is not None
 
 
 def _status(req: PaymentRequest, *allowed: str) -> None:
@@ -196,27 +226,47 @@ def _status(req: PaymentRequest, *allowed: str) -> None:
                             detail=f"Заявка {STATUS_TITLES[req.status]} — это действие недоступно")
 
 
-def _save(db: Session, req: PaymentRequest, branch: set[int] | None) -> RequestOut:
+def _save(db: Session, req: PaymentRequest, branch: set[int] | None, user: User) -> RequestOut:
+    executors = executor_scope(db, user, req.organization_id)
+    scoped = branch is not None or executors is not None
     try:
-        if branch is not None and req.bank_account_id is not None:
-            raise RequestError("Расчётный счёт выбирает финансовый директор")
+        if scoped and req.bank_account_id is not None:
+            raise RequestError("Расчётный счёт выбирает финансовая служба")
         if branch is not None and req.cash_cfo_id is not None and req.cash_cfo_id not in branch:
             raise RequestError("Касса — только ЦФО своей ветки")
+        if executors is not None and req.executor_id not in executors:
+            raise RequestError("ЦФУ заявки — только ваш ЦФУ")
         service.validate(db, req, branch)
     except RequestError as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
     db.commit()
     db.refresh(req)
-    return _out(db, [req], branch is not None)[0]
+    return _out(db, [req], scoped, user)[0]
+
+
+def _check_author(db: Session, user: User, organization_id: int) -> None:
+    """Подавать и править заявки: право черновиков или руководитель ЦФУ (CEO — только согласует)."""
+    if executor_scope(db, user, organization_id) is None:
+        get_organization_for(db, user, organization_id, Perm.DRAFT)
+
+
+def _check_act(db: Session, user: User, req: PaymentRequest) -> None:
+    _status(req, "pending")
+    if not approval.can_act(db, user, req):
+        step = approval.STEP_TITLES.get(approval.current_step(req) or "", "")
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=f"Заявка ждёт согласования: {step}")
 
 
 @router.get("/organizations/{organization_id}/payment-requests", response_model=ListOut)
 def list_requests(organization_id: int, user: CurrentUser, db: DbSession, date_from: dt.date | None = None,
                   date_to: dt.date | None = None, status_: Annotated[str | None, Query(alias="status")] = None,
-                  direction: Literal["out", "in"] | None = None):
-    get_organization_for(db, user, organization_id, Perm.VIEW)
+                  direction: Literal["out", "in"] | None = None, to_approve: bool = False):
+    """Заявки организации (руководителю ЦФО — его ветки, руководителю ЦФУ — его ЦФУ и поданные им);
+    to_approve — только те, что ждут согласования текущего пользователя."""
+    get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST)
     branch = _branch(db, user, organization_id)
+    executors = executor_scope(db, user, organization_id)
     query = select(PaymentRequest).where(PaymentRequest.organization_id == organization_id)
     if date_from is not None:
         query = query.where(PaymentRequest.pay_date >= date_from)
@@ -228,42 +278,78 @@ def list_requests(organization_id: int, user: CurrentUser, db: DbSession, date_f
         query = query.where(PaymentRequest.direction == direction)
     if branch is not None:
         query = query.where(PaymentRequest.cfo_id.in_(branch))
+    if executors is not None:
+        query = query.where((PaymentRequest.executor_id.in_(executors)) | (PaymentRequest.created_by == user.id))
+    if to_approve:
+        query = query.where(PaymentRequest.status == "pending")
     requests = list(db.scalars(query.order_by(PaymentRequest.pay_date, PaymentRequest.number)))
-    rows = _out(db, requests, branch is not None)
+    if to_approve:
+        requests = [r for r in requests if approval.can_act(db, user, r)]
+    rows = _out(db, requests, branch is not None or executors is not None, user)
     total = {d: sum((r.amount for r in requests if r.direction == d), Decimal("0.00")) for d in ("out", "in")}
     return ListOut(rows=rows, total_out=total["out"], total_in=total["in"])
 
 
 @router.post("/organizations/{organization_id}/payment-requests", response_model=RequestOut, status_code=201)
 def create_request(organization_id: int, body: RequestIn, user: CurrentUser, db: DbSession):
-    get_organization_for(db, user, organization_id, Perm.DRAFT)
+    get_organization_any(db, user, organization_id, Perm.DRAFT, Perm.REQUEST)
+    _check_author(db, user, organization_id)
     branch = _branch(db, user, organization_id)
-    req = PaymentRequest(organization_id=organization_id, created_by=user.id, status="draft", **body.model_dump())
+    data = body.model_dump()
+    executors = executor_scope(db, user, organization_id)
+    if executors is not None and data["executor_id"] is None:  # руководитель ЦФУ — свой ЦФУ по умолчанию
+        data["executor_id"] = db.scalar(select(Membership.executor_id).where(
+            Membership.user_id == user.id, Membership.organization_id == organization_id))
+    req = PaymentRequest(organization_id=organization_id, created_by=user.id, status="draft",
+                         initiator=approval.initiator_of(db, user, organization_id), **data)
     req.number = service.next_number(db, organization_id)
     db.add(req)
-    return _save(db, req, branch)
+    db.flush()
+    approval.event(db, req, user, "created")
+    return _save(db, req, branch, user)
 
 
 @router.get("/payment-requests/{request_id}", response_model=RequestOut)
 def get_request(request_id: int, user: CurrentUser, db: DbSession):
-    req, branch = _request(db, user, request_id, Perm.VIEW)
-    return _out(db, [req], branch is not None)[0]
+    req, _ = _request(db, user, request_id)
+    return _out(db, [req], _scoped(db, user, req.organization_id), user)[0]
+
+
+class EventOut(BaseModel):
+    at: dt.datetime
+    user_name: str
+    action: str
+    step: str
+    step_title: str
+    comment: str
+
+
+@router.get("/payment-requests/{request_id}/events", response_model=list[EventOut])
+def request_events(request_id: int, user: CurrentUser, db: DbSession):
+    """История заявки: подана, согласована (кем и на каком шаге), отклонена, на доработку, оплачена."""
+    req, _ = _request(db, user, request_id)
+    rows = db.execute(select(PaymentRequestEvent, User).join(User, User.id == PaymentRequestEvent.user_id)
+                      .where(PaymentRequestEvent.request_id == req.id).order_by(PaymentRequestEvent.id)).all()
+    return [EventOut(at=e.at, user_name=u.full_name or u.login, action=e.action, step=e.step,
+                     step_title=approval.STEP_TITLES.get(e.step, ""), comment=e.comment) for e, u in rows]
 
 
 @router.put("/payment-requests/{request_id}", response_model=RequestOut)
 def update_request(request_id: int, body: RequestIn, user: CurrentUser, db: DbSession):
-    """Правится черновик или отклонённая заявка (она снова становится черновиком)."""
-    req, branch = _request(db, user, request_id, Perm.DRAFT)
-    _status(req, "draft", "rejected")
+    """Правится черновик, отклонённая заявка или возвращённая на доработку (она снова становится черновиком)."""
+    req, branch = _request(db, user, request_id, Perm.DRAFT, Perm.REQUEST)
+    _check_author(db, user, req.organization_id)
+    _status(req, "draft", "rejected", "revision")
     for key, value in body.model_dump().items():
         setattr(req, key, value)
     req.status, req.reject_reason = "draft", ""
-    return _save(db, req, branch)
+    return _save(db, req, branch, user)
 
 
 @router.delete("/payment-requests/{request_id}", status_code=204)
 def delete_request(request_id: int, user: CurrentUser, db: DbSession) -> None:
-    req, _ = _request(db, user, request_id, Perm.DRAFT)
+    req, _ = _request(db, user, request_id, Perm.DRAFT, Perm.REQUEST)
+    _check_author(db, user, req.organization_id)
     _status(req, "draft")
     db.delete(req)
     db.commit()
@@ -271,53 +357,80 @@ def delete_request(request_id: int, user: CurrentUser, db: DbSession) -> None:
 
 @router.post("/payment-requests/{request_id}/submit", response_model=RequestOut)
 def submit_request(request_id: int, user: CurrentUser, db: DbSession):
-    """На согласование; ожидаемое поступление согласования не требует — сразу «согласована»."""
-    req, branch = _request(db, user, request_id, Perm.DRAFT)
-    _status(req, "draft", "rejected")
+    """На согласование по маршруту; ожидаемое поступление согласования не требует — сразу «согласована»."""
+    req, branch = _request(db, user, request_id, Perm.DRAFT, Perm.REQUEST)
+    _check_author(db, user, req.organization_id)
+    _status(req, "draft", "rejected", "revision")
     if req.direction == "in":
-        req.status, req.approved_by, req.approved_at = "approved", user.id, func.now()
+        req.status, req.approved_by, req.approved_at, req.reject_reason = "approved", user.id, func.now(), ""
+        approval.event(db, req, user, "approved")
     else:
-        req.status = "pending"
-    req.reject_reason = ""
-    return _save(db, req, branch)
+        approval.submit(db, req, user)
+    return _save(db, req, branch, user)
 
 
 @router.post("/payment-requests/{request_id}/recall", response_model=RequestOut)
 def recall_request(request_id: int, user: CurrentUser, db: DbSession):
-    """Отозвать с согласования в черновик."""
-    req, branch = _request(db, user, request_id, Perm.DRAFT)
+    """Отозвать с согласования в черновик (автор или тот, кто правит черновики)."""
+    req, branch = _request(db, user, request_id, Perm.REQUEST)
     _status(req, "pending")
+    if req.created_by != user.id and Perm.DRAFT not in org_permissions(db, user, req.organization_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Отозвать заявку может её автор")
     req.status = "draft"
-    return _save(db, req, branch)
+    approval.event(db, req, user, "recalled")
+    return _save(db, req, branch, user)
+
+
+class ApproveIn(BaseModel):
+    comment: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] = ""
 
 
 @router.post("/payment-requests/{request_id}/approve", response_model=RequestOut)
-def approve_request(request_id: int, user: CurrentUser, db: DbSession):
-    req, branch = _request(db, user, request_id, Perm.POST)
-    _status(req, "pending")
-    req.status, req.approved_by, req.approved_at = "approved", user.id, func.now()
-    return _save(db, req, branch)
+def approve_request(request_id: int, user: CurrentUser, db: DbSession, body: ApproveIn | None = None):
+    """Согласовать на своём шаге: заявка уходит на следующий шаг, после финансового директора — в реестр."""
+    req, branch = _request(db, user, request_id)
+    _check_act(db, user, req)
+    approval.approve(db, req, user, body.comment if body else "")
+    return _save(db, req, branch, user)
 
 
 @router.post("/payment-requests/{request_id}/reject", response_model=RequestOut)
 def reject_request(request_id: int, body: RejectIn, user: CurrentUser, db: DbSession):
-    req, branch = _request(db, user, request_id, Perm.POST)
-    _status(req, "pending", "approved")
+    """Отклонить: на своём шаге маршрута; согласованную — финансовый директор и администратор."""
+    req, branch = _request(db, user, request_id)
+    if req.status == "approved":
+        get_organization_for(db, user, req.organization_id, Perm.SUPERVISE)
+    else:
+        _check_act(db, user, req)
+    approval.event(db, req, user, "rejected", body.reason, approval.current_step(req) or "")
     req.status, req.reject_reason, req.approved_by, req.approved_at = "rejected", body.reason, None, None
-    return _save(db, req, branch)
+    return _save(db, req, branch, user)
+
+
+@router.post("/payment-requests/{request_id}/revise", response_model=RequestOut)
+def revise_request(request_id: int, body: RejectIn, user: CurrentUser, db: DbSession):
+    """Вернуть на доработку: автор правит и подаёт снова — маршрут начинается сначала."""
+    req, branch = _request(db, user, request_id)
+    _check_act(db, user, req)
+    approval.event(db, req, user, "revision", body.reason, approval.current_step(req) or "")
+    req.status, req.reject_reason = "revision", body.reason
+    return _save(db, req, branch, user)
 
 
 @router.post("/payment-requests/{request_id}/unapprove", response_model=RequestOut)
 def unapprove_request(request_id: int, user: CurrentUser, db: DbSession):
-    """Вернуть согласованную выплату на согласование."""
-    req, branch = _request(db, user, request_id, Perm.POST)
+    """Вернуть согласованную выплату на согласование финансового директора."""
+    req, branch = _request(db, user, request_id, Perm.SUPERVISE)
     _status(req, "approved")
     if req.direction == "in":
         req.status = "draft"
     else:
         req.status = "pending"
+        req.route = list(req.route or []) or ["fd"]
+        req.step = len(req.route) - 1
     req.approved_by = req.approved_at = None
-    return _save(db, req, branch)
+    approval.event(db, req, user, "unapproved")
+    return _save(db, req, branch, user)
 
 
 @router.post("/payment-requests/{request_id}/move", response_model=RequestOut)
@@ -325,7 +438,8 @@ def move_request(request_id: int, body: MoveIn, user: CurrentUser, db: DbSession
     req, _ = _request(db, user, request_id, Perm.POST)
     _status(req, "pending", "approved")
     req.pay_date, req.bank_account_id, req.cash_cfo_id = body.pay_date, body.bank_account_id, body.cash_cfo_id
-    return _save(db, req, _branch(db, user, req.organization_id))
+    approval.event(db, req, user, "moved", f"{body.pay_date:%d.%m.%Y}")
+    return _save(db, req, _branch(db, user, req.organization_id), user)
 
 
 @router.post("/payment-requests/{request_id}/pay", response_model=RequestOut)
@@ -345,7 +459,8 @@ def pay_request(request_id: int, body: PayIn, user: CurrentUser, db: DbSession):
     except RequestError as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
-    return _save(db, req, branch)
+    approval.event(db, req, user, "paid")
+    return _save(db, req, branch, user)
 
 
 @router.post("/payment-requests/{request_id}/unpay", response_model=RequestOut)
@@ -354,14 +469,15 @@ def unpay_request(request_id: int, user: CurrentUser, db: DbSession):
     req, branch = _request(db, user, request_id, Perm.POST)
     _status(req, "paid")
     req.status, req.paid_on, req.operation_id, req.confirmed_by_statement = "approved", None, None, False
-    return _save(db, req, branch)
+    approval.event(db, req, user, "unpaid")
+    return _save(db, req, branch, user)
 
 
 @router.get("/organizations/{organization_id}/payment-requests.xlsx")
 def download_requests(organization_id: int, user: CurrentUser, db: DbSession, date_from: dt.date | None = None,
                       date_to: dt.date | None = None, status_: Annotated[str | None, Query(alias="status")] = None,
                       direction: Literal["out", "in"] | None = None):
-    data = list_requests(organization_id, user, db, date_from, date_to, status_, direction)
+    data = list_requests(organization_id, user, db, date_from, date_to, status_, direction, False)
     columns = [XlsxColumn("№", 7), XlsxColumn("Дата оплаты", 12), XlsxColumn("Вид", 12), XlsxColumn("Статус", 16),
                XlsxColumn("Юрлицо", 18), XlsxColumn("Счёт / касса", 22), XlsxColumn("Контрагент", 26),
                XlsxColumn("Договор", 18), XlsxColumn("Статья ДДС", 26), XlsxColumn("ЦФО", 20),

@@ -66,7 +66,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   const historyButton = el("button", { type: "button", class: "secondary", onclick: () => showHistory() }, "История изменений");
   const canDraft = org.permissions.includes("draft") && version.status === "draft";
   // администратор и фин. директор (право проводить) утверждают ЦФО и правят план после утверждения — с историей
-  const supervisor = org.permissions.includes("post");
+  const supervisor = org.permissions.includes("supervise");
   const canPlan = canDraft || (supervisor && version.status !== "archived");
 
   view.replaceChildren(

@@ -52,7 +52,7 @@ export async function renderBudgets(view) {
     list,
   );
 
-  const canManage = () => org.permissions.includes("post");
+  const canManage = () => org.permissions.includes("supervise");
 
   function fillYears() {
     const years = [];

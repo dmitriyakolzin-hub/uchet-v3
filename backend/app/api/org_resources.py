@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.access import get_organization_for
+from app.api.access import get_organization_any, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.models import User
@@ -100,7 +100,7 @@ def register(router: APIRouter, resource: OrgResource) -> None:
     Out = resource.out_schema
 
     def list_items(organization_id: int, user: CurrentUser, db: DbSession):
-        get_organization_for(db, user, organization_id, Perm.VIEW)
+        get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST)
         query = (
             select(Model)
             .where(Model.organization_id == organization_id)

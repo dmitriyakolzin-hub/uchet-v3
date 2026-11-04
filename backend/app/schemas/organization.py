@@ -40,6 +40,8 @@ class OrganizationOut(BaseModel):
     permissions: list[Perm] = []
     cfo_scope: int | None = None  # руководитель ЦФО: корень его ветки ЦФО
     restricted: bool = False  # доступ ограничен веткой ЦФО
+    role: str | None = None  # роль пользователя в организации (администратор — None)
+    executor_scope: list[int] | None = None  # руководитель ЦФУ: его ЦФУ (с исполнителями)
 
 
 InsuranceTariff = Literal["sme", "general"]  # тариф страховых взносов: МСП или общий
