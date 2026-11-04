@@ -322,3 +322,23 @@ table.plan-cells input { width: 130px; text-align: right; }
 table.requests tr.over-budget-row td { background: #fef3f2; }
 table.requests tr.over-budget-row td:first-child { box-shadow: inset 3px 0 0 #d92d20; }
 .req-files { max-width: 180px; word-break: break-word; }
+/* платёжный календарь по форме владельца (шаг 14.6) */
+.sheet-scroll { max-height: 75vh; overflow: auto; border: 1px solid var(--border, #e4e7ec); }
+table.pay-sheet { border-collapse: separate; border-spacing: 0; font-size: 12px; }
+table.pay-sheet th, table.pay-sheet td { padding: 3px 6px; border-bottom: 1px solid #eef0f3; white-space: nowrap; background: var(--bg, #fff); }
+table.pay-sheet thead th { position: sticky; top: 0; z-index: 2; background: #f9fafb; text-align: center; }
+table.pay-sheet .sticky { position: sticky; left: 0; z-index: 1; min-width: 220px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+table.pay-sheet thead th.sticky { z-index: 3; }
+table.pay-sheet td.num { text-align: right; min-width: 84px; }
+table.pay-sheet .indent { padding-left: 18px; }
+table.pay-sheet .weekend { background: #fafafa; }
+table.pay-sheet th.today, table.pay-sheet td.today { box-shadow: inset 1px 0 #2e6be6, inset -1px 0 #2e6be6; }
+table.pay-sheet tr.sheet-total td { font-weight: 600; background: #f4f6fb; }
+table.pay-sheet tr.sheet-group td { font-weight: 600; }
+table.pay-sheet tr.sheet-section td { font-weight: 700; background: #eef2f8; }
+table.pay-sheet td.clickable { cursor: pointer; }
+table.pay-sheet td.clickable:hover { background: var(--accent-soft, #eef4ff); }
+table.pay-sheet td[draggable="true"] { cursor: grab; }
+table.pay-sheet .fact { color: #067647; }
+table.pay-sheet .plan { color: #667085; }
+table.pay-sheet .neg, table.pay-sheet td.neg .plan, table.pay-sheet td.neg .fact { color: #b42318; }

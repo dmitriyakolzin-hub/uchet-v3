@@ -3,7 +3,8 @@
 Условия — записи «действует с — по» у договора: сумма, число месяца, счёт, статья ДДС, ЦФО, ЦФУ. Новая запись
 закрывает прежнюю днём раньше. На каждый месяц (текущий и два следующих) по условиям создаётся заявка «периодический
 платёж» — сразу на согласование финансового директора; число месяца в выходной — ближайший рабочий день раньше.
-Пока заявка не согласована, она подстраивается под изменённые условия; согласованную и оплаченную не трогаем.
+Пока заявка не согласована, она подстраивается под изменённые условия; согласованную, оплаченную и поправленную
+вручную в календаре (перенос, сумма) не трогаем.
 """
 
 import datetime as dt
@@ -101,7 +102,8 @@ def ensure(db: Session, organization_id: int, today: dt.date | None = None) -> i
         for month in months:
             current = active_terms(terms, month)
             req = existing.get((contract_id, month))
-            editable = req is not None and req.status in ("draft", "pending", "revision", "rejected")
+            # поправленную вручную в календаре (дата, сумма) — не трогаем
+            editable = req is not None and req.status in ("draft", "pending", "revision", "rejected") and not req.adjusted
             if current is None:
                 if editable and req.status != "rejected":
                     db.delete(req)  # условия закончились — неутверждённая заявка не нужна

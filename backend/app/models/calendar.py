@@ -83,6 +83,9 @@ class PaymentRequest(Base):
     # платёж внутри группы (docs/TZ.md, раздел 24, «Детали 14.5»): у поступления получателя — ссылка на выплату
     # плательщика; такое поступление меняется вместе с выплатой
     linked_id: Mapped[int | None] = mapped_column(ForeignKey("payment_requests.id", ondelete="CASCADE"), index=True)
+    # сумму или дату поправили вручную в календаре (docs/TZ.md, раздел 24, «Детали 14.6»): периодический платёж
+    # больше не подстраивает такую заявку под условия договора
+    adjusted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class PaymentRequestEvent(Base):
@@ -152,3 +155,23 @@ class SupplierPayment(Base):
     invoice_id: Mapped[int] = mapped_column(ForeignKey("supplier_invoices.id", ondelete="CASCADE"), index=True)
     request_id: Mapped[int] = mapped_column(ForeignKey("payment_requests.id", ondelete="CASCADE"), index=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+
+
+class CalendarBalance(Base):
+    """Остаток на начало дня, введённый вручную (финансовый менеджер, по банк-клиенту): расчётный счёт или касса."""
+
+    __tablename__ = "calendar_balances"
+    __table_args__ = (
+        CheckConstraint("(bank_account_id IS NULL) <> (cash_cfo_id IS NULL)", name="source"),
+        UniqueConstraint("bank_account_id", "cash_cfo_id", "day", name="uq_calendar_balances_source_day",
+                         postgresql_nulls_not_distinct=True),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"), index=True)
+    bank_account_id: Mapped[int | None] = mapped_column(ForeignKey("bank_accounts.id", ondelete="CASCADE"))
+    cash_cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="CASCADE"))
+    day: Mapped[date] = mapped_column(Date)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    entered_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

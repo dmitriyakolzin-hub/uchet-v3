@@ -5,15 +5,15 @@ import datetime as dt
 from decimal import Decimal
 
 from fastapi import APIRouter, HTTPException, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.access import forbid_scoped, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import Article, BankAccount, Cfo, Counterparty, LegalEntity
-from app.services import calendar
+from app.models import Article, BankAccount, CalendarBalance, Cfo, Counterparty, LegalEntity, PaymentRequest
+from app.services import calendar, calendar_sheet
 from app.services.report_xlsx import XlsxColumn, build
 
 router = APIRouter(prefix="/api", tags=["Платёжный календарь"])
@@ -220,3 +220,223 @@ def calendar_xlsx(organization_id: int, user: CurrentUser, db: DbSession, date_f
                     total=["Итого за период", data.opening, data.inflow, data.outflow, data.closing, None, None, None])
     return Response(content, media_type=XLSX_TYPE,
                     headers={"Content-Disposition": 'attachment; filename="payment_calendar.xlsx"'})
+
+
+# --- календарь по форме владельца, «лист 1» (docs/TZ.md, раздел 24, «Детали 14.6») ---
+
+MAX_SHEET_DAYS = 62
+
+
+class PairOut(BaseModel):
+    fact: Decimal | None = None
+    plan: Decimal | None = None
+
+
+class SheetItem(BaseModel):
+    source: str
+    source_id: int
+    title: str
+    date: dt.date
+    amount: Decimal
+    status: str
+    overdue: bool
+    movable: bool  # заявку можно перенести (перетащить на другой день)
+    amount_editable: bool  # сумму заявки можно поправить в ячейке
+
+
+class SheetOp(BaseModel):
+    operation_id: int
+    number: int
+    amount: Decimal
+
+
+class SheetCell(PairOut):
+    ops: list[SheetOp] = []
+    items: list[SheetItem] = []
+
+
+class SheetLine(BaseModel):
+    counterparty_id: int | None
+    contract_id: int | None
+    title: str
+    contract_title: str
+    bank: Decimal
+    cash: Decimal
+    cells: dict[dt.date, SheetCell]
+
+
+class SheetGroup(BaseModel):
+    direction: str
+    article_id: int | None
+    title: str
+    bank: Decimal
+    cash: Decimal
+    cells: dict[dt.date, PairOut]
+    lines: list[SheetLine]
+
+
+class SheetSource(BaseModel):
+    key: str
+    kind: str
+    title: str
+    opening: dict[dt.date, PairOut]
+    closing: dict[dt.date, Decimal]
+
+
+class SheetTotals(BaseModel):
+    opening: dict[dt.date, PairOut]
+    inflow: dict[dt.date, PairOut]
+    outflow: dict[dt.date, PairOut]
+    closing: dict[dt.date, Decimal]
+
+
+class SheetOut(BaseModel):
+    date_from: dt.date
+    date_to: dt.date
+    today: dt.date
+    days: list[dt.date]
+    sources: list[SheetSource]
+    totals: dict[str, SheetTotals]  # bank / cash
+    groups: list[SheetGroup]
+
+
+def _pair(p) -> PairOut:
+    return PairOut(fact=p.fact, plan=p.plan)
+
+
+def _sum_pairs(pairs) -> PairOut:
+    fact = [p.fact for p in pairs if p.fact is not None]
+    plan = [p.plan for p in pairs if p.plan is not None]
+    return PairOut(fact=sum(fact, Decimal("0.00")) if fact else None, plan=sum(plan, Decimal("0.00")) if plan else None)
+
+
+def _sheet(db: Session, user, organization_id: int, date_from: dt.date, date_to: dt.date, legal_entity_id,
+           include_pending: bool) -> SheetOut:
+    get_organization_for(db, user, organization_id, Perm.VIEW)
+    forbid_scoped(db, user, organization_id)
+    period(date_from, date_to)
+    if (date_to - date_from).days >= MAX_SHEET_DAYS:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Календарь по статьям — не больше 2 месяцев")
+    _scope(db, organization_id, legal_entity_id, None, None)
+    sheet = calendar_sheet.build(db, organization_id, date_from, date_to, legal_entity_id=legal_entity_id,
+                                 include_pending=include_pending)
+    request_ids = {i.source_id for g in sheet.groups for ln in g.lines.values() for c in ln.cells.values()
+                   for i in c.items if i.source == "request"}
+    requests = {r.id: r for r in db.scalars(select(PaymentRequest).where(PaymentRequest.id.in_(request_ids)))} \
+        if request_ids else {}
+
+    def item_out(i) -> SheetItem:
+        req = requests.get(i.source_id) if i.source == "request" else None
+        movable = req is not None and req.status in ("pending", "approved") and req.linked_id is None
+        return SheetItem(source=i.source, source_id=i.source_id, title=i.title, date=i.date, amount=i.amount,
+                         status=i.status, overdue=i.overdue, movable=movable,
+                         amount_editable=movable and req.source != "supplier")
+
+    groups = []
+    for g in sheet.groups:
+        lines = [SheetLine(counterparty_id=ln.counterparty_id, contract_id=ln.contract_id, title=ln.title,
+                           contract_title=ln.contract_title, bank=ln.bank, cash=ln.cash,
+                           cells={d: SheetCell(fact=c.fact, plan=c.plan, ops=[SheetOp(**o.__dict__) for o in c.ops],
+                                               items=[item_out(i) for i in c.items]) for d, c in ln.cells.items()})
+                 for ln in g.lines.values()]
+        cells = {d: _sum_pairs([ln.cells[d] for ln in lines if d in ln.cells]) for d in sheet.days
+                 if any(d in ln.cells for ln in lines)}
+        groups.append(SheetGroup(direction=g.direction, article_id=g.article_id, title=g.title,
+                                 bank=sum((ln.bank for ln in lines), Decimal("0.00")),
+                                 cash=sum((ln.cash for ln in lines), Decimal("0.00")), cells=cells, lines=lines))
+    totals = {}
+    for kind in ("bank", "cash"):
+        own = [s for s in sheet.sources if s.kind == kind]
+
+        def flows(fact_attr, plan_attr, d):
+            fact = sum((getattr(s, fact_attr).get(d, Decimal("0.00")) for s in own), Decimal("0.00"))
+            plan = sum((getattr(s, plan_attr).get(d, Decimal("0.00")) for s in own), Decimal("0.00"))
+            return PairOut(fact=fact or None, plan=plan or None)
+
+        totals[kind] = SheetTotals(
+            opening={d: _sum_pairs([s.opening[d] for s in own if d in s.opening]) for d in sheet.days},
+            inflow={d: flows("fact_in", "plan_in", d) for d in sheet.days},
+            outflow={d: flows("fact_out", "plan_out", d) for d in sheet.days},
+            closing={d: sum((s.closing.get(d, Decimal("0.00")) for s in own), Decimal("0.00")) for d in sheet.days})
+    return SheetOut(date_from=date_from, date_to=date_to, today=sheet.today, days=sheet.days,
+                    sources=[SheetSource(key=s.key, kind=s.kind, title=s.title,
+                                         opening={d: _pair(p) for d, p in s.opening.items()}, closing=s.closing)
+                             for s in sheet.sources],
+                    totals=totals, groups=groups)
+
+
+@router.get("/organizations/{organization_id}/payment-calendar/sheet", response_model=SheetOut)
+def calendar_sheet_view(organization_id: int, user: CurrentUser, db: DbSession, date_from: dt.date, date_to: dt.date,
+                        legal_entity_id: int | None = None, include_pending: bool = False):
+    return _sheet(db, user, organization_id, date_from, date_to, legal_entity_id, include_pending)
+
+
+def _money_text(p: PairOut) -> Decimal | None:
+    if p.fact is None and p.plan is None:
+        return None
+    return (p.fact or Decimal("0.00")) + (p.plan or Decimal("0.00"))
+
+
+@router.get("/organizations/{organization_id}/payment-calendar/sheet.xlsx")
+def calendar_sheet_xlsx(organization_id: int, user: CurrentUser, db: DbSession, date_from: dt.date, date_to: dt.date,
+                        legal_entity_id: int | None = None, include_pending: bool = False):
+    """Те же строки; в ячейке — факт + план одной суммой."""
+    data = _sheet(db, user, organization_id, date_from, date_to, legal_entity_id, include_pending)
+    columns = [XlsxColumn("Статья / контрагент", 34), XlsxColumn("Договор", 16), XlsxColumn("Безнал", 14, money=True),
+               XlsxColumn("Касса", 14, money=True), XlsxColumn("Всего", 14, money=True)]
+    columns += [XlsxColumn(f"{d:%d.%m} {WEEKDAYS[d.weekday()]}", 13, money=True) for d in data.days]
+    rows = []
+    for title, kind in (("Расчётные счета", "bank"), ("Касса", "cash")):
+        t = data.totals[kind]
+        rows.append((0, [f"На начало: {title.lower()}", None, None, None, None,
+                         *[_money_text(t.opening[d]) for d in data.days]], True))
+        for s in data.sources:
+            if s.kind == kind:
+                rows.append((1, [s.title, None, None, None, None, *[_money_text(s.opening[d]) for d in data.days]]))
+        rows.append((0, [f"Поступления: {title.lower()}", None, None, None, None,
+                         *[_money_text(t.inflow[d]) for d in data.days]]))
+        rows.append((0, [f"Платежи: {title.lower()}", None, None, None, None,
+                         *[_money_text(t.outflow[d]) for d in data.days]]))
+        rows.append((0, [f"На конец: {title.lower()}", None, None, None, None, *[t.closing[d] for d in data.days]], True))
+    for direction, title in (("in", "ПОСТУПЛЕНИЯ"), ("out", "ПЛАТЕЖИ")):
+        rows.append((0, [title], True))
+        for g in data.groups:
+            if g.direction != direction:
+                continue
+            rows.append((0, [g.title, None, g.bank, g.cash, g.bank + g.cash,
+                             *[_money_text(g.cells[d]) if d in g.cells else None for d in data.days]], True))
+            for ln in g.lines:
+                rows.append((1, [ln.title, ln.contract_title, ln.bank, ln.cash, ln.bank + ln.cash,
+                                 *[_money_text(ln.cells[d]) if d in ln.cells else None for d in data.days]]))
+    content = build("Платёжный календарь", f"{date_from:%d.%m.%Y} — {date_to:%d.%m.%Y}", columns, rows)
+    return Response(content, media_type=XLSX_TYPE,
+                    headers={"Content-Disposition": 'attachment; filename="payment_calendar_sheet.xlsx"'})
+
+
+class BalanceIn(BaseModel):
+    bank_account_id: int | None = None
+    cash_cfo_id: int | None = None
+    day: dt.date
+    amount: Decimal | None = Field(default=None, max_digits=18, decimal_places=2)  # None — убрать ручной остаток
+
+
+@router.put("/organizations/{organization_id}/calendar-balances", status_code=204)
+def set_balance(organization_id: int, body: BalanceIn, user: CurrentUser, db: DbSession) -> Response:
+    """Остаток на начало дня по банк-клиенту (финансовый менеджер); пустая сумма — убрать."""
+    get_organization_for(db, user, organization_id, Perm.POST)
+    if (body.bank_account_id is None) == (body.cash_cfo_id is None):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Укажите расчётный счёт или кассу")
+    _scope(db, organization_id, None, body.bank_account_id, body.cash_cfo_id)
+    row = db.scalar(select(CalendarBalance).where(CalendarBalance.bank_account_id.is_not_distinct_from(body.bank_account_id),
+                                                  CalendarBalance.cash_cfo_id.is_not_distinct_from(body.cash_cfo_id),
+                                                  CalendarBalance.day == body.day))
+    if body.amount is None:
+        if row is not None:
+            db.delete(row)
+    elif row is None:
+        db.add(CalendarBalance(organization_id=organization_id, bank_account_id=body.bank_account_id,
+                               cash_cfo_id=body.cash_cfo_id, day=body.day, amount=body.amount, entered_by=user.id))
+    else:
+        row.amount, row.entered_by = body.amount, user.id
+    db.commit()
+    return Response(status_code=204)
