@@ -53,6 +53,7 @@ class NoteUpdate(BaseModel):
 
 class NoteOut(BaseModel):
     id: int
+    organization_id: int
     report: str
     variant: str
     row_key: str

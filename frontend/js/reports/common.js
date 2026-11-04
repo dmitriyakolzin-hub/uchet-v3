@@ -54,6 +54,17 @@ export function reportFilters({ ref, scope = null, onChange, onExcel }) {
   return {
     box,
     setRef(r, branchRoot = null) { fillLists(r, branchRoot); },
+    // поставить фильтры (переход к примечанию): период, юрлицо, ЦФО, ЦФУ; корень ветки руководителя — «вся ветка»
+    set({ date_from: from, date_to: to, legal_entity_id: le, cfo_id: c, executor_id: ex }) {
+      if (from) dateFrom.value = from;
+      if (to) dateTo.value = to;
+      const pick = (select, value) => {
+        select.value = value && [...select.options].some((o) => o.value === String(value)) ? String(value) : "";
+      };
+      pick(entity, le);
+      pick(cfo, c && String(c) !== String(scope) ? c : null);
+      pick(executor, ex);
+    },
     valid() {
       if (!dateFrom.value || !dateTo.value) return false;
       if (dateFrom.value > dateTo.value) { toast("Начало периода позже его конца", "error"); return false; }

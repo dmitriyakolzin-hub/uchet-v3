@@ -172,11 +172,122 @@ export function tableNotes(table, { report, ctx, variant = () => "", columnTitle
     });
   }
 
+  // Переход к примечанию из списка: раскрыть строку, прокрутить к ней и подсветить ячейку
+  function focus(key, field) {
+    const row = allRows(table.getRows()).find((r) => String(r.getData().key) === String(key));
+    if (!row) {
+      toast("Этой строки сейчас нет в отчёте (нет сумм за период или другой фильтр)", "error");
+      return;
+    }
+    for (let parent = row.getTreeParent?.(); parent; parent = parent.getTreeParent?.()) parent.treeExpand();
+    table.scrollToRow(row, "center", false).catch(() => {});
+    const cell = row.getCells().find((c) => c.getField() === field);
+    const element = cell?.getElement() ?? row.getElement();
+    element.classList.add("note-focus");
+    element.scrollIntoView?.({ block: "nearest", inline: "center" });
+    setTimeout(() => element.classList.remove("note-focus"), 4000);
+  }
+
   table.on("cellContext", (e, cell) => { e.preventDefault(); open(cell); });
   table.on("cellTapHold", (_e, cell) => open(cell));
   table.on("renderComplete", () => mark());
   table.on("dataTreeRowExpanded", () => mark());
-  return { refresh, open };
+  return { refresh, open, focus };
+}
+
+// --- Список примечаний организации (кнопка «Примечания (N)» рядом с выбором организации, шаг 13.2) ---
+
+export const REPORT_TITLES = { osv: "ОСВ", dds: "ДДС", pl: "ОПиУ", management: "Управленческий", balance: "Баланс",
+  debts: "Дебиторка и кредиторка", stock: "Склад", planfact: "План/факт", investments: "Инвестиции", plan: "Бюджет",
+  operation: "Журнал" };
+
+// примечание, к которому нужно перейти на странице «Отчёты» (переход со страницы журнала)
+let pending = null;
+export function takePendingNote() {
+  const note = pending;
+  pending = null;
+  return note;
+}
+export function setPendingNote(note) { pending = note; }
+
+const where = (n) => {
+  const variant = n.report === "planfact" ? (n.variant === "cf" ? " ДДС" : " ОПиУ") : "";
+  if (n.report === "operation") return n.row_title;
+  return `${REPORT_TITLES[n.report] ?? n.report}${variant}: ${n.row_title}${n.column_title ? `, ${n.column_title}` : ""}`;
+};
+
+/**
+ * Кнопка «Примечания (N)»: N — открытые примечания организации. getOrg() — выбранная организация;
+ * onGo(note) — перейти к цифре или операции.
+ */
+export function notesButton({ getOrg, onGo }) {
+  const button = el("button", { type: "button", class: "secondary notes-button" }, "Примечания");
+  let labels = [];
+
+  async function refresh() {
+    try {
+      const open = await api.get(`/api/organizations/${getOrg().id}/notes?status=open`);
+      button.textContent = open.length ? `Примечания (${open.length})` : "Примечания";
+      button.classList.toggle("has-open", open.length > 0);
+    } catch {
+      button.textContent = "Примечания";
+    }
+  }
+
+  async function show() {
+    const org = getOrg();
+    labels = await loadLabels(org.id);
+    const labelById = new Map(labels.map((l) => [l.id, l]));
+    const statusSelect = el("select", { "aria-label": "Статус примечаний" },
+      ...[["open", "Открытые"], ["resolved", "Решённые"], ["", "Все"]].map(([v, t]) => el("option", { value: v }, t)));
+    const labelSelect = el("select", { "aria-label": "Метка" }, el("option", { value: "" }, "Все метки"),
+      ...labels.map((l) => el("option", { value: l.id }, l.name)));
+    const mine = el("input", { type: "checkbox", "aria-label": "Только мои" });
+    const listBox = el("div");
+
+    async function load() {
+      const p = new URLSearchParams();
+      if (statusSelect.value) p.set("status", statusSelect.value);
+      if (labelSelect.value) p.set("label_id", labelSelect.value);
+      if (mine.checked) p.set("mine", "true");
+      const notes = await api.get(`/api/organizations/${org.id}/notes?${p}`);
+      listBox.replaceChildren(notes.length ? el("table", { class: "plain plan-cells notes-table" },
+        el("thead", {}, el("tr", {}, ...["Метка", "Где", "Примечание", "Автор", "Дата", ""].map((t) => el("th", {}, t)))),
+        el("tbody", {}, ...notes.map((n) => {
+          const label = labelById.get(n.label_id);
+          return el("tr", { class: n.status === "resolved" ? "muted" : "" },
+            el("td", {}, label ? el("span", { class: "note-label", style: `background:${label.color}` }, label.name) : ""),
+            el("td", {}, el("button", { type: "button", class: "link", onclick: () => { dialog.close(); onGo(n); } }, where(n))),
+            el("td", { class: "note-text" }, n.text),
+            el("td", {}, n.author),
+            el("td", {}, when(n.created_at)),
+            el("td", {}, el("button", { type: "button", class: "link", onclick: async () => {
+              try {
+                await api.patch(`/api/notes/${n.id}`, { status: n.status === "open" ? "resolved" : "open" });
+                await load();
+                await refresh();
+              } catch (err) {
+                toast(err.message, "error");
+              }
+            } }, n.status === "open" ? "Решено" : "Вернуть")));
+        })))
+        : el("p", { class: "muted" }, "Примечаний нет."));
+    }
+    for (const input of [statusSelect, labelSelect, mine]) input.addEventListener("change", () => load());
+    const dialog = el("dialog", { class: "dialog wide" },
+      el("h2", {}, `Примечания: ${org.name}`),
+      el("div", { class: "filters" }, statusSelect, labelSelect, el("label", { class: "inline check-inline" }, mine, "мои")),
+      listBox,
+      el("div", { class: "form-actions" }, el("button", { type: "button", class: "secondary", onclick: () => dialog.close() }, "Закрыть")));
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    await load();
+    dialog.showModal();
+  }
+
+  button.addEventListener("click", () => show().catch((err) => toast(err.message, "error")));
+  refresh();
+  return { button, refresh };
 }
 
 /** Блок примечаний в форме операции журнала. */

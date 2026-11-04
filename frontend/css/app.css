@@ -310,3 +310,8 @@ table.plan-cells input { width: 130px; text-align: right; }
 .note-text { margin: 6px 0; white-space: pre-wrap; }
 .note-label { color: #fff; border-radius: 10px; padding: 1px 8px; font-size: 0.85em; }
 .op-notes { margin: 6px 0; }
+.tabulator-cell.note-focus, .tabulator-row.note-focus { outline: 2px solid #f79009; outline-offset: -2px; background: #fffaeb; }
+.notes-button.has-open { border-color: #f79009; color: #b54708; }
+.notes-table td { vertical-align: top; }
+.notes-table tr.muted td { color: var(--muted); }
+.page-head .notes-button { margin-left: auto; }
