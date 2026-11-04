@@ -1,6 +1,7 @@
 // Сетка ввода плана версии бюджета: строки — статьи, колонки — месяцы; ячейка = плановая операция.
 import { api } from "./api.js";
 import { money, parseNumber, sumMoney } from "./format.js";
+import { tableNotes } from "./notes.js";
 import { el, makeTable, openForm, toast } from "./ui.js";
 
 const KINDS = { pl: "План ОПиУ (по ЦФО)", cf: "План ДДС", inv: "План инвестиций" };
@@ -264,6 +265,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   }
 
   let table = null;
+  let gridNotes = null;
   function newTable() {
     table?.destroy();
     const box = el("div");
@@ -277,6 +279,14 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       columns: [{ title: "Статья", field: "name" }],
     });
     table.on("cellEdited", onEdited);
+    // примечания к ячейкам плана (правый щелчок / долгое нажатие): место — версия, вид плана, ЦФО, строка, месяц
+    gridNotes = tableNotes(table, {
+      report: "plan", variant: () => `${version.id}:${kind}`, rowTitle: (r) => `${budget.title}, ${version.name}: ${r.name}`
+        + (r.executor_name ? ` (${r.executor_name})` : ""),
+      ctx: { org: () => org, filters: { scope: () => (kind === "pl" && cfoId ? { cfo_id: String(cfoId) } : {}),
+        dateFrom: () => "", dateTo: () => "" } },
+      skip: (f) => f === "name" || f?.startsWith("_"),
+    });
     return table.ready ?? Promise.resolve();
   }
 
@@ -362,6 +372,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
         group: r.group, ...p.values, total: sumMoney(Object.values(p.values)) })) } : {}),
     }));
     await table.setData(rows);
+    await gridNotes.refresh();
     await renderSubmit();
   }
 

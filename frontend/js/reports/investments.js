@@ -1,6 +1,7 @@
 // Инвестиции: по каждому проекту — лимит, план, вложено (за период и с начала), оплачено, остаток лимита.
 import { api } from "../api.js";
 import { money } from "../format.js";
+import { tableNotes } from "../notes.js";
 import { el, makeTable } from "../ui.js";
 import { moneyCell, openDrill } from "./common.js";
 
@@ -60,6 +61,10 @@ export function investmentsReport({ box, ctx }) {
 
   const params = () => ctx.filters.params(versionId ? { version_id: versionId } : {});
 
+  // примечания к цифрам (правый щелчок / долгое нажатие)
+  const notes = tableNotes(table, { report: "investments", ctx, rowKey: (d) => d.key, rowTitle: (d) => d.name,
+    skip: (f) => ["name", "cfo", "executor", "period", "status"].includes(f) || f?.startsWith("_") });
+
   async function load() {
     data = await api.get(`/api/organizations/${ctx.org().id}/reports/investments?${params()}`);
     const titles = [...new Set(Object.values(data.plan_versions).map((v) => data.version_titles[v]))];
@@ -67,12 +72,14 @@ export function investmentsReport({ box, ctx }) {
       + "дебет 60 по договорам проекта. Остаток лимита = лимит − вложено с начала проекта. Щёлкните по сумме — откроются проводки. "
       + (titles.length ? `План: ${titles.join("; ")}.` : "Утверждённого плана инвестиций на этот период нет.");
     await table.setData([...data.rows.map((r) => ({ key: String(r.project_id), ...r })), { key: "total", name: "Итого", ...data.total }]);
+    await notes.refresh();
     table.getRow("total")?.getElement().classList.add("row-total");
   }
 
   versionSelect.addEventListener("change", () => { versionId = versionSelect.value; ctx.reload(); });
 
   return {
+    notes,
     ready: table.ready,
     load: async () => { await fillVersions(); await load(); },
     reset: async () => { versionId = ""; },

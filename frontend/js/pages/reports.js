@@ -86,6 +86,11 @@ export async function renderReports(view) {
       }
       return;
     }
+    if (n.report === "plan") {
+      toast(`Примечание к плану: «Бюджеты» → ${n.row_title}, ${n.column_title}`);
+      if (!report) await open(tab);
+      return;
+    }
     if (!REPORTS[n.report]) {
       toast("Этот отчёт пока без перехода к примечанию", "error");
       return;

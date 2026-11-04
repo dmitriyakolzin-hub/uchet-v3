@@ -97,8 +97,16 @@ export function openNotes({ org, labels, title, base, notes, onChanged }) {
  * ctx — контекст страницы «Отчёты»; cellTitle(cell) — подпись колонки; skip(field) — колонки без примечаний.
  * Место примечания: строка (key) + колонка (field) + юрлицо, ЦФО, ЦФУ отчёта; у колонок без месяца — ещё и период.
  */
-export function tableNotes(table, { report, ctx, variant = () => "", columnTitle, rowTitle, monthly = (f) => /^\d{4}-\d{2}/.test(f),
-  skip = (f) => f === "title" || f?.startsWith("_") }) {
+export function tableNotes(table, { report, ctx, variant = () => "", columnTitle = null, rowTitle, rowKey = (d) => d.key,
+  monthly = (f) => /^\d{4}-\d{2}/.test(f), skip = (f) => f === "title" || f?.startsWith("_") }) {
+  // подпись колонки по умолчанию — заголовок колонки (с заголовком группы, если колонка в группе)
+  const titleOf = columnTitle ?? ((field) => {
+    const column = table.getColumn(field);
+    const own = column?.getDefinition().title ?? field;
+    const parent = column?.getParentColumn?.();
+    const group = parent ? parent.getDefinition().title : "";
+    return group ? `${group}: ${own}` : own;
+  });
   let notes = [];
   let labels = [];
   let labelsOrg = null;
@@ -108,7 +116,7 @@ export function tableNotes(table, { report, ctx, variant = () => "", columnTitle
     return { legal_entity_id: s.legal_entity_id ? Number(s.legal_entity_id) : null,
       cfo_id: s.cfo_id ? Number(s.cfo_id) : null, executor_id: s.executor_id ? Number(s.executor_id) : null };
   };
-  const period = () => ({ date_from: ctx.filters.dateFrom(), date_to: ctx.filters.dateTo() });
+  const period = () => ({ date_from: ctx.filters.dateFrom() || null, date_to: ctx.filters.dateTo() || null });
   const restrictedCfo = () => ctx.org().cfo_scope ?? null;
 
   function sameScope(n) {
@@ -130,7 +138,7 @@ export function tableNotes(table, { report, ctx, variant = () => "", columnTitle
   }
   function mark() {
     for (const row of allRows(table.getRows())) {
-      const key = row.getData().key;
+      const key = rowKey(row.getData());
       for (const cell of row.getCells()) {
         const field = cell.getField();
         const element = cell.getElement();
@@ -161,12 +169,13 @@ export function tableNotes(table, { report, ctx, variant = () => "", columnTitle
   function open(cell) {
     const field = cell.getField();
     const row = cell.getRow().getData();
-    if (skip(field) || row.key === undefined) return;
-    const colTitle = columnTitle(field);
+    const key = rowKey(row);
+    if (skip(field) || key === undefined || key === null) return;
+    const colTitle = String(titleOf(field));
     const title = `${rowTitle(row)}, ${colTitle}`;
     openNotes({
-      org: ctx.org(), labels, title, notes: notesFor(row.key, field),
-      base: { report, variant: variant(), row_key: String(row.key), row_title: rowTitle(row).slice(0, 500),
+      org: ctx.org(), labels, title, notes: notesFor(key, field),
+      base: { report, variant: variant(), row_key: String(key), row_title: rowTitle(row).slice(0, 500),
         column_key: field, column_title: colTitle.slice(0, 100), ...scope(), ...period() },
       onChanged: () => refresh(),
     });
@@ -174,7 +183,7 @@ export function tableNotes(table, { report, ctx, variant = () => "", columnTitle
 
   // Переход к примечанию из списка: раскрыть строку, прокрутить к ней и подсветить ячейку
   function focus(key, field) {
-    const row = allRows(table.getRows()).find((r) => String(r.getData().key) === String(key));
+    const row = allRows(table.getRows()).find((r) => String(rowKey(r.getData())) === String(key));
     if (!row) {
       toast("Этой строки сейчас нет в отчёте (нет сумм за период или другой фильтр)", "error");
       return;

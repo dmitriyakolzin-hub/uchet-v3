@@ -1,6 +1,7 @@
 // Склад: остатки и обороты по складам и номенклатуре — количество и сумма; любая цифра раскрывается до проводок.
 import { api } from "../api.js";
 import { money, quantity } from "../format.js";
+import { tableNotes } from "../notes.js";
 import { el, makeTable } from "../ui.js";
 import { moneyCell, openDrill } from "./common.js";
 
@@ -70,6 +71,10 @@ export function stockReport({ box, ctx }) {
 
   const params = () => ctx.filters.params({ ...(accountId ? { account_id: accountId } : {}), ...(warehouseId ? { warehouse_id: warehouseId } : {}) });
 
+  // примечания к цифрам (правый щелчок / долгое нажатие)
+  const notes = tableNotes(table, { report: "stock", ctx, rowKey: (d) => d.key, rowTitle: (d) => d.title,
+    skip: (f) => ["title", "account", "unit"].includes(f) || f?.startsWith("_") });
+
   async function load() {
     const data = await api.get(`/api/organizations/${ctx.org().id}/reports/stock?${params()}`);
     accountSelect.replaceChildren(el("option", { value: "" }, "Все (10, 41, 43)"),
@@ -77,6 +82,7 @@ export function stockReport({ box, ctx }) {
     warehouseSelect.replaceChildren(el("option", { value: "" }, "Все склады"),
       ...ctx.ref().warehouses.map((w) => el("option", { value: w.id, selected: String(w.id) === warehouseId }, w.name)));
     await table.setData([...toTree(data.rows), { key: "total", title: "Итого", account: "", unit: "", ...data.total }]);
+    await notes.refresh();
     table.getRow("total")?.getElement().classList.add("row-total");
   }
 
@@ -84,6 +90,7 @@ export function stockReport({ box, ctx }) {
   warehouseSelect.addEventListener("change", () => { warehouseId = warehouseSelect.value; ctx.reload(); });
 
   return {
+    notes,
     ready: table.ready,
     load,
     reset: async () => { accountId = ""; warehouseId = ""; },
