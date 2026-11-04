@@ -10,6 +10,8 @@ import { planFactReport } from "../reports/planfact.js";
 import { plReport } from "../reports/pl.js";
 import { reportFilters } from "../reports/common.js";
 import { stockReport } from "../reports/stock.js";
+import { notesButton, takePendingNote } from "../notes.js";
+import { openOperation } from "../opform.js";
 import { el, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
 
@@ -41,7 +43,9 @@ export async function renderReports(view) {
     view.replaceChildren(el("h1", {}, "Отчёты"), el("p", { class: "muted" }, "У вас нет доступа ни к одной организации."));
     return;
   }
-  let org = orgs.find((o) => String(o.id) === recall(ORG_KEY)) ?? orgs[0];
+  // переход к примечанию со страницы журнала — сразу нужная организация
+  const pendingNote = takePendingNote();
+  let org = orgs.find((o) => o.id === pendingNote?.organization_id) ?? orgs.find((o) => String(o.id) === recall(ORG_KEY)) ?? orgs[0];
   let ref = await loadReferences(org.id);
   let tab = REPORTS[recall(TAB_KEY)] && !(REPORTS[recall(TAB_KEY)].hideRestricted && org.restricted) ? recall(TAB_KEY) : "osv";
   let report = null;
@@ -52,8 +56,10 @@ export async function renderReports(view) {
   const tabs = el("div", { class: "tabs" });
   const box = el("div");
 
+  const notes = notesButton({ getOrg: () => org, onGo: (n) => goToNote(n) });
   view.replaceChildren(
-    el("div", { class: "page-head" }, el("h1", {}, "Отчёты"), el("label", { class: "inline" }, "Организация ", orgSelect)),
+    el("div", { class: "page-head" }, el("h1", {}, "Отчёты"), el("label", { class: "inline" }, "Организация ", orgSelect),
+      notes.button),
     tabs, filters.box, box,
   );
 
@@ -63,9 +69,33 @@ export async function renderReports(view) {
     if (!report || !filters.valid()) return;
     try {
       await report.load();
+      notes.refresh();
     } catch (err) {
       toast(err.message, "error");
     }
+  }
+
+  // Переход к примечанию (docs/TZ.md, раздел 23, «Детали 13.2»): нужный отчёт, фильтры и подсвеченная цифра
+  async function goToNote(n) {
+    if (n.report === "operation") {
+      try {
+        const op = await api.get(`/api/operations/${n.operation_id}`);
+        openOperation({ ref, org, op, perms: org.permissions, onChanged: () => reload() });
+      } catch (err) {
+        toast(err.message, "error");
+      }
+      return;
+    }
+    if (!REPORTS[n.report]) {
+      toast("Этот отчёт пока без перехода к примечанию", "error");
+      return;
+    }
+    filters.set(n);
+    await open(n.report, (r) => {
+      if (n.variant) r.setVariant?.(n.variant);
+      r.setColumn?.(n.column_key);
+    });
+    report.notes?.focus(n.row_key, n.column_key);
   }
 
   async function excel() {
@@ -77,7 +107,7 @@ export async function renderReports(view) {
     }
   }
 
-  async function open(key) {
+  async function open(key, prepare = null) {
     tab = key;
     remember(TAB_KEY, key);
     tabs.replaceChildren(...Object.entries(REPORTS).filter(([, r]) => !(r.hideRestricted && org.restricted)).map(([k, r]) =>
@@ -86,6 +116,7 @@ export async function renderReports(view) {
     box.replaceChildren(reportBox);
     report = REPORTS[key].make({ box: reportBox, ctx });
     await report.ready;
+    prepare?.(report);
     await reload();
   }
 
@@ -98,5 +129,6 @@ export async function renderReports(view) {
     await reload();
   });
 
-  await open(tab);
+  if (pendingNote) await goToNote(pendingNote);
+  else await open(tab);
 }

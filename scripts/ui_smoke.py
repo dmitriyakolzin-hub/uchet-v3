@@ -511,6 +511,16 @@ with sync_playwright() as p:
     d.locator("button", has_text="Закрыть").click()
     expect(total).to_have_class(re.compile("has-note"))
     expect(total).to_have_attribute("title", "Сверить с актом")
+    # список примечаний в шапке и переход к цифре (шаг 13.2)
+    page.click("button.tab:has-text('ОСВ')")
+    expect(page.locator(".notes-button")).to_have_text("Примечания (1)")
+    page.locator(".notes-button").click()
+    d = page.locator("dialog[open]", has_text="Примечания: Группа АВМВ")
+    expect(d.locator("tbody tr")).to_have_count(1)
+    d.locator("button.link", has_text="ДДС: Оплата поставщикам").click()
+    expect(page.locator("button.tab.active", has_text="ДДС")).to_be_visible()
+    expect(page.locator(".tabulator-row", has_text="Оплата поставщикам").locator(
+        ".tabulator-cell[tabulator-field=total]")).to_have_class(re.compile("note-focus"))
     # ОПиУ: в стенде расходов с «Статьёй ОПиУ» нет — отчёт строится, итоговые строки на месте
     page.click("button.tab:has-text('ОПиУ')")
     expect(page.locator(".tabulator-row", has_text="Чистая прибыль")).to_be_visible()
@@ -855,6 +865,20 @@ with sync_playwright() as p:
     nd.locator("button", has_text="Закрыть").click()
     expect(d.locator(".op-notes")).to_contain_text("Примечания: 1 (открытых 1)")
     d.locator(".form-actions button", has_text="Закрыть").click()
+    # из списка в шапке журнала — открыть операцию
+    page.locator(".notes-button").click()
+    d = page.locator("dialog[open]", has_text="Примечания: Группа АВМВ")
+    d.locator("button.link", has_text="Операция №").click()
+    d = page.locator("dialog[open]", has_text="Операция №")
+    expect(d.locator(".op-notes")).to_contain_text("Примечания: 1")
+    d.locator(".form-actions button", has_text="Закрыть").click()
+    # из журнала — к цифре отчёта: открывается «Отчёты» с нужной вкладкой
+    page.locator(".notes-button").click()
+    page.locator("dialog[open] button.link", has_text="ДДС: Оплата поставщикам").click()
+    expect(page.locator("button.tab.active", has_text="ДДС")).to_be_visible()
+    expect(page.locator(".tabulator-row", has_text="Оплата поставщикам").locator(
+        ".tabulator-cell[tabulator-field=total]")).to_have_class(re.compile("has-note"))
+    page.click("button.tab:has-text('ОСВ')")  # дальше отчёты открываются с ОСВ
 
     page.click("#nav a[data-page=fixedassets]")
     row = page.locator("tr", has_text="Ноутбук")

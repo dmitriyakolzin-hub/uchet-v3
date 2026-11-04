@@ -153,6 +153,9 @@ export function planFactReport({ box, ctx }) {
     ready: table.ready.then(renderTabs),
     load: async () => { await fillVersions(); await load(); },
     reset: async () => { versionId = ""; },
+    notes,
+    // переход к примечанию: вид отчёта (ОПиУ или ДДС)
+    setVariant: (v) => { if (v === "pl" || v === "cf") { kind = v; renderTabs(); } },
     excel: () => api.download(
       `/api/organizations/${ctx.org().id}/reports/plan-fact.xlsx?${ctx.filters.params({ kind, ...(versionId ? { version_id: versionId } : {}) })}`,
       `plan_fact_${kind}_${ctx.filters.dateFrom()}_${ctx.filters.dateTo()}.xlsx`),

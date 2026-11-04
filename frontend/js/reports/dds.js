@@ -76,6 +76,7 @@ export function columnsReport({ box, ctx, path, hint, fileName, onDetails, first
     ready: table.ready,
     load,
     reset: async () => {},
+    notes,
     excel: () => api.download(`/api/organizations/${ctx.org().id}/reports/${path}.xlsx?${ctx.filters.params()}`,
       `${fileName}_${ctx.filters.dateFrom()}_${ctx.filters.dateTo()}.xlsx`),
   };

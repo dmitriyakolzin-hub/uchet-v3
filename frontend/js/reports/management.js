@@ -156,6 +156,14 @@ export function managementReport({ box, ctx }) {
     ready: table.ready.then(renderTabs),
     load,
     reset: async () => {},
+    notes,
+    // переход к примечанию: колонка «…|plan» или «…|dev» — в режиме с планом
+    setColumn: (field) => {
+      const part = String(field).split("|")[1];
+      mode = part === "fact" ? (mode === "plan" ? "plan_fact" : mode) : part === "plan" ? (mode === "fact" ? "plan_fact" : mode)
+        : part === "dev" ? "plan_fact" : mode;
+      renderTabs();
+    },
     excel: () => api.download(`/api/organizations/${ctx.org().id}/reports/management.xlsx?${ctx.filters.params({ mode })}`,
       `management_${ctx.filters.dateFrom()}_${ctx.filters.dateTo()}.xlsx`),
   };

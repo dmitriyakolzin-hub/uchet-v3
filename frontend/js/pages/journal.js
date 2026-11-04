@@ -3,6 +3,7 @@ import { api } from "../api.js";
 import { articleIndex } from "../articles.js";
 import { openBulkEdit } from "../bulkedit.js";
 import { date, isoDate, money, monthBounds, sumMoney } from "../format.js";
+import { notesButton, setPendingNote } from "../notes.js";
 import { openOperation } from "../opform.js";
 import { el, makeTable, toast } from "../ui.js";
 
@@ -99,8 +100,22 @@ export async function renderJournal(view) {
   const summary = el("p", { class: "muted" });
   const tableBox = el("div");
 
+  // примечания организации: к операции — открыть её, к цифре отчёта — перейти в «Отчёты»
+  const notes = notesButton({ getOrg: () => org, onGo: async (n) => {
+    if (n.report !== "operation") {
+      setPendingNote(n);
+      location.hash = "#/reports";
+      return;
+    }
+    try {
+      openForm(await api.get(`/api/operations/${n.operation_id}`));
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  } });
   view.replaceChildren(
-    el("div", { class: "page-head" }, el("h1", {}, "Журнал операций"), el("label", { class: "inline" }, "Организация ", orgSelect)),
+    el("div", { class: "page-head" }, el("h1", {}, "Журнал операций"), el("label", { class: "inline" }, "Организация ", orgSelect),
+      notes.button),
     el("div", { class: "filters" }, ...Object.values(f)),
     el("div", { class: "page-head" }, summary, newButton),
     bulkBar,
@@ -201,7 +216,7 @@ export async function renderJournal(view) {
   }
 
   function openForm(op) {
-    openOperation({ ref, org, op, perms: org.permissions, onChanged: load });
+    openOperation({ ref, org, op, perms: org.permissions, onChanged: async () => { await load(); notes.refresh(); } });
   }
 
   newButton.hidden = !org.permissions.includes("draft");
@@ -211,6 +226,7 @@ export async function renderJournal(view) {
     org = orgs.find((o) => String(o.id) === orgSelect.value);
     remember(ORG_KEY, org.id);
     ref = await loadReferences(org.id);
+    notes.refresh();
     codes = accountCode();
     entities = entityName();
     articles = articleName();

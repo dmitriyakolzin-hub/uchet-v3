@@ -21,6 +21,7 @@ def test_labels_and_report_notes(client, env):
     # пишут все, кто видит отчёты, в том числе CEO
     first = note(client, env, label_id=label["id"], cfo_id=env["shop"]["id"]).json()
     assert (first["status"], first["label_id"], first["can_edit"]) == ("open", label["id"], True)
+    assert first["organization_id"] == env["org"].id
     ceo_note = note(client, env, h=env["ceo"], text="Почему выросло?", column_key="total", column_title="Итого",
                     date_from="2027-01-01", date_to="2027-02-28").json()
     assert ceo_note["author"] and ceo_note["can_edit"] is True
