@@ -7,7 +7,11 @@ import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
 const TAB_KEY = "uchet3_calendar_tab";
-const STATUS = { draft: "Черновик", pending: "На согласовании", approved: "Согласована", rejected: "Отклонена", paid: "Оплачена" };
+const STATUS = { draft: "Черновик", pending: "На согласовании", revision: "На доработке", approved: "Согласована",
+  rejected: "Отклонена", paid: "Оплачена" };
+const EVENT_TITLES = { created: "создал(а)", submitted: "подал(а) на согласование", approved: "согласовал(а)",
+  rejected: "отклонил(а)", revision: "вернул(а) на доработку", recalled: "отозвал(а)", unapproved: "вернул(а) на согласование",
+  moved: "перенёс(ла) на", paid: "отметил(а) оплату", unpaid: "снял(а) оплату" };
 const DIRECTION = { out: "Выплата", in: "Поступление" };
 
 function recall(key) {
@@ -28,7 +32,7 @@ export async function renderCalendar(view) {
   let org = orgs.find((o) => String(o.id) === recall(ORG_KEY)) ?? orgs[0];
   let ref = await loadReferences(org.id);
   const [from, to] = monthBounds();
-  const filter = { date_from: from, date_to: to, status: "", direction: "" };
+  const filter = { date_from: from, date_to: to, status: "", direction: "", to_approve: "" };
 
   const orgSelect = el("select", { class: "inline-select", "aria-label": "Организация" },
     ...orgs.map((o) => el("option", { value: o.id, selected: o.id === org.id }, o.name)));
@@ -56,14 +60,16 @@ export async function renderCalendar(view) {
   const tabs = el("div", { class: "tabs" });
   const content = el("div");
   const requestsBox = el("div", {},
-    el("p", { class: "muted" }, "Заявка на оплату: черновик → на согласовании → согласована → оплачена. Согласует финансовый директор. "
-      + "Платёж из выписки на ту же сумму тому же контрагенту сам отметит согласованную заявку оплаченной. "
+    el("p", { class: "muted" }, "Заявка: черновик → на согласовании (по маршруту: руководитель ЦФУ или ЦФО — встречная сторона, "
+      + "финансовый менеджер, CEO — инвестиции и суммы больше 1 000 000 ₽, финансовый директор) → согласована (в реестре "
+      + "на оплату) → оплачена. Платёж из выписки на ту же сумму тому же контрагенту сам отметит заявку оплаченной. "
       + "Ожидаемые поступления согласования не требуют."),
     el("div", { class: "filters" },
       el("label", { class: "inline" }, "С ", input("date", "date_from", "С даты")),
       el("label", { class: "inline" }, "по ", input("date", "date_to", "По дату")),
       select("status", "Статус", [["", "Все статусы"], ...Object.entries(STATUS)]),
       select("direction", "Вид", [["", "Выплаты и поступления"], ["out", "Выплаты"], ["in", "Поступления"]]),
+      select("to_approve", "Чьи", [["", "Все заявки"], ["true", "Ждут моего согласования"]]),
       el("button", { type: "button", onclick: () => edit(null, "out") }, "Новая заявка"),
       el("button", { type: "button", class: "secondary", onclick: () => edit(null, "in") }, "Ожидаемое поступление"),
       el("button", { type: "button", class: "secondary",
@@ -77,10 +83,12 @@ export async function renderCalendar(view) {
     tabs, content,
   );
   let tab = ["requests", "expected"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "grid";
+  // руководитель ЦФУ и руководитель ЦФО видят только заявки
+  const onlyRequests = () => org.restricted || org.role === "executor_head";
   function openTab(key) {
-    tab = org.restricted ? "requests" : key;
+    tab = onlyRequests() ? "requests" : key;
     remember(TAB_KEY, tab);
-    const list = org.restricted ? [["requests", "Заявки"]]
+    const list = onlyRequests() ? [["requests", "Заявки"]]
       : [["grid", "Календарь"], ["requests", "Заявки"], ["expected", "Ожидаемые платежи"]];
     tabs.replaceChildren(...list.map(([k, title]) =>
       el("button", { type: "button", class: `tab${k === tab ? " active" : ""}`, onclick: () => openTab(k) }, title)));
@@ -100,32 +108,62 @@ export async function renderCalendar(view) {
       `в бюджете (остаток ${money(b.remaining)})`);
   }
 
+  // подавать и править — право черновиков или руководитель ЦФУ; согласовывать — тот, чей сейчас шаг (r.can_act)
+  const author = () => can("draft") || org.role === "executor_head";
   function actions(r) {
     const button = (text, onclick, cls = "link") => el("button", { type: "button", class: cls, onclick }, text);
     const run = (action, body) => act(r, action, body);
     const list = [];
-    if (["draft", "rejected"].includes(r.status) && can("draft")) {
+    if (["draft", "rejected", "revision"].includes(r.status) && author()) {
       list.push(button("Изменить", () => edit(r, r.direction)), button(r.direction === "in" ? "Подтвердить" : "На согласование", () => run("submit")));
       if (r.status === "draft") list.push(button("Удалить", () => remove(r)));
     }
     if (r.status === "pending") {
-      if (can("post")) list.push(button("Согласовать", () => run("approve")), button("Отклонить", () => reject(r)));
-      if (can("draft")) list.push(button("Отозвать", () => run("recall")));
+      if (r.can_act) {
+        list.push(button("Согласовать", () => run("approve")), button("На доработку", () => reason(r, "revise")),
+          button("Отклонить", () => reason(r, "reject")));
+      }
+      if (author()) list.push(button("Отозвать", () => run("recall")));
+      if (can("post")) list.push(button("Перенести", () => move(r)));
     }
-    if (r.status === "approved" && can("post")) {
-      list.push(button("Оплачено", () => pay(r)), button("Перенести", () => move(r)), button("Отклонить", () => reject(r)),
-        button(r.direction === "in" ? "В черновик" : "Вернуть на согласование", () => run("unapprove")));
+    if (r.status === "approved") {
+      if (can("post")) list.push(button("Оплачено", () => pay(r)), button("Перенести", () => move(r)));
+      if (can("supervise")) {
+        list.push(button("Отклонить", () => reason(r, "reject")),
+          button(r.direction === "in" ? "В черновик" : "Вернуть на согласование", () => run("unapprove")));
+      }
     }
-    if (r.status === "pending" && can("post")) list.push(button("Перенести", () => move(r)));
     if (r.status === "paid" && can("post")) list.push(button("Снять оплату", () => run("unpay")));
+    list.push(button("История", () => history(r)));
     return el("td", { class: "req-actions" }, ...list);
   }
 
   function statusCell(r) {
-    const note = r.status === "rejected" && r.reject_reason ? el("div", { class: "muted" }, `Причина: ${r.reject_reason}`)
+    const note = ["rejected", "revision"].includes(r.status) && r.reject_reason
+      ? el("div", { class: "muted" }, `Причина: ${r.reject_reason}`)
+      : r.status === "pending" ? el("div", { class: r.can_act ? "my-step" : "muted",
+        title: `Маршрут: ${r.route_titles.join(" → ")}` }, r.can_act ? `ждёт вас (${r.step_title})` : `у: ${r.step_title}`)
       : r.status === "paid" ? el("div", { class: "muted" }, `${date(r.paid_on)}${r.operation_number ? `, операция № ${r.operation_number}` : ""}`
         + `${r.confirmed_by_statement ? " (выписка)" : ""}`) : null;
     return el("td", {}, el("span", { class: `status req-${r.status}` }, STATUS[r.status]), note);
+  }
+
+  async function history(r) {
+    try {
+      const events = await api.get(`/api/payment-requests/${r.id}/events`);
+      const dialog = el("dialog", { class: "dialog wide" },
+        el("h2", {}, `История заявки № ${r.number}`),
+        r.route_titles.length ? el("p", { class: "muted" }, `Маршрут: ${r.route_titles.join(" → ")}`) : "",
+        el("ul", {}, ...events.map((e) => el("li", {},
+          `${new Date(e.at).toLocaleString("ru-RU")} — ${e.user_name} ${EVENT_TITLES[e.action] ?? e.action}`
+            + (e.step_title ? ` (${e.step_title})` : "") + (e.comment ? `: ${e.comment}` : "")))),
+        el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => dialog.close() }, "Закрыть")));
+      document.body.append(dialog);
+      dialog.addEventListener("close", () => dialog.remove());
+      dialog.showModal();
+    } catch (err) {
+      toast(err.message, "error");
+    }
   }
 
   async function load() {
@@ -170,12 +208,13 @@ export async function renderCalendar(view) {
     }
   }
 
-  function reject(r) {
+  function reason(r, action) {
+    const titles = { reject: ["Отклонить", "Причина отказа"], revise: ["На доработку", "Что доработать"] };
     openForm({
-      title: `Отклонить заявку № ${r.number}`,
-      fields: [{ name: "reason", label: "Причина", type: "textarea", required: true }],
-      submitText: "Отклонить",
-      onSubmit: async (v) => { await api.post(`/api/payment-requests/${r.id}/reject`, v); await load(); },
+      title: `${titles[action][0]}: заявка № ${r.number}`,
+      fields: [{ name: "reason", label: titles[action][1], type: "textarea", required: true }],
+      submitText: titles[action][0],
+      onSubmit: async (v) => { await api.post(`/api/payment-requests/${r.id}/${action}`, v); await load(); },
     });
   }
 
@@ -198,7 +237,7 @@ export async function renderCalendar(view) {
 
   // откуда платим: расчётный счёт юрлица или касса (ЦФО с кассой); руководитель ЦФО счёт не выбирает
   function sourceOptions(entityId) {
-    const banks = org.restricted ? [] : ref.bankAccounts.filter((b) => String(b.legal_entity_id) === String(entityId))
+    const banks = onlyRequests() ? [] : ref.bankAccounts.filter((b) => String(b.legal_entity_id) === String(entityId))
       .map((b) => [`bank:${b.id}`, `${b.name} ··${b.number.slice(-4)}`]);
     const cash = ref.cfos.filter((c) => c.has_cash && inBranch(c)).map((c) => [`cash:${c.id}`, `Касса: ${c.name}`]);
     return [["", "— не указано —"], ...banks, ...cash];
@@ -244,13 +283,15 @@ export async function renderCalendar(view) {
         { name: "pay_date", label: direction === "in" ? "Ожидаемая дата" : "Дата оплаты", type: "date", required: true },
         { name: "legal_entity_id", label: "Юрлицо", type: "select", options: entities.map((e) => [String(e.id), e.short_name]) },
         { name: "source", label: direction === "in" ? "Куда поступит" : "Откуда платим", type: "select", options: sourceOptions(entityId),
-          hint: org.restricted ? "Расчётный счёт выбирает финансовый директор" : "Можно выбрать при согласовании" },
+          hint: onlyRequests() ? "Расчётный счёт выбирает финансовая служба" : "Можно выбрать при согласовании" },
         { name: "counterparty_id", label: "Контрагент", type: "select", options: options(ref.counterparties, (c) => c.name) },
         { name: "contract_id", label: "Договор", type: "select", options: contractOptions(String(r?.counterparty_id ?? ""), entityId) },
         { name: "article_id", label: "Статья ДДС", type: "select", options: options(articles, (a) => ref.articleLabel.get(a.id)) },
         { name: "cfo_id", label: "ЦФО", type: "select", options: options(cfos, (c) => ref.cfoLabel.get(c.id)),
           required: Boolean(org.restricted) },
-        { name: "executor_id", label: "ЦФУ", type: "select", options: options(ref.executors, (e) => ref.executorLabel.get(e.id)) },
+        { name: "executor_id", label: "ЦФУ", type: "select", required: Boolean(org.executor_scope),
+          options: options(org.executor_scope ? ref.executors.filter((e) => org.executor_scope.includes(e.id)) : ref.executors,
+            (e) => ref.executorLabel.get(e.id)) },
         { name: "amount", label: "Сумма", required: true, placeholder: "0,00" },
         { name: "description", label: "Назначение", type: "textarea" },
       ],
@@ -258,7 +299,8 @@ export async function renderCalendar(view) {
         pay_date: r?.pay_date ?? ref.today, legal_entity_id: entityId, source: sourceValue(r),
         counterparty_id: String(r?.counterparty_id ?? ""), contract_id: String(r?.contract_id ?? ""),
         article_id: String(r?.article_id ?? ""), cfo_id: String(r?.cfo_id ?? (org.cfo_scope ?? "")),
-        executor_id: String(r?.executor_id ?? ""), amount: r ? money(r.amount) : "", description: r?.description ?? "",
+        executor_id: String(r?.executor_id ?? (org.executor_scope?.[0] ?? "")), amount: r ? money(r.amount) : "",
+        description: r?.description ?? "",
       },
       submitText: r ? "Сохранить" : "Создать",
       onSubmit: async (v) => {

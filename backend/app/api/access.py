@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.permissions import ADMIN_PERMS, ROLE_PERMS, Perm, Role
-from app.models import Cfo, Membership, Organization, User
+from app.models import Cfo, Executor, Membership, Organization, User
 
 
 def org_permissions(db: Session, user: User, organization_id: int) -> frozenset[Perm]:
@@ -22,12 +22,12 @@ def org_permissions(db: Session, user: User, organization_id: int) -> frozenset[
 def get_organization_for(db: Session, user: User, organization_id: int, perm: Perm) -> Organization:
     """Организация, если у пользователя есть право perm.
 
-    Если у пользователя нет даже просмотра — отвечаем «не найдена», чтобы не раскрывать,
-    что такая организация существует.
+    Если у пользователя нет в организации никакой роли — отвечаем «не найдена», чтобы не раскрывать,
+    что такая организация существует. Руководитель ЦФУ (только заявки) на остальное получает 403.
     """
     organization = db.get(Organization, organization_id)
     perms = org_permissions(db, user, organization_id) if organization else frozenset()
-    if organization is None or Perm.VIEW not in perms:
+    if organization is None or not perms:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Организация не найдена")
     if perm not in perms:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
@@ -39,6 +39,31 @@ def visible_organization_ids(db: Session, user: User) -> list[int] | None:
     if user.is_admin:
         return None
     return list(db.scalars(select(Membership.organization_id).where(Membership.user_id == user.id)))
+
+
+def get_organization_any(db: Session, user: User, organization_id: int, *perms: Perm) -> Organization:
+    """Как get_organization_for, но достаточно любого из прав (например, VIEW или REQUEST)."""
+    have = org_permissions(db, user, organization_id)
+    perm = next((p for p in perms if p in have), perms[0])  # нет ни одного — 404 или 403 по первому
+    return get_organization_for(db, user, organization_id, perm)
+
+
+def executor_scope(db: Session, user: User, organization_id: int) -> set[int] | None:
+    """ЦФУ руководителя ЦФУ (отдел — вместе с исполнителями); None — пользователь не руководитель ЦФУ."""
+    if user.is_admin:
+        return None
+    membership = db.scalar(select(Membership).where(
+        Membership.user_id == user.id, Membership.organization_id == organization_id))
+    if membership is None or membership.role != Role.EXECUTOR_HEAD:
+        return None
+    if membership.executor_id is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Руководителю ЦФУ не назначен ЦФУ — обратитесь к администратору")
+    children = db.scalars(select(Executor.id).where(Executor.parent_id == membership.executor_id))
+    return {membership.executor_id, *children}
+
+
+def role_in(db: Session, user: User, organization_id: int) -> Membership | None:
+    return db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.organization_id == organization_id))
 
 
 # --- Ветка ЦФО руководителя ЦФО (docs/TZ.md, раздел 13) ---

@@ -72,9 +72,9 @@ def test_permissions_in_list(client, headers_for, setup):
         who: client.get("/api/organizations", headers=headers_for(setup[who])).json()[0]["permissions"]
         for who in ("fd", "ceo", "head")
     }
-    assert by_user["fd"] == ["draft", "edit_reference", "post", "view"]
-    assert by_user["ceo"] == ["view"]
-    assert by_user["head"] == ["draft", "view"]
+    assert by_user["fd"] == ["draft", "edit_reference", "post", "request", "supervise", "view"]
+    assert by_user["ceo"] == ["request", "view"]
+    assert by_user["head"] == ["draft", "request", "view"]
 
 
 def test_user_without_roles_sees_nothing(client, headers_for, make_user, setup):

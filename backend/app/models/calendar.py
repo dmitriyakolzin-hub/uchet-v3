@@ -12,15 +12,17 @@ from sqlalchemy import (
     ForeignKey,
     Identity,
     Numeric,
+    SmallInteger,
     String,
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
-REQUEST_STATUSES = ("draft", "pending", "approved", "rejected", "paid")
+REQUEST_STATUSES = ("draft", "pending", "revision", "approved", "rejected", "paid")
 
 
 class PaymentRequest(Base):
@@ -31,7 +33,9 @@ class PaymentRequest(Base):
     __table_args__ = (
         UniqueConstraint("organization_id", "number", name="uq_payment_requests_organization_number"),
         CheckConstraint("direction IN ('out', 'in')", name="direction"),
-        CheckConstraint("status IN ('draft', 'pending', 'approved', 'rejected', 'paid')", name="status"),
+        CheckConstraint("status IN ('draft', 'pending', 'revision', 'approved', 'rejected', 'paid')", name="status"),
+        CheckConstraint("source IN ('request', 'periodic', 'supplier')", name="source_kind"),
+        CheckConstraint("initiator IN ('cfo', 'executor', 'finance')", name="initiator"),
         CheckConstraint("amount > 0", name="amount"),
         CheckConstraint("bank_account_id IS NULL OR cash_cfo_id IS NULL", name="source"),
         CheckConstraint("(status = 'paid') = (paid_on IS NOT NULL)", name="paid"),
@@ -62,3 +66,23 @@ class PaymentRequest(Base):
     paid_on: Mapped[date | None] = mapped_column(Date)
     operation_id: Mapped[int | None] = mapped_column(ForeignKey("operations.id", ondelete="SET NULL"))
     confirmed_by_statement: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Маршрут согласования (docs/TZ.md, раздел 24): откуда заявка (обычная, периодический платёж, поставщики),
+    # кто её принёс (ЦФО, ЦФУ или финансовая служба), шаги маршрута и текущий шаг (пока «на согласовании»)
+    source: Mapped[str] = mapped_column(String(10), default="request", server_default="request")
+    initiator: Mapped[str] = mapped_column(String(10), default="finance", server_default="finance")
+    route: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    step: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
+
+
+class PaymentRequestEvent(Base):
+    """История заявки: подана, согласована на шаге, отклонена, отправлена на доработку, отозвана, оплачена."""
+
+    __tablename__ = "payment_request_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    request_id: Mapped[int] = mapped_column(ForeignKey("payment_requests.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    action: Mapped[str] = mapped_column(String(20))
+    step: Mapped[str] = mapped_column(String(20), default="", server_default="")
+    comment: Mapped[str] = mapped_column(String(1000), default="", server_default="")
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

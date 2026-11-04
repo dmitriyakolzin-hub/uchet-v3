@@ -3,7 +3,15 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.access import cfo_scope, get_organization_for, org_permissions, visible_organization_ids
+from app.api.access import (
+    cfo_scope,
+    executor_scope,
+    get_organization_any,
+    get_organization_for,
+    org_permissions,
+    role_in,
+    visible_organization_ids,
+)
 from app.api.deps import AdminUser, CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.models import LegalEntity, Operation, Organization, User
@@ -35,6 +43,13 @@ def _organization_out(db: Session, user: User, organization: Organization) -> Or
         out.restricted = out.cfo_scope is not None
     except HTTPException:
         out.restricted = True  # руководитель ЦФО без назначенного ЦФО: данных не видит
+    membership = role_in(db, user, organization.id)
+    out.role = membership.role if membership else None
+    try:
+        scope = executor_scope(db, user, organization.id)
+        out.executor_scope = sorted(scope) if scope is not None else None
+    except HTTPException:
+        out.executor_scope = []
     return out
 
 
@@ -92,7 +107,7 @@ def update_organization(
 
 @router.get("/organizations/{organization_id}/legal-entities", response_model=list[LegalEntityOut])
 def list_legal_entities(organization_id: int, user: CurrentUser, db: DbSession) -> list[LegalEntity]:
-    get_organization_for(db, user, organization_id, Perm.VIEW)
+    get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST)
     return list(
         db.scalars(
             select(LegalEntity)

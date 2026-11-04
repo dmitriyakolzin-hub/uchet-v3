@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import AdminUser, CurrentUser, DbSession
 from app.core.permissions import ROLE_PERMS, ROLE_TITLES, Role
 from app.core.security import hash_password
-from app.models import Cfo, Membership, Organization, User
+from app.models import Cfo, Executor, Membership, Organization, User
 from app.schemas.user import (
     MembershipIn,
     MembershipOut,
@@ -24,9 +24,11 @@ router = APIRouter(prefix="/api", tags=["Пользователи"])
 
 def memberships_of(db: Session, user_id: int) -> list[MembershipOut]:
     rows = db.execute(
-        select(Membership.organization_id, Organization.name, Membership.role, Membership.cfo_id, Cfo.name)
+        select(Membership.organization_id, Organization.name, Membership.role, Membership.cfo_id, Cfo.name,
+               Membership.executor_id, Executor.name)
         .join(Organization, Organization.id == Membership.organization_id)
         .outerjoin(Cfo, Cfo.id == Membership.cfo_id)
+        .outerjoin(Executor, Executor.id == Membership.executor_id)
         .where(Membership.user_id == user_id)
         .order_by(Organization.name)
     )
@@ -37,9 +39,11 @@ def memberships_of(db: Session, user_id: int) -> list[MembershipOut]:
             role=Role(role),
             cfo_id=cfo_id,
             cfo_name=cfo_name,
+            executor_id=executor_id,
+            executor_name=executor_name,
             permissions=sorted(ROLE_PERMS[Role(role)]),
         )
-        for org_id, name, role, cfo_id, cfo_name in rows
+        for org_id, name, role, cfo_id, cfo_name, executor_id, executor_name in rows
     ]
 
 
@@ -71,9 +75,15 @@ def _set_memberships(db: Session, user_id: int, items: list[MembershipIn]) -> No
             if cfo is None or cfo.organization_id != m.organization_id:
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
                                     detail="ЦФО руководителя не найден в этой организации")
+        if m.executor_id is not None:
+            executor = db.get(Executor, m.executor_id)
+            if executor is None or executor.organization_id != m.organization_id:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                    detail="ЦФУ руководителя не найден в этой организации")
     db.query(Membership).filter(Membership.user_id == user_id).delete()
     db.add_all(
-        Membership(user_id=user_id, organization_id=m.organization_id, role=m.role.value, cfo_id=m.cfo_id)
+        Membership(user_id=user_id, organization_id=m.organization_id, role=m.role.value, cfo_id=m.cfo_id,
+                   executor_id=m.executor_id)
         for m in items
     )
 

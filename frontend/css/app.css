@@ -315,3 +315,5 @@ table.plan-cells input { width: 130px; text-align: right; }
 .notes-table td { vertical-align: top; }
 .notes-table tr.muted td { color: var(--muted); }
 .page-head .notes-button { margin-left: auto; }
+.req-revision { background: #fffaeb; color: #b54708; }
+.my-step { color: #b54708; font-weight: 600; }

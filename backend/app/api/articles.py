@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.access import get_organization_for
+from app.api.access import get_organization_any, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.models import Account, Article, ReportFormRow, User
@@ -93,7 +93,7 @@ def _article(db: Session, user: User, article_id: int, perm: Perm) -> Article:
 
 @router.get("/organizations/{organization_id}/articles", response_model=list[ArticleTreeOut])
 def list_articles(organization_id: int, user: CurrentUser, db: DbSession):
-    get_organization_for(db, user, organization_id, Perm.VIEW)
+    get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST)
     rows = _out(db, organization_id)
     return sorted(rows, key=lambda a: (a.sort_order, a.name.lower()))
 

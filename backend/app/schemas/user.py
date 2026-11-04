@@ -18,13 +18,18 @@ class MembershipIn(BaseModel):
     organization_id: int
     role: Role
     cfo_id: int | None = None  # обязателен для руководителя ЦФО: корень его ветки
+    executor_id: int | None = None  # обязателен для руководителя ЦФУ: его ЦФУ
 
     @model_validator(mode="after")
     def _cfo_for_cfo_head(self):
         if self.role == Role.CFO_HEAD and self.cfo_id is None:
             raise ValueError("руководителю ЦФО укажите ЦФО")
+        if self.role == Role.EXECUTOR_HEAD and self.executor_id is None:
+            raise ValueError("руководителю ЦФУ укажите ЦФУ")
         if self.role != Role.CFO_HEAD:
             self.cfo_id = None
+        if self.role != Role.EXECUTOR_HEAD:
+            self.executor_id = None
         return self
 
 
@@ -34,6 +39,8 @@ class MembershipOut(BaseModel):
     role: Role
     cfo_id: int | None = None
     cfo_name: str | None = None
+    executor_id: int | None = None
+    executor_name: str | None = None
     permissions: list[Perm]
 
 

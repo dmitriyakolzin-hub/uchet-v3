@@ -57,18 +57,25 @@ function showLogin() {
   form.login.focus();
 }
 
+// руководитель ЦФУ (во всех своих организациях) работает только с заявками (docs/TZ.md, раздел 24)
+const REQUESTS_ONLY = new Set(["calendar", "password"]);
+const requestsOnly = () => !me.is_admin && me.memberships?.length > 0
+  && me.memberships.every((m) => m.role === "executor_head");
+const allowed = (key, page) => (!page.adminOnly || me.is_admin) && (!requestsOnly() || REQUESTS_ONLY.has(key));
+
 function buildNav() {
   nav.replaceChildren(
     ...Object.entries(PAGES)
-      .filter(([, page]) => !page.adminOnly || me.is_admin)
+      .filter(([key, page]) => allowed(key, page))
       .map(([key, page]) => el("a", { href: `#/${key}`, "data-page": key }, page.title)),
   );
 }
 
 async function route() {
   if (!me) return;
-  let key = location.hash.replace(/^#\//, "") || DEFAULT_PAGE;
-  if (!PAGES[key] || (PAGES[key].adminOnly && !me.is_admin)) key = DEFAULT_PAGE;
+  const home = requestsOnly() ? "calendar" : DEFAULT_PAGE;
+  let key = location.hash.replace(/^#\//, "") || home;
+  if (!PAGES[key] || !allowed(key, PAGES[key])) key = home;
   for (const link of nav.querySelectorAll("a")) {
     link.classList.toggle("active", link.dataset.page === key);
   }

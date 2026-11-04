@@ -106,7 +106,7 @@ def _branch(db: Session, user: User, organization_id: int) -> set[int] | None:
 
 
 def _supervisor(db: Session, user: User, organization_id: int) -> bool:
-    return Perm.POST in org_permissions(db, user, organization_id)
+    return Perm.SUPERVISE in org_permissions(db, user, organization_id)
 
 
 @router.get("/organizations/{organization_id}/notes", response_model=list[NoteOut])

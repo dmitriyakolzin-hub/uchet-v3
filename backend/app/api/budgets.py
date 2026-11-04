@@ -147,7 +147,7 @@ def list_budgets(organization_id: int, user: CurrentUser, db: DbSession, year: i
 @router.post("/organizations/{organization_id}/budgets", response_model=BudgetOut, status_code=201)
 def create_budget(organization_id: int, body: BudgetCreate, user: CurrentUser, db: DbSession):
     """Новый бюджет на период; сразу создаётся первая версия-черновик."""
-    get_organization_for(db, user, organization_id, Perm.POST)
+    get_organization_for(db, user, organization_id, Perm.SUPERVISE)
     budget = Budget(organization_id=organization_id, **body.model_dump())
     db.add(budget)
     try:
@@ -162,7 +162,7 @@ def create_budget(organization_id: int, body: BudgetCreate, user: CurrentUser, d
 
 @router.delete("/budgets/{budget_id}", status_code=204)
 def delete_budget(budget_id: int, user: CurrentUser, db: DbSession) -> None:
-    budget = _get_budget(db, user, budget_id, Perm.POST)
+    budget = _get_budget(db, user, budget_id, Perm.SUPERVISE)
     if db.scalar(select(BudgetVersion.id).where(BudgetVersion.budget_id == budget.id,
                                                 BudgetVersion.status != "draft").limit(1)):
         raise HTTPException(status.HTTP_409_CONFLICT,
@@ -174,7 +174,7 @@ def delete_budget(budget_id: int, user: CurrentUser, db: DbSession) -> None:
 @router.post("/budgets/{budget_id}/versions", response_model=VersionOut, status_code=201)
 def create_version(budget_id: int, body: VersionCreate, user: CurrentUser, db: DbSession):
     """Новая версия-черновик: пустая или копия другой версии этого бюджета (ежемесячный пересмотр)."""
-    budget = _get_budget(db, user, budget_id, Perm.POST)
+    budget = _get_budget(db, user, budget_id, Perm.SUPERVISE)
     source = None
     if body.copy_from_id is not None:
         source = db.get(BudgetVersion, body.copy_from_id)
@@ -189,7 +189,7 @@ def create_version(budget_id: int, body: VersionCreate, user: CurrentUser, db: D
 
 @router.patch("/budget-versions/{version_id}", response_model=VersionOut)
 def rename_version(version_id: int, body: VersionUpdate, user: CurrentUser, db: DbSession):
-    version = _get_version(db, user, version_id, Perm.POST)
+    version = _get_version(db, user, version_id, Perm.SUPERVISE)
     version.name = body.name
     db.commit()
     return _version_out(version)
@@ -198,7 +198,7 @@ def rename_version(version_id: int, body: VersionUpdate, user: CurrentUser, db: 
 @router.post("/budget-versions/{version_id}/approve", response_model=VersionOut)
 def approve_version(version_id: int, user: CurrentUser, db: DbSession):
     """Утвердить черновик; прежняя утверждённая версия уходит в архив."""
-    version = _get_version(db, user, version_id, Perm.POST)
+    version = _get_version(db, user, version_id, Perm.SUPERVISE)
     if version.status != "draft":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Утвердить можно только черновик")
     for previous in db.scalars(select(BudgetVersion).where(BudgetVersion.budget_id == version.budget_id,
@@ -214,7 +214,7 @@ def approve_version(version_id: int, user: CurrentUser, db: DbSession):
 
 @router.post("/budget-versions/{version_id}/archive", response_model=VersionOut)
 def archive_version(version_id: int, user: CurrentUser, db: DbSession):
-    version = _get_version(db, user, version_id, Perm.POST)
+    version = _get_version(db, user, version_id, Perm.SUPERVISE)
     if version.status == "archived":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Версия уже в архиве")
     version.status = "archived"
@@ -224,7 +224,7 @@ def archive_version(version_id: int, user: CurrentUser, db: DbSession):
 
 @router.delete("/budget-versions/{version_id}", status_code=204)
 def delete_version(version_id: int, user: CurrentUser, db: DbSession) -> None:
-    version = _get_version(db, user, version_id, Perm.POST)
+    version = _get_version(db, user, version_id, Perm.SUPERVISE)
     if version.status != "draft":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
                             detail="Удалить можно только черновик; утверждённую версию — отправьте в архив")
@@ -276,7 +276,7 @@ def _guard(db: Session, user: User, version: BudgetVersion) -> plan_access.Guard
     """Права на правку плана версии (docs/TZ.md, раздел 22, «Детали 12.5»): после утверждения ЦФО или версии —
     только право проводить (администратор, финансовый директор), с историей."""
     perms = org_permissions(db, user, db.get(Budget, version.budget_id).organization_id)
-    return plan_access.Guard(db, version, supervisor=Perm.POST in perms, can_draft=Perm.DRAFT in perms)
+    return plan_access.Guard(db, version, supervisor=Perm.SUPERVISE in perms, can_draft=Perm.DRAFT in perms)
 
 
 @router.get("/budget-versions/{version_id}/grid", response_model=GridOut)
@@ -512,7 +512,7 @@ def unsubmit_cfo_plan(version_id: int, cfo_id: int, user: CurrentUser, db: DbSes
 
 
 def _cfo_for_approval(db: Session, user: User, version_id: int, cfo_id: int) -> tuple[BudgetVersion, Cfo]:
-    version = _get_version(db, user, version_id, Perm.POST)
+    version = _get_version(db, user, version_id, Perm.SUPERVISE)
     cfo = db.get(Cfo, cfo_id)
     if cfo is None or cfo.organization_id != db.get(Budget, version.budget_id).organization_id:
         raise _not_found("ЦФО")
