@@ -90,12 +90,21 @@ export async function renderJournal(view) {
   f.date_from.value = monthStart;
   f.date_to.value = monthEnd;
 
+  // в списках фильтров — только значения, которые есть у операций, отобранных остальными фильтрами
+  // (facets с сервера; пока их нет — все значения справочника)
+  let facets = null;
   function fillFilterLists() {
-    ms.status.setOptions(STATUSES.filter(([v]) => v));
-    ms.legal_entity_id.setOptions(ref.entities.map((e) => [e.id, e.short_name]));
-    ms.account_id.setOptions(ref.accounts.map((a) => [a.id, `${a.code} ${a.name}`]));
-    ms.counterparty_id.setOptions(ref.counterparties.map((c) => [c.id, c.inn ? `${c.name} (${c.inn})` : c.name]));
-    ms.article_id.setOptions(ref.leafArticles.map((a) => [a.id, ref.articleLabel.get(a.id)]));
+    const only = (key, items) => {
+      if (!facets) return items;
+      const allowed = new Set(facets[key].map(String));
+      return items.filter(([v]) => allowed.has(String(v)));
+    };
+    ms.status.setOptions(only("status", STATUSES.filter(([v]) => v)));
+    ms.legal_entity_id.setOptions(only("legal_entity_id", ref.entities.map((e) => [e.id, e.short_name])));
+    ms.account_id.setOptions(only("account_id", ref.accounts.map((a) => [a.id, `${a.code} ${a.name}`])));
+    ms.counterparty_id.setOptions(only("counterparty_id",
+      ref.counterparties.map((c) => [c.id, c.inn ? `${c.name} (${c.inn})` : c.name])));
+    ms.article_id.setOptions(only("article_id", ref.articles.map((a) => [a.id, ref.articleLabel.get(a.id) ?? a.name])));
   }
   fillFilterLists();
 
@@ -210,7 +219,14 @@ export async function renderJournal(view) {
     const params = new URLSearchParams({ limit: LIMIT, opening: "false" });
     for (const [key, node] of Object.entries(f)) if (node.value) params.set(key, node.value);
     for (const [key, m] of Object.entries(ms)) for (const v of m.values()) params.append(key, v);
-    const data = await api.get(`/api/organizations/${org.id}/operations?${params}`);
+    const facetParams = new URLSearchParams(params);
+    facetParams.delete("limit");
+    const [data, found] = await Promise.all([
+      api.get(`/api/organizations/${org.id}/operations?${params}`),
+      api.get(`/api/organizations/${org.id}/operations/facets?${facetParams}`),
+    ]);
+    facets = found;
+    fillFilterLists();
     await table.setData(data.items);
     const total = sumMoney(data.items.filter((o) => o.status === "posted").map((o) => o.total_rub));
     summary.textContent = data.total > data.items.length
@@ -232,6 +248,7 @@ export async function renderJournal(view) {
     org = orgs.find((o) => String(o.id) === orgSelect.value);
     remember(ORG_KEY, org.id);
     ref = await loadReferences(org.id);
+    facets = null;
     notes.refresh();
     codes = accountCode();
     entities = entityName();

@@ -83,9 +83,10 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
   const historyBox = el("div", { class: "history" });
 
   // --- Проводка ---
-  function optionsFor(kind, side, posting) {
+  function optionsFor(kind, side, posting, values = {}) {
     const entityId = Number(entitySelect.value) || null;
-    const counterpartyId = Number(posting.querySelector(`[data-side="${side}"][data-kind="counterparty"]`)?.value) || null;
+    // контрагент этой стороны — из значений, которые сейчас рисуем (старые поля ещё в форме)
+    const counterpartyId = values.counterparty ?? null;
     const active = (items, current) => items.filter((i) => i.is_active || i.id === current);
     switch (kind) {
       case "bank_account":
@@ -93,8 +94,9 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
       case "counterparty":
         return ref.counterparties.map((c) => [String(c.id), c.inn ? `${c.name} (${c.inn})` : c.name]);
       case "contract":
+        // только договоры выбранного контрагента (нет контрагента — выбрать можно только «без договора»)
         return ref.contracts
-          .filter((c) => (!counterpartyId || c.counterparty_id === counterpartyId) && (!entityId || c.legal_entity_id === entityId))
+          .filter((c) => c.counterparty_id === counterpartyId && (!entityId || c.legal_entity_id === entityId))
           .map((c) => [String(c.id), `№ ${c.number}${c.contract_date ? " от " + c.contract_date.split("-").reverse().join(".") : ""} — ${ref.counterpartyName.get(c.counterparty_id) ?? ""}`]);
       case "employee":
         return ref.employees.map((e) => [String(e.id), e.full_name]);
@@ -129,7 +131,7 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
       ...kinds.map((kind) => {
         const empty = kind === "executor" ? "— без ЦФУ —" : kind === "contract" ? "— без договора —"
           : `— ${KIND_TITLES[kind].toLowerCase()} —`;
-        const control = select([["", empty], ...optionsFor(kind, side, posting)], values[kind] ?? "", {
+        const control = select([["", empty], ...optionsFor(kind, side, posting, values)], values[kind] ?? "", {
           "data-side": side, "data-kind": kind, "aria-label": `${KIND_TITLES[kind]} (${side === "debit" ? "дебет" : "кредит"})`,
         });
         // договоры зависят от контрагента — перерисовываем при его смене
