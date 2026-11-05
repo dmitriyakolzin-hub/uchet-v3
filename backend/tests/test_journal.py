@@ -376,6 +376,32 @@ def test_list_filters(client, env):
     assert ids(article_id=[env["art"]["Аренда"]]) == []
 
 
+def test_list_facets(client, env):
+    """Значения фильтров — только те, что есть у отобранных операций; свой фильтр не сужает себя (раздел 25)."""
+    create(client, env, payment(env), post=True)
+    draft = payment(env, op_date="2026-10-06", posting={
+        "debit": {"counterparty": env["cp2"]["id"]}, "credit": {"bank_account": env["bank_acc"]["id"],
+                                                                 "cash_flow_item": env["art"]["Оплата поставщикам"]}})
+    create(client, env, draft)
+    url = f"{env['o']}/operations/facets"
+
+    def facets(**params):
+        resp = client.get(url, headers=env["h"], params=params)
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    every = facets()
+    assert every["status"] == ["draft", "posted"]
+    assert set(every["counterparty_id"]) == {env["cp"]["id"], env["cp2"]["id"]}
+    assert {env["acc"]["60"], env["acc"]["60.01"], env["acc"]["51"]} <= set(every["account_id"])  # и родитель 60
+    drafts = facets(status="draft")
+    assert drafts["counterparty_id"] == [env["cp2"]["id"]]
+    assert drafts["status"] == ["draft", "posted"]  # свой фильтр — все значения
+    assert facets(counterparty_id=env["cp"]["id"])["status"] == ["posted"]
+    assert env["art"]["Оплата поставщикам"] in drafts["article_id"]
+    assert client.get(url, headers=env["headers_for"](env["other_fd"])).status_code == 404
+
+
 def test_ledger_lines_posted_only_and_subaccounts(client, env, db):
     posted = create(client, env, payment(env, amount="300"), post=True).json()
     create(client, env, payment(env, amount="700"))  # черновик — не в отчётах

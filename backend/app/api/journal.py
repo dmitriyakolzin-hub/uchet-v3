@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, object_session
 from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import Operation, OperationEvent, PayoutSheet, User
+from app.models import Account, Operation, OperationEvent, PayoutSheet, Posting, User
 from app.models.journal import ANALYTIC_COLUMNS, analytic_column
 from app.schemas.journal import (
     BulkEditIn,
@@ -141,50 +141,39 @@ def _post_if_requested(db: Session, op: Operation, user: User, post_now: bool) -
 # --- Список и карточка ---
 
 
-@router.get("/organizations/{organization_id}/operations", response_model=OperationList)
-def list_operations(
-    organization_id: int,
-    user: CurrentUser,
-    db: DbSession,
-    date_from: dt.date | None = None,
-    date_to: dt.date | None = None,
-    status_: Annotated[list[str] | None, Query(alias="status")] = None,
-    legal_entity_id: Annotated[list[int] | None, Query(max_length=200)] = None,  # несколько значений — «или»
-    account_id: Annotated[list[int] | None, Query(max_length=200)] = None,
-    counterparty_id: Annotated[list[int] | None, Query(max_length=500)] = None,
-    article_id: Annotated[list[int] | None, Query(max_length=500)] = None,
-    q: Annotated[str | None, Query(max_length=200)] = None,
-    opening: bool | None = None,  # true — только ввод остатков, false — без него, не указано — все
-    limit: Annotated[int, Query(ge=1, le=1000)] = 200,
-    offset: Annotated[int, Query(ge=0)] = 0,
-) -> OperationList:
-    get_organization_for(db, user, organization_id, Perm.VIEW)
+FACETS = ("status", "legal_entity_id", "account_id", "counterparty_id", "article_id")
+
+
+def _filtered(db: Session, user: User, organization_id: int, f: dict, skip: str | None = None):
+    """Отбор операций журнала по фильтрам; skip — фильтр, который не применять (для списка его значений)."""
     query = select(Operation).where(Operation.organization_id == organization_id, Operation.budget_version_id.is_(None))
     scope = cfo_scope(db, user, organization_id)
     if scope is not None:
         in_branch = select_lines(organization_id, statuses=("draft", "posted", "cancelled"), cfo_branch=scope).subquery()
         query = query.where(Operation.id.in_(select(in_branch.c.operation_id)))
-    if date_from:
-        query = query.where(Operation.op_date >= date_from)
-    if date_to:
-        query = query.where(Operation.op_date <= date_to)
-    if status_:
-        query = query.where(Operation.status.in_(status_))
-    if legal_entity_id:
-        query = query.where(Operation.legal_entity_id.in_(legal_entity_id))
-    if q:
-        query = query.where(Operation.description.ilike(f"%{q}%"))
-    if opening is not None:
-        query = query.where(Operation.is_opening == opening)
+    if f["date_from"]:
+        query = query.where(Operation.op_date >= f["date_from"])
+    if f["date_to"]:
+        query = query.where(Operation.op_date <= f["date_to"])
+    if f["status"] and skip != "status":
+        query = query.where(Operation.status.in_(f["status"]))
+    if f["legal_entity_id"] and skip != "legal_entity_id":
+        query = query.where(Operation.legal_entity_id.in_(f["legal_entity_id"]))
+    if f["q"]:
+        query = query.where(Operation.description.ilike(f"%{f['q']}%"))
+    if f["opening"] is not None:
+        query = query.where(Operation.is_opening == f["opening"])
+    article_id = f["article_id"] if skip != "article_id" else None
     if article_id:
         # статья в шапке или в аналитике проводок
-        by_lines = select_lines(organization_id, statuses=("draft", "posted", "cancelled"))
-        lines = by_lines.subquery()
+        lines = select_lines(organization_id, statuses=("draft", "posted", "cancelled")).subquery()
         query = query.where(or_(
             Operation.article_id.in_(article_id),
             Operation.id.in_(select(lines.c.operation_id).where(
                 or_(lines.c.cash_flow_item.in_(article_id), lines.c.pl_item.in_(article_id)))),
         ))
+    account_id = f["account_id"] if skip != "account_id" else None
+    counterparty_id = f["counterparty_id"] if skip != "counterparty_id" else None
     if account_id or counterparty_id:
         # тот же отбор проводок, что и в отчётах (правило 6)
         lines = select_lines(
@@ -192,10 +181,97 @@ def list_operations(
             analytics_in={"counterparty": counterparty_id} if counterparty_id else None,
         ).subquery()
         query = query.where(Operation.id.in_(select(lines.c.operation_id)))
+    return query
 
+
+def _filters(date_from, date_to, status_, legal_entity_id, account_id, counterparty_id, article_id, q, opening) -> dict:
+    return {"date_from": date_from, "date_to": date_to, "status": status_, "legal_entity_id": legal_entity_id,
+            "account_id": account_id, "counterparty_id": counterparty_id, "article_id": article_id, "q": q,
+            "opening": opening}
+
+
+StatusQ = Annotated[list[str] | None, Query(alias="status")]
+EntityQ = Annotated[list[int] | None, Query(max_length=200)]  # несколько значений — «или»
+AccountQ = Annotated[list[int] | None, Query(max_length=200)]
+CounterpartyQ = Annotated[list[int] | None, Query(max_length=500)]
+ArticleQ = Annotated[list[int] | None, Query(max_length=500)]
+SearchQ = Annotated[str | None, Query(max_length=200)]
+
+
+@router.get("/organizations/{organization_id}/operations", response_model=OperationList)
+def list_operations(
+    organization_id: int,
+    user: CurrentUser,
+    db: DbSession,
+    date_from: dt.date | None = None,
+    date_to: dt.date | None = None,
+    status_: StatusQ = None,
+    legal_entity_id: EntityQ = None,
+    account_id: AccountQ = None,
+    counterparty_id: CounterpartyQ = None,
+    article_id: ArticleQ = None,
+    q: SearchQ = None,
+    opening: bool | None = None,  # true — только ввод остатков, false — без него, не указано — все
+    limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> OperationList:
+    get_organization_for(db, user, organization_id, Perm.VIEW)
+    query = _filtered(db, user, organization_id, _filters(date_from, date_to, status_, legal_entity_id, account_id,
+                                                          counterparty_id, article_id, q, opening))
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     ops = db.scalars(query.order_by(Operation.op_date.desc(), Operation.number.desc()).limit(limit).offset(offset))
     return OperationList(items=[operation_out(op) for op in ops], total=total)
+
+
+@router.get("/organizations/{organization_id}/operations/facets", response_model=dict[str, list])
+def operation_facets(
+    organization_id: int,
+    user: CurrentUser,
+    db: DbSession,
+    date_from: dt.date | None = None,
+    date_to: dt.date | None = None,
+    status_: StatusQ = None,
+    legal_entity_id: EntityQ = None,
+    account_id: AccountQ = None,
+    counterparty_id: CounterpartyQ = None,
+    article_id: ArticleQ = None,
+    q: SearchQ = None,
+    opening: bool | None = None,
+) -> dict[str, list]:
+    """Значения для фильтров журнала (docs/TZ.md, раздел 25): что есть у операций, отобранных остальными фильтрами
+    (свой фильтр не применяется — в нём можно отметить ещё значения). Счета — вместе с их родителями."""
+    get_organization_for(db, user, organization_id, Perm.VIEW)
+    f = _filters(date_from, date_to, status_, legal_entity_id, account_id, counterparty_id, article_id, q, opening)
+    result: dict[str, list] = {}
+    for facet in FACETS:
+        ids = _filtered(db, user, organization_id, f, skip=facet).with_only_columns(Operation.id).subquery()
+        if facet == "status":
+            values = db.scalars(select(Operation.status).where(Operation.id.in_(select(ids.c.id))).distinct())
+        elif facet == "legal_entity_id":
+            values = db.scalars(select(Operation.legal_entity_id).where(Operation.id.in_(select(ids.c.id))).distinct())
+        elif facet == "account_id":
+            found = set()
+            for col in (Posting.debit_account_id, Posting.credit_account_id):
+                found |= set(db.scalars(select(col).where(Posting.operation_id.in_(select(ids.c.id))).distinct()))
+            parents = dict(db.execute(select(Account.id, Account.parent_id)).all())
+            for account in list(found):
+                while parents.get(account) is not None:
+                    account = parents[account]
+                    found.add(account)
+            values = found
+        elif facet == "counterparty_id":
+            values = set()
+            for side in ("debit", "credit"):
+                col = getattr(Posting, analytic_column(side, "counterparty"))
+                values |= set(db.scalars(select(col).where(Posting.operation_id.in_(select(ids.c.id))).distinct()))
+        else:
+            values = set(db.scalars(select(Operation.article_id).where(Operation.id.in_(select(ids.c.id))).distinct()))
+            for side in ("debit", "credit"):
+                for kind in ("cash_flow_item", "pl_item"):
+                    col = getattr(Posting, analytic_column(side, kind))
+                    values |= set(db.scalars(select(col).where(Posting.operation_id.in_(select(ids.c.id))).distinct()))
+        result[facet] = sorted(v for v in values if v is not None)
+    return result
 
 
 @router.get("/operations/{operation_id}", response_model=OperationOut)
