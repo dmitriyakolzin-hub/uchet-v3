@@ -706,3 +706,11 @@
   API в `app/api/calendar.py`: `/payment-calendar/sheet`, `.xlsx`, `PUT /calendar-balances`; `POST /payment-requests/{id}/amount`
   (история «было → стало»). Интерфейс: вкладка «Календарь» (`loadSheet`, перетаскивание ячейки — перенос заявки), прежняя
   сетка — «Итоги по дням». Тестов 386, ui_smoke дополнен. Этап 14 готов.
+- 2026-11-04 — 14.6 влита (PR 65), этап 14 готов. Запрос владельца по журналу — `docs/TZ.md`, раздел 25 (шаг 15.1, ветка
+  `etap-15-1-journal-quick-add`). Миграций нет. `core/analytics.EMPTY_ALLOWED` = {contract}: обязательный договор можно оставить
+  пустым («без договора», `journal.posting_errors`). Список операций: `legal_entity_id`, `account_id`, `counterparty_id`,
+  `article_id` — списки (повтор параметра, «или»; `select_lines(account_ids, analytics_in)`). Интерфейс: `js/multiselect.js`
+  (кнопка + панель с флажками и поиском), фильтры журнала на нём; в `opform.js` — «— без договора —», «+ новый» у контрагента
+  и договора (`addCounterparty`, `addContract`, `refreshAnalytics`), после формы фильтры журнала обновляются. Владелец: «а» —
+  добавлять контрагентов и договоры может и финансовый менеджер (`OrgResource.create_perms` = EDIT_REFERENCE или POST;
+  правка — только EDIT_REFERENCE). Тестов 388, ui_smoke дополнен.

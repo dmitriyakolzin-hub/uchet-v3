@@ -153,3 +153,23 @@ def test_request_files_and_filters(client, env):
     assert [r["description"] for r in rows] == ["Из кассы"]
     mine = client.get(f"{env['o']}/payment-requests", headers=env["h"]["fd"], params={"mine": True}).json()["rows"]
     assert [r["description"] for r in mine] == ["Из кассы"]
+
+
+def test_finance_manager_adds_counterparty_and_contract(client, env, db):
+    """Финансовый менеджер добавляет контрагента и договор прямо из операции, но не правит справочник
+    (docs/TZ.md, раздел 25)."""
+    from app.models import Currency
+
+    rub = db.query(Currency).filter_by(code="RUB").one()
+    cp = client.post(f"{env['o']}/counterparties", headers=env["h"]["fm"],
+                     json={"name": "Новый поставщик", "kind": "legal", "inn": "7705555555"})
+    assert cp.status_code == 201, cp.text
+    contract = client.post(f"{env['o']}/contracts", headers=env["h"]["fm"], json={
+        "counterparty_id": cp.json()["id"], "legal_entity_id": env["le"].id, "currency_id": rub.id,
+        "kind": "supplier", "number": "НП-1"})
+    assert contract.status_code == 201, contract.text
+    assert client.patch(f"/api/counterparties/{cp.json()['id']}", headers=env["h"]["fm"],
+                        json={"name": "Другое"}).status_code == 403
+    assert client.post(f"{env['o']}/cfos", headers=env["h"]["fm"], json={"name": "Склад"}).status_code == 403
+    assert client.post(f"{env['o']}/counterparties", headers=env["h"]["ceo"],
+                       json={"name": "Х", "kind": "legal", "inn": "7705555556"}).status_code == 403

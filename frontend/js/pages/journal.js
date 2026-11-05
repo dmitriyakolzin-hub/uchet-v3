@@ -5,6 +5,7 @@ import { openBulkEdit } from "../bulkedit.js";
 import { date, isoDate, money, monthBounds, sumMoney } from "../format.js";
 import { notesButton, setPendingNote } from "../notes.js";
 import { openOperation } from "../opform.js";
+import { multiSelect } from "../multiselect.js";
 import { el, makeTable, toast } from "../ui.js";
 
 const ORG_KEY = "uchet3_org";
@@ -76,22 +77,25 @@ export async function renderJournal(view) {
   const f = {
     date_from: el("input", { type: "date", "aria-label": "С даты" }),
     date_to: el("input", { type: "date", "aria-label": "По дату" }),
-    status: el("select", { "aria-label": "Статус" }, ...STATUSES.map(([v, t]) => el("option", { value: v }, t))),
-    legal_entity_id: el("select", { "aria-label": "Юрлицо" }),
-    account_id: el("select", { "aria-label": "Счёт" }),
-    counterparty_id: el("select", { "aria-label": "Контрагент" }),
-    article_id: el("select", { "aria-label": "Статья" }),
     q: el("input", { type: "search", placeholder: "Поиск в описании", "aria-label": "Поиск" }),
+  };
+  // фильтры с выбором нескольких значений (docs/TZ.md, раздел 25)
+  const ms = {
+    status: multiSelect({ label: "Статусы", allLabel: "Все статусы", onChange: () => load() }),
+    legal_entity_id: multiSelect({ label: "Юрлица", allLabel: "Все юрлица", onChange: () => load() }),
+    account_id: multiSelect({ label: "Счета", allLabel: "Все счета", onChange: () => load() }),
+    counterparty_id: multiSelect({ label: "Контрагенты", allLabel: "Все контрагенты", onChange: () => load() }),
+    article_id: multiSelect({ label: "Статьи", allLabel: "Все статьи", onChange: () => load() }),
   };
   f.date_from.value = monthStart;
   f.date_to.value = monthEnd;
 
   function fillFilterLists() {
-    const fill = (node, empty, items) => node.replaceChildren(el("option", { value: "" }, empty), ...items.map(([v, t]) => el("option", { value: v }, t)));
-    fill(f.legal_entity_id, "Все юрлица", ref.entities.map((e) => [e.id, e.short_name]));
-    fill(f.account_id, "Все счета", ref.accounts.map((a) => [a.id, `${a.code} ${a.name}`]));
-    fill(f.counterparty_id, "Все контрагенты", ref.counterparties.map((c) => [c.id, c.name]));
-    fill(f.article_id, "Все статьи", ref.leafArticles.map((a) => [a.id, ref.articleLabel.get(a.id)]));
+    ms.status.setOptions(STATUSES.filter(([v]) => v));
+    ms.legal_entity_id.setOptions(ref.entities.map((e) => [e.id, e.short_name]));
+    ms.account_id.setOptions(ref.accounts.map((a) => [a.id, `${a.code} ${a.name}`]));
+    ms.counterparty_id.setOptions(ref.counterparties.map((c) => [c.id, c.inn ? `${c.name} (${c.inn})` : c.name]));
+    ms.article_id.setOptions(ref.leafArticles.map((a) => [a.id, ref.articleLabel.get(a.id)]));
   }
   fillFilterLists();
 
@@ -116,7 +120,7 @@ export async function renderJournal(view) {
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Журнал операций"), el("label", { class: "inline" }, "Организация ", orgSelect),
       notes.button),
-    el("div", { class: "filters" }, ...Object.values(f)),
+    el("div", { class: "filters" }, f.date_from, f.date_to, ...Object.values(ms).map((m) => m.node), f.q),
     el("div", { class: "page-head" }, summary, newButton),
     bulkBar,
     tableBox,
@@ -205,6 +209,7 @@ export async function renderJournal(view) {
   async function load() {
     const params = new URLSearchParams({ limit: LIMIT, opening: "false" });
     for (const [key, node] of Object.entries(f)) if (node.value) params.set(key, node.value);
+    for (const [key, m] of Object.entries(ms)) for (const v of m.values()) params.append(key, v);
     const data = await api.get(`/api/organizations/${org.id}/operations?${params}`);
     await table.setData(data.items);
     const total = sumMoney(data.items.filter((o) => o.status === "posted").map((o) => o.total_rub));
@@ -216,7 +221,8 @@ export async function renderJournal(view) {
   }
 
   function openForm(op) {
-    openOperation({ ref, org, op, perms: org.permissions, onChanged: async () => { await load(); notes.refresh(); } });
+    // после формы: в фильтрах — и контрагенты, добавленные прямо из операции
+    openOperation({ ref, org, op, perms: org.permissions, onChanged: async () => { fillFilterLists(); await load(); notes.refresh(); } });
   }
 
   newButton.hidden = !org.permissions.includes("draft");

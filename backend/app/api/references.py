@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import AdminUser, CurrentUser, DbSession
 from app.api.org_resources import OrgResource, Ref, register
+from app.core.permissions import Perm
 from app.models import (
     Article,
     Bank,
@@ -231,6 +232,7 @@ for resource in (
         out_schema=s.CounterpartyOut, conflict_message="Контрагент с таким ИНН уже есть",
         order_by=lambda m: [m.name], nullable_fields={"inn", "kpp", "account_number", "bank_id"},
         refs={"bank_id": Ref(Bank, "Банк", org_scoped=False)}, check=_check_counterparty,
+        create_perms=(Perm.EDIT_REFERENCE, Perm.POST),
     ),
     OrgResource(
         path="contracts", model=Contract, title="Договор",
@@ -240,6 +242,7 @@ for resource in (
         refs={"counterparty_id": Ref(Counterparty, "Контрагент"), "legal_entity_id": LEGAL_ENTITY,
               "currency_id": CURRENCY, "project_id": PROJECT},
         nullable_fields={"contract_date", "project_id", "deferral_days", "debt_limit"},
+        create_perms=(Perm.EDIT_REFERENCE, Perm.POST),
     ),
     OrgResource(
         path="cfos", model=Cfo, title="ЦФО",

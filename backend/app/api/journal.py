@@ -149,10 +149,10 @@ def list_operations(
     date_from: dt.date | None = None,
     date_to: dt.date | None = None,
     status_: Annotated[list[str] | None, Query(alias="status")] = None,
-    legal_entity_id: int | None = None,
-    account_id: int | None = None,
-    counterparty_id: int | None = None,
-    article_id: int | None = None,
+    legal_entity_id: Annotated[list[int] | None, Query(max_length=200)] = None,  # несколько значений — «или»
+    account_id: Annotated[list[int] | None, Query(max_length=200)] = None,
+    counterparty_id: Annotated[list[int] | None, Query(max_length=500)] = None,
+    article_id: Annotated[list[int] | None, Query(max_length=500)] = None,
     q: Annotated[str | None, Query(max_length=200)] = None,
     opening: bool | None = None,  # true — только ввод остатков, false — без него, не указано — все
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
@@ -171,7 +171,7 @@ def list_operations(
     if status_:
         query = query.where(Operation.status.in_(status_))
     if legal_entity_id:
-        query = query.where(Operation.legal_entity_id == legal_entity_id)
+        query = query.where(Operation.legal_entity_id.in_(legal_entity_id))
     if q:
         query = query.where(Operation.description.ilike(f"%{q}%"))
     if opening is not None:
@@ -181,15 +181,15 @@ def list_operations(
         by_lines = select_lines(organization_id, statuses=("draft", "posted", "cancelled"))
         lines = by_lines.subquery()
         query = query.where(or_(
-            Operation.article_id == article_id,
+            Operation.article_id.in_(article_id),
             Operation.id.in_(select(lines.c.operation_id).where(
-                or_(lines.c.cash_flow_item == article_id, lines.c.pl_item == article_id))),
+                or_(lines.c.cash_flow_item.in_(article_id), lines.c.pl_item.in_(article_id)))),
         ))
     if account_id or counterparty_id:
         # тот же отбор проводок, что и в отчётах (правило 6)
         lines = select_lines(
-            organization_id, statuses=("draft", "posted", "cancelled"), account_id=account_id,
-            analytics={"counterparty": counterparty_id} if counterparty_id else None,
+            organization_id, statuses=("draft", "posted", "cancelled"), account_ids=account_id or None,
+            analytics_in={"counterparty": counterparty_id} if counterparty_id else None,
         ).subquery()
         query = query.where(Operation.id.in_(select(lines.c.operation_id)))
 
