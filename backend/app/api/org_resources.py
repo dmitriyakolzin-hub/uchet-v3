@@ -46,6 +46,9 @@ class OrgResource:
     # дополнительная проверка и подготовка записи после применения изменений:
     # check(db, obj, creating); ValueError → 422 с текстом ошибки
     check: Callable[[Session, object, bool], None] | None = None
+    # кто может добавлять записи (править — только EDIT_REFERENCE); контрагента и договор финансовый менеджер
+    # добавляет прямо из операции (docs/TZ.md, раздел 25)
+    create_perms: tuple[Perm, ...] = (Perm.EDIT_REFERENCE,)
 
 
 def _check_refs(db: Session, organization_id: int, data: dict, refs: dict[str, Ref]) -> None:
@@ -109,7 +112,7 @@ def register(router: APIRouter, resource: OrgResource) -> None:
         return list(db.scalars(query))
 
     def create_item(organization_id: int, body: Create, user: CurrentUser, db: DbSession):  # type: ignore[valid-type]
-        get_organization_for(db, user, organization_id, Perm.EDIT_REFERENCE)
+        get_organization_any(db, user, organization_id, *resource.create_perms)
         data = body.model_dump()
         _check_refs(db, organization_id, data, resource.refs)
         obj = Model(organization_id=organization_id, **data)

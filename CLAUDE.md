@@ -711,5 +711,6 @@
   пустым («без договора», `journal.posting_errors`). Список операций: `legal_entity_id`, `account_id`, `counterparty_id`,
   `article_id` — списки (повтор параметра, «или»; `select_lines(account_ids, analytics_in)`). Интерфейс: `js/multiselect.js`
   (кнопка + панель с флажками и поиском), фильтры журнала на нём; в `opform.js` — «— без договора —», «+ новый» у контрагента
-  и договора (`addCounterparty`, `addContract`, `refreshAnalytics`; право edit_reference), после формы фильтры журнала
-  обновляются. Тестов 387, ui_smoke дополнен.
+  и договора (`addCounterparty`, `addContract`, `refreshAnalytics`), после формы фильтры журнала обновляются. Владелец: «а» —
+  добавлять контрагентов и договоры может и финансовый менеджер (`OrgResource.create_perms` = EDIT_REFERENCE или POST;
+  правка — только EDIT_REFERENCE). Тестов 388, ui_smoke дополнен.

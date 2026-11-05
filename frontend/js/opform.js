@@ -48,7 +48,8 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
   // операция закрытого периода не меняется (сервер всё равно не даст)
   const closed = Boolean(op && org.closed_through && op.op_date <= org.closed_through);
   const editable = (op === null || op.status === "draft") && canDraft && !closed;
-  const canAddRefs = editable && perms.includes("edit_reference");
+  // добавить контрагента / договор из операции — тот, кто правит справочники, и финансовая служба (право проводить)
+  const canAddRefs = editable && (perms.includes("edit_reference") || canPost);
   const isOpening = op ? op.is_opening : opening;
   const accountsById = new Map(ref.accounts.map((a) => [a.id, a]));
   // счёт 00 — только для ввода остатков
