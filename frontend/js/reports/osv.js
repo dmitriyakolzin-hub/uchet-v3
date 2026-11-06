@@ -1,7 +1,7 @@
 // Оборотно-сальдовая ведомость: дерево счетов, разрез счёта по аналитике, расшифровка любой цифры.
 import { api } from "../api.js";
 import { tableNotes } from "../notes.js";
-import { el, makeTable, toast } from "../ui.js";
+import { el, instruction, makeTable, toast } from "../ui.js";
 import { moneyCell, openDrill } from "./common.js";
 
 // Колонка отчёта → какие проводки её составляют
@@ -39,7 +39,7 @@ export function osvReport({ box, ctx }) {
   const detailsHead = el("div", { class: "page-head section" });
   const detailsBox = el("div");
   box.replaceChildren(
-    el("p", { class: "muted" }, "Щёлкните по сумме — откроются проводки, из которых она сложилась. Щёлкните по счёту с аналитикой — ОСВ по этому счёту в разрезе контрагентов, договоров и т.п."),
+    instruction("Щёлкните по сумме — откроются проводки, из которых она сложилась. Щёлкните по счёту с аналитикой — ОСВ по этому счёту в разрезе контрагентов, договоров и т.п."),
     tableBox, detailsHead, detailsBox,
   );
   let selected = null; // счёт, открытый в разрезе по аналитике

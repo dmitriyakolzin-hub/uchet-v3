@@ -2,7 +2,7 @@
 import { api } from "../api.js";
 import { date, money, monthBounds, parseNumber } from "../format.js";
 import { openOperation } from "../opform.js";
-import { el, openForm, toast } from "../ui.js";
+import { el, instruction, openForm, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
@@ -12,7 +12,7 @@ const STATUS = { draft: "Черновик", pending: "На согласован�
 const EVENT_TITLES = { created: "создал(а)", submitted: "подал(а) на согласование", approved: "согласовал(а)",
   rejected: "отклонил(а)", revision: "вернул(а) на доработку", recalled: "отозвал(а)", unapproved: "вернул(а) на согласование",
   moved: "перенёс(ла) на", amount: "изменил(а) сумму", paid: "отметил(а) оплату", unpaid: "снял(а) оплату", file: "приложил(а) файл",
-  file_removed: "убрал(а) файл", periodic_updated: "обновлено по договору", sent: "отправил(а) в банк",
+  file_removed: "убрал(а) файл", edited: "изменил(а)", periodic_updated: "обновлено по договору", sent: "отправил(а) в банк",
   unsent: "снял(а) отметку «отправлено в банк»" };
 const DIRECTION = { out: "Выплата", in: "Поступление" };
 
@@ -68,7 +68,7 @@ export async function renderCalendar(view) {
   const tabs = el("div", { class: "tabs" });
   const content = el("div");
   const requestsBox = el("div", {},
-    el("p", { class: "muted" }, "Заявка: черновик → на согласовании (по маршруту: руководитель ЦФУ или ЦФО — встречная сторона, "
+    instruction("Заявка: черновик → на согласовании (по маршруту: руководитель ЦФУ или ЦФО — встречная сторона, "
       + "финансовый менеджер, CEO — инвестиции и суммы больше 1 000 000 ₽, финансовый директор) → согласована (в реестре "
       + "на оплату) → оплачена. Платёж из выписки на ту же сумму тому же контрагенту сам отметит заявку оплаченной. "
       + "Ожидаемые поступления согласования не требуют."),
@@ -87,7 +87,6 @@ export async function renderCalendar(view) {
           .catch((err) => toast(err.message, "error")) }, "Скачать в Excel")),
     listBox, totalsBox,
   );
-  const expectedBox = el("div");
   const periodicBox = el("div");
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Платёжный календарь"), el("label", { class: "inline" }, "Организация ", orgSelect)),
@@ -96,7 +95,7 @@ export async function renderCalendar(view) {
   const registryBox = el("div");
   const suppliersBox = el("div");
   const sheetBox = el("div");
-  let tab = ["grid", "requests", "expected", "periodic", "registry", "suppliers"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "sheet";
+  let tab = ["requests", "periodic", "registry", "suppliers"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "sheet";
   // руководитель ЦФУ и руководитель ЦФО видят только заявки
   const onlyRequests = () => org.restricted || org.role === "executor_head";
   function openTab(key) {
@@ -104,14 +103,14 @@ export async function renderCalendar(view) {
     if (["registry", "suppliers"].includes(tab) && !can("post")) tab = "sheet";
     remember(TAB_KEY, tab);
     const list = onlyRequests() ? [["requests", "Заявки"], ["periodic", "Периодические платежи"]]
-      : [["sheet", "Календарь"], ["grid", "Итоги по дням"], ["requests", "Заявки"], ...(can("post") ? [["suppliers", "Накладные поставщиков"], ["registry", "Реестр на оплату"]] : []),
-        ["periodic", "Периодические платежи"], ["expected", "Ожидаемые платежи"]];
+      : [["sheet", "Календарь"], ["requests", "Заявки"],
+        ...(can("post") ? [["suppliers", "Накладные поставщиков"], ["registry", "Реестр на оплату"]] : []),
+        ["periodic", "Периодические платежи"]];
     tabs.replaceChildren(...list.map(([k, title]) =>
       el("button", { type: "button", class: `tab${k === tab ? " active" : ""}`, onclick: () => openTab(k) }, title)));
-    content.replaceChildren({ grid: gridBox, requests: requestsBox, expected: expectedBox, periodic: periodicBox,
-      registry: registryBox, suppliers: suppliersBox, sheet: sheetBox }[tab]);
-    return { sheet: loadSheet, grid: loadGrid, requests: load, expected: loadExpected, periodic: loadPeriodic, registry: loadRegistry,
-      suppliers: loadSuppliers }[tab]();
+    content.replaceChildren({ requests: requestsBox, periodic: periodicBox, registry: registryBox, suppliers: suppliersBox,
+      sheet: sheetBox }[tab]);
+    return { sheet: loadSheet, requests: load, periodic: loadPeriodic, registry: loadRegistry, suppliers: loadSuppliers }[tab]();
   }
 
   function budgetCell(r) {
@@ -136,6 +135,9 @@ export async function renderCalendar(view) {
       list.push(button("Изменить", () => edit(r, r.direction)), button(r.direction === "in" ? "Подтвердить" : "На согласование", () => run("submit")));
       if (r.status === "draft") list.push(button("Удалить", () => remove(r)));
     }
+    if (["pending", "approved"].includes(r.status) && can("supervise") && !r.linked_id) {
+      list.push(button("Изменить", () => edit(r, r.direction)));
+    }
     if (r.status === "pending") {
       if (r.can_act) {
         list.push(button("Согласовать", () => run("approve")), button("На доработку", () => reason(r, "revise")),
@@ -156,16 +158,27 @@ export async function renderCalendar(view) {
     return el("td", { class: "req-actions" }, ...list);
   }
 
+  // статус: у черновика пусто; на согласовании — кто уже согласовал и у кого сейчас; согласована — кем
+  const STEP_SHORT = { executor: "ЦФУ", cfo: "ЦФО", fm: "ФМ", ceo: "CEO", fd: "ФД" };
   function statusCell(r) {
-    const note = ["rejected", "revision"].includes(r.status) && r.reject_reason
-      ? el("div", { class: "muted" }, `Причина: ${r.reject_reason}`)
-      : r.status === "pending" ? el("div", { class: r.can_act ? "my-step" : "muted",
-        title: `Маршрут: ${r.route_titles.join(" → ")}` }, r.can_act ? `ждёт вас (${r.step_title})` : `у: ${r.step_title}`)
-      : r.status === "paid" ? el("div", { class: "muted" }, `${date(r.paid_on)}${r.operation_number ? `, операция № ${r.operation_number}` : ""}`
-        + `${r.confirmed_by_statement ? " (выписка)" : ""}`) : null;
-    const sent = r.status === "approved" && r.sent_at
-      ? el("div", { class: "muted" }, `отправлено в банк ${new Date(r.sent_at).toLocaleDateString("ru-RU")}`) : null;
-    return el("td", {}, el("span", { class: `status req-${r.status}` }, STATUS[r.status]), note, sent);
+    const who = (r.approved_steps ?? []).map((st) => STEP_SHORT[st] ?? st).join(", ");
+    let main = null;
+    let note = null;
+    if (r.status === "pending") {
+      main = el("span", { class: "status req-pending" }, "На согласовании");
+      note = el("div", { class: r.can_act ? "my-step" : "muted", title: `Маршрут: ${r.route_titles.join(" → ")}` },
+        (who ? `согласовали: ${who}; ` : "") + (r.can_act ? `ждёт вас (${r.step_title})` : `у: ${r.step_title}`));
+    } else if (r.status === "approved") {
+      main = el("span", { class: "status req-approved" }, who ? `Согласована (${who})` : "Согласована");
+      if (r.sent_at) note = el("div", { class: "muted" }, `отправлено в банк ${new Date(r.sent_at).toLocaleDateString("ru-RU")}`);
+    } else if (r.status === "paid") {
+      main = el("span", { class: "status req-paid" }, `Оплачена ${date(r.paid_on)}`);
+      note = r.confirmed_by_statement ? el("div", { class: "muted" }, "по выписке") : null;
+    } else if (r.status !== "draft") {
+      main = el("span", { class: `status req-${r.status}` }, STATUS[r.status]);
+      note = r.reject_reason ? el("div", { class: "muted" }, `Причина: ${r.reject_reason}`) : null;
+    }
+    return el("td", {}, main, note);
   }
 
   // файлы заявки: скачать, приложить (автор и финансовая служба), убрать
@@ -226,20 +239,24 @@ export async function renderCalendar(view) {
       listBox.replaceChildren(el("p", { class: "error" }, err.message));
       return;
     }
+    // в списке — главное; остальные поля заявки — в карточке (щелчок по строке) и при правке
     listBox.replaceChildren(data.rows.length
       ? el("table", { class: "recon versions requests" },
-        el("thead", {}, el("tr", {}, ...["№", "Дата оплаты", "Вид", "Контрагент / назначение", "Статья ДДС", "ЦФО", "Счёт / касса",
-          "Сумма", "Бюджет", "Счёт (файл)", "Статус", ""].map((t) => el("th", {}, t)))),
-        el("tbody", {}, ...data.rows.map((r) => el("tr", { "data-number": r.number,
-          class: Number(r.budget?.over ?? 0) > 0 && r.status !== "paid" ? "over-budget-row" : "" },
-          el("td", {}, String(r.number)), el("td", {}, date(r.pay_date)), el("td", {}, DIRECTION[r.direction]),
-          el("td", {}, r.counterparty_name || "—", r.contract_name ? el("div", { class: "muted" }, `Договор ${r.contract_name}`) : null,
-            r.description ? el("div", { class: "muted" }, r.description) : null,
-            r.group_name ? el("div", { class: "muted" }, `внутри группы → ${r.group_name}, без согласования`) : null,
-            r.linked_number ? el("div", { class: "muted" }, `внутри группы: по выплате № ${r.linked_number}`) : null),
-          el("td", {}, r.article_name), el("td", {}, r.cfo_name, r.executor_name ? el("div", { class: "muted" }, r.executor_name) : null),
-          el("td", {}, r.source_name),
-          el("td", { class: "num" }, money(r.amount)), el("td", {}, budgetCell(r)), filesCell(r), statusCell(r), actions(r)))))
+        el("thead", {}, el("tr", {}, ...["Вид", "Дата оплаты", "Контрагент", "Назначение", "Сумма", "Файл", "Статус", ""]
+          .map((t) => el("th", {}, t)))),
+        el("tbody", {}, ...data.rows.map((r) => {
+          const tr = el("tr", { "data-number": r.number, title: `Заявка № ${r.number} — щёлкните, чтобы открыть`,
+            class: `clickable-row${Number(r.budget?.over ?? 0) > 0 && r.status !== "paid" ? " over-budget-row" : ""}` },
+          el("td", {}, DIRECTION[r.direction]), el("td", {}, date(r.pay_date)),
+          el("td", {}, r.counterparty_name || "—", r.group_name ? el("div", { class: "muted" }, `внутри группы → ${r.group_name}`) : null),
+          el("td", {}, r.description || ""),
+          el("td", { class: "num" }, money(r.amount)), filesCell(r), statusCell(r), actions(r));
+          tr.addEventListener("click", (e) => {
+            if (e.target.closest("button, a, input, label")) return;
+            requestView(r.id);
+          });
+          return tr;
+        })))
       : el("p", { class: "muted" }, "За этот период заявок нет."));
     totalsBox.textContent = `Выплаты: ${money(data.total_out)} · Поступления: ${money(data.total_in)}`;
   }
@@ -392,7 +409,7 @@ export async function renderCalendar(view) {
     const months = [...new Map(rows.flatMap((r) => r.months).map((m) => [m.period, m])).keys()].sort();
     const monthTitle = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
     periodicBox.replaceChildren(
-      el("p", { class: "muted" }, "Условия платежа заводятся в договоре («Справочники» → «Договоры» → «периодический»). "
+      instruction("Условия платежа заводятся в договоре («Справочники» → «Договоры» → «периодический»). "
         + "Каждый месяц по условиям сама создаётся заявка на нужное число (выходной — рабочий день раньше); согласует её "
         + "финансовый директор."),
       rows.length ? el("table", { class: "recon versions periodic" },
@@ -434,7 +451,7 @@ export async function renderCalendar(view) {
   sheetMode.addEventListener("change", () => { sheetFilter.with_statements = sheetMode.value; loadSheet(); });
   const sheetQuery = () => new URLSearchParams(Object.entries(sheetFilter).filter(([, v]) => v !== "" && v !== false)).toString();
   sheetBox.append(
-    el("p", { class: "muted" }, "Колонки — дни. Блоки «Деньги на начало», «Поступления», «Технические операции» "
+    instruction("Колонки — дни. Блоки «Деньги на начало», «Поступления», «Технические операции» "
       + "(переводы между счетами, инкассация, снятие в кассу), «Оплаты», «Деньги на конец» раскрываются на юрлица, безнал "
       + "и наличные, счета и кассы; ниже — «Расшифровка платежей» до статьи, контрагента и договора. В ячейке зелёным — "
       + "факт из выписки (журнал), серым — план календаря (заявки, ведомости, регламентные, инвестпроекты; просроченные — "
@@ -783,6 +800,8 @@ export async function renderCalendar(view) {
         field("Контрагент", r.counterparty_name),
         field("Договор", r.contract_name),
         field("Статья ДДС", r.article_name),
+        field("Бюджет", r.budget ? `остаток по статье ${money(r.budget.remaining ?? 0)}`
+          + (Number(r.budget.over) > 0 ? `, сверх бюджета ${money(r.budget.over)}` : "") : ""),
         field("ЦФО / ЦФУ", [r.cfo_name, r.executor_name].filter(Boolean).join(" · ")),
         field("Назначение", r.description),
         field("Маршрут", r.route_titles.join(" → ")),
@@ -796,6 +815,10 @@ export async function renderCalendar(view) {
           onclick: () => api.download(`/api/payment-request-files/${f.id}`, f.filename).catch((err) => toast(err.message, "error")) },
         f.filename, " "))) : ""))),
       el("div", { class: "form-actions" },
+        (["draft", "rejected", "revision"].includes(r.status) && author()) || (["pending", "approved"].includes(r.status)
+          && can("supervise") && !r.linked_id)
+          ? el("button", { type: "button", class: "secondary", onclick: () => { dialog.close(); edit(r, r.direction); } }, "Изменить")
+          : "",
         el("button", { type: "button", class: "secondary", onclick: () => history(r) }, "История"),
         r.operation_id ? el("button", { type: "button", class: "secondary", onclick: async () => {
           dialog.close();
@@ -846,7 +869,7 @@ export async function renderCalendar(view) {
     }
   });
   suppliersBox.append(
-    el("p", { class: "muted" }, "Накладные загружаются из Excel в формате листа «ПОСТАВЩИКИ» (тип документа, дата, №, сумма, "
+    instruction("Накладные загружаются из Excel в формате листа «ПОСТАВЩИКИ» (тип документа, дата, №, сумма, "
       + "контрагент) для выбранного юрлица. Срок оплаты — дата накладной + отсрочка из договора, лимит задолженности — "
       + "тоже в договоре. «Запланировать оплату» создаёт заявку (финансовый менеджер → финансовый директор): сумма "
       + "закрывает отмеченные накладные (или все) от старых к новым, можно оплатить частично. Поставщик — юрлицо группы: "
@@ -1000,7 +1023,7 @@ export async function renderCalendar(view) {
     }
   };
   registryBox.append(
-    el("p", { class: "muted" }, "Согласованные и ещё не оплаченные выплаты по дням и расчётным счетам (касса — отдельно). "
+    instruction("Согласованные и ещё не оплаченные выплаты по дням и расчётным счетам (касса — отдельно). "
       + "«Остаток» — остаток на счёте сегодня минус платежи этого счёта в реестре раньше; красным — не хватает денег. "
       + "«Выгрузить в банк» — файл платёжных поручений для банк-клиента (формат 1С), заявки отмечаются «отправлено в банк». "
       + "Для платёжки у контрагента нужны расчётный счёт и банк (карточка контрагента; из выписки подставляются сами). "
@@ -1084,191 +1107,6 @@ export async function renderCalendar(view) {
         .map((t) => el("th", {}, t)))),
       el("tbody", {}, ...body)),
     el("p", { class: "muted" }, `Всего: ${data.count} на ${money(data.total)}`));
-  }
-
-  // --- ожидаемые платежи: заявки, ведомости, регламентные операции, оплаты инвестпроектов ---
-  const expFilter = { date_from: from, date_to: to, legal_entity_id: "", include_pending: false };
-  const expList = el("div");
-  const expTotals = el("p", { class: "muted" });
-  const expInput = (key, label) => {
-    const node = el("input", { type: "date", value: expFilter[key], "aria-label": label });
-    node.addEventListener("change", () => { expFilter[key] = node.value; loadExpected(); });
-    return node;
-  };
-  const entitySelect = el("select", { "aria-label": "Юрлицо" });
-  entitySelect.addEventListener("change", () => { expFilter.legal_entity_id = entitySelect.value; loadExpected(); });
-  const pendingBox = el("input", { type: "checkbox", "aria-label": "С заявками на согласовании" });
-  pendingBox.addEventListener("change", () => { expFilter.include_pending = pendingBox.checked; loadExpected(); });
-  expectedBox.append(
-    el("p", { class: "muted" }, "Всё, что ещё не стало фактом в журнале: согласованные заявки, неоплаченные ведомости, "
-      + "невыполненные регламентные операции и плановые оплаты инвестпроектов из утверждённого бюджета. "
-      + "Платёж с прошедшей датой помечен «просрочен»."),
-    el("div", { class: "filters" },
-      el("label", { class: "inline" }, "С ", expInput("date_from", "С даты")),
-      el("label", { class: "inline" }, "по ", expInput("date_to", "По дату")),
-      entitySelect,
-      el("label", { class: "check" }, pendingBox, " с заявками на согласовании")),
-    expList, expTotals,
-  );
-
-  async function loadExpected() {
-    entitySelect.replaceChildren(...[["", "Все юрлица"], ...ref.entities.map((e) => [String(e.id), e.short_name])]
-      .map(([v, t]) => el("option", { value: v, selected: v === expFilter.legal_entity_id }, t)));
-    let data;
-    try {
-      const params = new URLSearchParams(Object.entries(expFilter).filter(([, v]) => v !== "" && v !== false));
-      data = await api.get(`/api/organizations/${org.id}/payment-calendar/expected?${params}`);
-    } catch (err) {
-      expList.replaceChildren(el("p", { class: "error" }, err.message));
-      return;
-    }
-    expList.replaceChildren(data.rows.length
-      ? el("table", { class: "recon versions expected" },
-        el("thead", {}, el("tr", {}, ...["Дата", "Источник", "Юрлицо", "Счёт / касса", "Контрагент", "Статья ДДС",
-          "Поступление", "Выплата"].map((t) => el("th", {}, t)))),
-        el("tbody", {}, ...data.rows.map((r) => el("tr", { "data-source": r.source },
-          el("td", {}, date(r.date), r.overdue ? el("div", { class: "over-budget" }, "просрочен") : null),
-          el("td", {}, r.title),
-          el("td", {}, r.legal_entity_name), el("td", {}, r.source_name), el("td", {}, r.counterparty_name),
-          el("td", {}, r.article_name),
-          el("td", { class: "num" }, r.direction === "in" ? money(r.amount) : ""),
-          el("td", { class: "num" }, r.direction === "out" ? money(r.amount) : "")))))
-      : el("p", { class: "muted" }, "За этот период ожидаемых платежей нет."));
-    expTotals.textContent = `Поступления: ${money(data.total_in)} · Выплаты: ${money(data.total_out)}`;
-  }
-
-  // --- календарь по дням: остаток, факт и ожидаемое, кассовые разрывы ---
-  const WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
-  const nextMonthEnd = (() => { const d = new Date(); return monthBounds(new Date(d.getFullYear(), d.getMonth() + 1, 1))[1]; })();
-  const gridFilter = { date_from: from, date_to: nextMonthEnd, legal_entity_id: "", source: "", include_pending: false };
-  const gridBox = el("div");
-  const gridTable = el("div");
-  const gridHead = el("div");
-  const gridDate = (key, label) => {
-    const node = el("input", { type: "date", value: gridFilter[key], "aria-label": label });
-    node.addEventListener("change", () => { gridFilter[key] = node.value; loadGrid(); });
-    return node;
-  };
-  const gridEntity = el("select", { "aria-label": "Юрлицо" });
-  gridEntity.addEventListener("change", () => { gridFilter.legal_entity_id = gridEntity.value; gridFilter.source = ""; loadGrid(); });
-  const gridSource = el("select", { "aria-label": "Счёт или касса" });
-  gridSource.addEventListener("change", () => { gridFilter.source = gridSource.value; loadGrid(); });
-  const gridPending = el("input", { type: "checkbox", "aria-label": "С заявками на согласовании" });
-  gridPending.addEventListener("change", () => { gridFilter.include_pending = gridPending.checked; loadGrid(); });
-  const gridParams = () => {
-    const p = new URLSearchParams({ date_from: gridFilter.date_from, date_to: gridFilter.date_to });
-    if (gridFilter.legal_entity_id) p.set("legal_entity_id", gridFilter.legal_entity_id);
-    if (gridFilter.source.startsWith("bank:")) p.set("bank_account_id", gridFilter.source.slice(5));
-    if (gridFilter.source.startsWith("cash:")) p.set("cash_cfo_id", gridFilter.source.slice(5));
-    if (gridFilter.include_pending) p.set("include_pending", "true");
-    return p;
-  };
-  gridBox.append(
-    el("p", { class: "muted" }, "Прошедшие дни — факт из журнала; с сегодняшнего дня — плюс ожидаемые платежи "
-      + "(согласованные заявки, ведомости, регламентные операции, оплаты инвестпроектов). Просроченные — на сегодня. "
-      + "Красным — дни, где остаток уходит в минус. Нажмите на день, чтобы увидеть, из чего сложились суммы."),
-    el("div", { class: "filters" },
-      el("label", { class: "inline" }, "С ", gridDate("date_from", "Календарь с")),
-      el("label", { class: "inline" }, "по ", gridDate("date_to", "Календарь по")),
-      gridEntity, gridSource,
-      el("label", { class: "check" }, gridPending, " с заявками на согласовании"),
-      el("button", { type: "button", class: "secondary",
-        onclick: () => api.download(`/api/organizations/${org.id}/payment-calendar.xlsx?${gridParams()}`, "payment_calendar.xlsx")
-          .catch((err) => toast(err.message, "error")) }, "Скачать в Excel")),
-    gridHead, gridTable,
-  );
-
-  function cellMoney(total, expectedPart) {
-    if (!Number(total)) return el("td", { class: "num" }, "");
-    return el("td", { class: "num" }, money(total),
-      Number(expectedPart) ? el("div", { class: "muted small" }, `ожид. ${money(expectedPart)}`) : null);
-  }
-
-  async function loadGrid() {
-    gridTable.replaceChildren(el("p", { class: "muted" }, "Загрузка…"));  // старая таблица не должна оставаться кликабельной
-    gridEntity.replaceChildren(...[["", "Все юрлица"], ...ref.entities.map((e) => [String(e.id), e.short_name])]
-      .map(([v, t]) => el("option", { value: v, selected: v === gridFilter.legal_entity_id }, t)));
-    const banks = ref.bankAccounts.filter((b) => !gridFilter.legal_entity_id || String(b.legal_entity_id) === gridFilter.legal_entity_id);
-    gridSource.replaceChildren(...[["", "Все счета и кассы"],
-      ...banks.map((b) => [`bank:${b.id}`, `${b.name} ··${b.number.slice(-4)}`]),
-      ...ref.cfos.filter((c) => c.has_cash).map((c) => [`cash:${c.id}`, `Касса: ${c.name}`])]
-      .map(([v, t]) => el("option", { value: v, selected: v === gridFilter.source }, t)));
-    let data;
-    try {
-      data = await api.get(`/api/organizations/${org.id}/payment-calendar?${gridParams()}`);
-    } catch (err) {
-      gridHead.replaceChildren();
-      gridTable.replaceChildren(el("p", { class: "error" }, err.message));
-      return;
-    }
-    gridHead.replaceChildren(data.first_gap
-      ? el("p", { class: "gap-note" }, `Первый кассовый разрыв: ${date(data.first_gap.date)}, остаток ${money(data.first_gap.closing)}`)
-      : el("p", { class: "muted" }, "Кассовых разрывов в периоде нет."));
-    const today = ref.today;
-    const rows = [];
-    let w = 0;
-    for (const d of data.days) {
-      const weekday = WEEKDAYS[new Date(`${d.date}T00:00:00`).getDay()];
-      const cls = [Number(d.closing) < 0 ? "gap-row" : "", d.date === today ? "today-row" : "", "day-row"].join(" ");
-      rows.push(el("tr", { class: cls, "data-date": d.date, onclick: () => showDay(d), title: "Подробнее" },
-        el("td", {}, `${date(d.date)} ${weekday}`, d.date === today ? el("span", { class: "muted" }, " · сегодня") : null),
-        el("td", { class: "num" }, money(d.opening)),
-        cellMoney(d.inflow, d.expected_in), cellMoney(d.outflow, d.expected_out),
-        el("td", { class: "num strong" }, money(d.closing))));
-      const week = data.weeks[w];
-      if (week && d.date === week.date_to) {
-        rows.push(el("tr", { class: `week-row${Number(week.closing) < 0 ? " gap-row" : ""}` },
-          el("td", {}, `Неделя ${date(week.date_from).slice(0, 5)}–${date(week.date_to).slice(0, 5)}`), el("td", {}),
-          el("td", { class: "num" }, Number(week.inflow) ? money(week.inflow) : ""),
-          el("td", { class: "num" }, Number(week.outflow) ? money(week.outflow) : ""),
-          el("td", { class: "num" }, money(week.closing))));
-        w += 1;
-      }
-    }
-    gridTable.replaceChildren(el("table", { class: "recon calendar-grid" },
-      el("thead", {}, el("tr", {}, ...["День", "Остаток на начало", "Поступления", "Выплаты", "Остаток на конец"]
-        .map((t) => el("th", {}, t)))),
-      el("tbody", {},
-        el("tr", { class: "week-row" }, el("td", {}, "Остаток на начало периода"), el("td", {}), el("td", {}), el("td", {}),
-          el("td", { class: "num" }, money(data.opening))),
-        ...rows,
-        el("tr", { class: "week-row" }, el("td", {}, "Итого за период"), el("td", { class: "num" }, money(data.opening)),
-          el("td", { class: "num" }, money(data.inflow)), el("td", { class: "num" }, money(data.outflow)),
-          el("td", { class: "num" }, money(data.closing))))));
-  }
-
-  function showDay(d) {
-    const close = () => dialog.close();
-    const factList = d.fact.length
-      ? el("table", { class: "recon" }, el("tbody", {}, ...d.fact.map((f) => el("tr", {},
-        el("td", {}, el("button", { type: "button", class: "link", onclick: async () => {
-          close();
-          const op = await api.get(`/api/operations/${f.operation_id}`);
-          openOperation({ ref, org, op, perms: org.permissions, onChanged: loadGrid });
-        } }, `№ ${f.number}`)),
-        el("td", {}, f.description),
-        el("td", { class: "num" }, Number(f.inflow) ? `+${money(f.inflow)}` : ""),
-        el("td", { class: "num" }, Number(f.outflow) ? `−${money(f.outflow)}` : "")))))
-      : el("p", { class: "muted" }, "Нет.");
-    const expectedList = d.expected.length
-      ? el("table", { class: "recon" }, el("tbody", {}, ...d.expected.map((i) => el("tr", {},
-        el("td", {}, i.title, i.overdue ? el("div", { class: "over-budget" }, `просрочен (${date(i.date)})`) : null),
-        el("td", {}, i.counterparty_name || i.source_name),
-        el("td", { class: "num" }, i.direction === "in" ? `+${money(i.amount)}` : `−${money(i.amount)}`),
-        el("td", {}, i.source === "request" && can("post")
-          ? el("button", { type: "button", class: "link", onclick: async () => {
-            close();
-            move(await api.get(`/api/payment-requests/${i.source_id}`), loadGrid);
-          } }, "Перенести") : "")))))
-      : el("p", { class: "muted" }, "Нет.");
-    const dialog = el("dialog", { class: "dialog wide" },
-      el("h2", {}, `${date(d.date)}: остаток ${money(d.opening)} → ${money(d.closing)}`),
-      el("h3", {}, "Факт (журнал)"), factList,
-      el("h3", {}, "Ожидается"), expectedList,
-      el("div", { class: "form-actions" }, el("button", { type: "button", onclick: close }, "Закрыть")));
-    document.body.append(dialog);
-    dialog.addEventListener("close", () => dialog.remove());
-    dialog.showModal();
   }
 
   await openTab(tab);

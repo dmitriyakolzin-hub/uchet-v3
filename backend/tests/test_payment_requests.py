@@ -60,7 +60,7 @@ def test_workflow_and_access(client, env):
     assert act(client, env, req, "approve", h=env["ceo"]).status_code == 403
     assert client.put(f"/api/payment-requests/{req['id']}", headers=env["head"], json={
         "pay_date": "2026-03-11", "legal_entity_id": env["le"].id, "amount": "1",
-        "cfo_id": env["office"]["id"]}).status_code == 422  # на согласовании не правится
+        "cfo_id": env["office"]["id"]}).status_code == 403  # на согласовании правит только финансовый директор
 
     req = act(client, env, req, "reject", reason="Нет счёта").json()
     assert (req["status"], req["reject_reason"]) == ("rejected", "Нет счёта")

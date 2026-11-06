@@ -173,3 +173,29 @@ def test_finance_manager_adds_counterparty_and_contract(client, env, db):
     assert client.post(f"{env['o']}/cfos", headers=env["h"]["fm"], json={"name": "Склад"}).status_code == 403
     assert client.post(f"{env['o']}/counterparties", headers=env["h"]["ceo"],
                        json={"name": "Х", "kind": "legal", "inn": "7705555556"}).status_code == 403
+
+
+def test_fd_edits_approved_request_and_steps(client, env):
+    """Кто согласовал — в заявке; согласованную правит финансовый директор, статус прежний (раздел 26, 16.3)."""
+    req = create(client, env, "cfo", executor_id=env["member"]["id"])
+    assert req["approved_steps"] == []
+    req = act(client, env, "cfo", req, "submit").json()
+    req = act(client, env, "exec", req, "approve").json()
+    assert req["approved_steps"] == ["executor"]
+    for who in ("fm", "fd"):
+        req = act(client, env, who, req, "approve").json()
+    assert (req["status"], req["approved_steps"]) == ("approved", ["executor", "fm", "fd"])
+    body = {"pay_date": "2026-12-15", "legal_entity_id": env["le"].id, "article_id": env["rent"],
+            "cfo_id": env["shop"]["id"], "executor_id": env["member"]["id"], "amount": "1200", "description": "уточнено"}
+    assert client.put(f"/api/payment-requests/{req['id']}", headers=env["h"]["fm"], json=body).status_code == 403
+    assert client.put(f"/api/payment-requests/{req['id']}", headers=env["h"]["cfo"], json=body).status_code == 403
+    resp = client.put(f"/api/payment-requests/{req['id']}", headers=env["h"]["fd"], json=body)
+    assert resp.status_code == 200, resp.text
+    edited = resp.json()
+    assert (edited["status"], edited["amount"], edited["pay_date"]) == ("approved", "1200.00", "2026-12-15")
+    events = client.get(f"/api/payment-requests/{req['id']}/events", headers=env["h"]["fd"]).json()
+    assert (events[-1]["action"], events[-1]["comment"]) == ("edited", "дата оплаты, сумма, назначение")
+    # повторная подача сбрасывает список согласовавших
+    act(client, env, "fd", edited, "unapprove")
+    back = client.get(f"/api/payment-requests/{req['id']}", headers=env["h"]["fd"]).json()
+    assert back["status"] == "pending" and back["approved_steps"] == ["executor", "fm", "fd"]

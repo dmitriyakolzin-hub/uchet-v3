@@ -2,7 +2,7 @@
 import { api } from "../api.js";
 import { money, quantity } from "../format.js";
 import { tableNotes } from "../notes.js";
-import { el, makeTable } from "../ui.js";
+import { el, instruction, makeTable } from "../ui.js";
 import { moneyCell, openDrill } from "./common.js";
 
 // колонка → условия расшифровки: остаток на начало / приход (дебет) / расход (кредит) / остаток на конец
@@ -29,7 +29,7 @@ export function stockReport({ box, ctx }) {
   box.replaceChildren(
     el("div", { class: "filters" },
       el("label", { class: "inline" }, "Счёт ", accountSelect), el("label", { class: "inline" }, "Склад ", warehouseSelect)),
-    el("p", { class: "muted" }, "Количественные счета (10, 41, 43): приход — по дебету, расход — по кредиту; перемещение между "
+    instruction("Количественные счета (10, 41, 43): приход — по дебету, расход — по кредиту; перемещение между "
       + "складами — расход одного и приход другого. Нажмите ⊞ у склада, чтобы увидеть номенклатуру; щёлкните по цифре — откроются проводки."),
     tableBox,
   );
