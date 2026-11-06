@@ -140,3 +140,9 @@ export function makeTable(container, options) {
 export function orNull(value) {
   return value === "" ? null : value;
 }
+
+// Правила заполнения страницы — свёрнуты в кнопку «Инструкция» (docs/TZ.md, раздел 26, «Детали 16.3»)
+export function instruction(...children) {
+  return el("details", { class: "instruction" }, el("summary", {}, "Инструкция"),
+    el("div", { class: "instruction-body" }, ...children));
+}

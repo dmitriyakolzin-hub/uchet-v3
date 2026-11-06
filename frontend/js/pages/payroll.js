@@ -2,7 +2,7 @@
 import { api } from "../api.js";
 import { money, parseNumber } from "../format.js";
 import { openOperation } from "../opform.js";
-import { el, makeTable, openForm, toast } from "../ui.js";
+import { el, instruction, makeTable, openForm, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
@@ -41,14 +41,14 @@ export async function renderPayroll(view) {
   async function showList() {
     view.replaceChildren(
       el("div", { class: "page-head" }, el("h1", {}, "Зарплата"), el("label", { class: "inline" }, "Организация ", orgSelect)),
-      el("p", { class: "muted" }, "Начисление — по юрлицу за месяц. «Заполнить» берёт сотрудников юрлица и их оклады; "
+      instruction("Начисление — по юрлицу за месяц. «Заполнить» берёт сотрудников юрлица и их оклады; "
         + "НДФЛ, взносы и «к выплате» считаются автоматически. Проведённое начисление попадает в журнал одной операцией."),
       el("div", { class: "filters" }, el("label", { class: "inline" }, "Год ", yearSelect),
         el("button", { type: "button", onclick: () => addRun() }, "Новое начисление")),
       listBox,
       el("div", { class: "page-head section" }, el("h2", {}, "Ведомости на выплату"),
         el("button", { type: "button", onclick: () => addSheet() }, "Новая ведомость")),
-      el("p", { class: "muted" }, "Аванс — доля оклада; зарплата — «к выплате» из проведённого начисления минус аванс. "
+      instruction("Аванс — доля оклада; зарплата — «к выплате» из проведённого начисления минус аванс. "
         + "Отправленная в банк ведомость подтверждается выпиской: платёж на её сумму с назначением о зарплате "
         + "сам отметит её оплаченной."),
       sheetsBox,

@@ -2,7 +2,7 @@
 import { api } from "../api.js";
 import { date as ruDate, money } from "../format.js";
 import { openOperation } from "../opform.js";
-import { el, openForm, toast } from "../ui.js";
+import { el, instruction, openForm, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
@@ -51,7 +51,7 @@ export async function renderClosing(view) {
 
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Закрытие периода"), el("label", { class: "inline" }, "Организация ", orgSelect)),
-    el("p", { class: "muted" }, "Месяц закрывается по порядку: выполните регламентные операции, начислите амортизацию и зарплату, "
+    instruction("Месяц закрывается по порядку: выполните регламентные операции, начислите амортизацию и зарплату, "
       + "проведите черновики, определите финансовый результат — затем «Закрыть месяц». Операции закрытого периода нельзя создать, изменить, провести или удалить "
       + "ни из одного раздела. Открыть можно последний закрытый месяц."),
     status, monthBox, routinesBox, resultBox, checksBox, rulesBox, logBox,
@@ -192,7 +192,7 @@ export async function renderClosing(view) {
     const link = (text, onclick, cls = "") => el("button", { type: "button", class: `link ${cls}`, onclick }, text);
     rulesBox.replaceChildren(
       el("div", { class: "page-head section" }, el("h2", {}, "Правила регламентных операций")),
-      el("p", { class: "muted" }, "Новое правило: откройте в журнале операцию-образец (например, аренду) и нажмите "
+      instruction("Новое правило: откройте в журнале операцию-образец (например, аренду) и нажмите "
         + "«Сделать регламентной». Чтобы изменить суммы или проводки — сделайте правило из исправленной операции, а старое снимите с «действует»."),
       rules.length
         ? el("table", { class: "recon versions assets" },

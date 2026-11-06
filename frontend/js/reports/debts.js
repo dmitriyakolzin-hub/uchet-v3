@@ -2,7 +2,7 @@
 import { api } from "../api.js";
 import { money } from "../format.js";
 import { tableNotes } from "../notes.js";
-import { el, makeTable } from "../ui.js";
+import { el, instruction, makeTable } from "../ui.js";
 import { moneyCell, openDrill } from "./common.js";
 
 const TITLES = {
@@ -23,7 +23,7 @@ function toTree(rows) {
 export function debtsReport({ box, ctx }) {
   const tableBox = el("div");
   box.replaceChildren(
-    el("p", { class: "muted" }, "Задолженность на конец периода по счетам 60, 62, 66, 67, 71, 76. Нажмите ⊞, чтобы увидеть "
+    instruction("Задолженность на конец периода по счетам 60, 62, 66, 67, 71, 76. Нажмите ⊞, чтобы увидеть "
       + "счета и договоры контрагента; щёлкните по сумме — откроются проводки. При фильтре по ЦФО отчёт пуст: у расчётов нет ЦФО."),
     tableBox,
   );

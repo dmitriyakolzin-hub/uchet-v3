@@ -1,6 +1,6 @@
 // «Загрузка из Excel»: операции по шаблону (строки → черновики) и список контрагентов.
 import { api } from "../api.js";
-import { el, toast } from "../ui.js";
+import { el, instruction, toast } from "../ui.js";
 
 const ORG_KEY = "uchet3_org";
 
@@ -40,7 +40,7 @@ export async function renderImport(view) {
 
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Загрузка из Excel"), el("label", { class: "inline" }, "Организация ", orgSelect)),
-    el("p", { class: "muted" }, "Скачайте шаблон, заполните его и загрузите. Повторная загрузка того же файла не создаёт дублей. "
+    instruction("Скачайте шаблон, заполните его и загрузите. Повторная загрузка того же файла не создаёт дублей. "
       + "Банковские выписки загружаются на странице «Деньги»."),
     cards,
   );

@@ -1,7 +1,7 @@
 // «Бюджеты»: бюджеты на год / квартал / месяц и их версии (черновик → утверждена → архив).
 import { api } from "../api.js";
 import { openPlanGrid } from "../plangrid.js";
-import { el, openForm, toast } from "../ui.js";
+import { el, instruction, openForm, toast } from "../ui.js";
 
 const ORG_KEY = "uchet3_org";
 const STATUS = { draft: "Черновик", approved: "Утверждена", archived: "Архив" };
@@ -46,7 +46,7 @@ export async function renderBudgets(view) {
 
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Бюджеты"), el("label", { class: "inline" }, "Организация ", orgSelect)),
-    el("p", { class: "muted" }, "Бюджет — на год, квартал или месяц. Ежемесячный пересмотр — новая версия: копия утверждённой, "
+    instruction("Бюджет — на год, квартал или месяц. Ежемесячный пересмотр — новая версия: копия утверждённой, "
       + "правки, утверждение; прежняя утверждённая уходит в архив и остаётся для сравнения."),
     el("div", { class: "filters" }, el("label", { class: "inline" }, "Год ", yearSelect), addButton),
     list,

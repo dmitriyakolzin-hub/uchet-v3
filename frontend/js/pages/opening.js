@@ -2,7 +2,7 @@
 import { api } from "../api.js";
 import { date, money } from "../format.js";
 import { openOperation } from "../opform.js";
-import { el, makeTable, toast } from "../ui.js";
+import { el, instruction, makeTable, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
@@ -41,7 +41,7 @@ export async function renderOpening(view) {
 
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Начальные остатки"), el("label", { class: "inline" }, "Организация ", orgSelect)),
-    el("p", { class: "muted" }, "Остатки вводятся проводками против счёта 00: активы — Дт счёта, Кт 00; обязательства и капитал — Дт 00, Кт счёта. Когда всё введено верно, сальдо счёта 00 равно нулю."),
+    instruction("Остатки вводятся проводками против счёта 00: активы — Дт счёта, Кт 00; обязательства и капитал — Дт 00, Кт счёта. Когда всё введено верно, сальдо счёта 00 равно нулю."),
     dateRow,
     status,
     el("div", { class: "page-head" }, el("h2", {}, "Операции ввода остатков"), addButton),

@@ -1,7 +1,7 @@
 // «Статьи ДДС и ОПиУ»: справочник организации деревом — коды, подстатьи (docs/TZ.md, раздел 19, «Детали 9.1»).
 import { api } from "../api.js";
 import { articleIndex } from "../articles.js";
-import { el, makeTable, openForm, toast } from "../ui.js";
+import { el, instruction, makeTable, openForm, toast } from "../ui.js";
 
 const ACTIVITIES = [["operating", "Операционная"], ["investing", "Инвестиционная"], ["financing", "Финансовая"]];
 const DIRECTIONS = [["inflow", "Поступление"], ["outflow", "Выплата"]];
@@ -73,7 +73,7 @@ export async function renderArticles(view) {
   const tableBox = el("div");
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Статьи ДДС и ОПиУ"), el("label", { class: "inline" }, "Организация ", orgSelect)),
-    el("p", { class: "muted" }, "Справочник организации. Статьи вкладываются друг в друга: группа складывается из подстатей, "
+    instruction("Справочник организации. Статьи вкладываются друг в друга: группа складывается из подстатей, "
       + "в операции и план ставятся только статьи без подстатей. Подстатья берёт признаки ДДС / ОПиУ у родителя. "
       + "Шаблон проводки подставляется при вводе операции, счета можно поменять."),
     el("div", { class: "filters" }, searchInput, addButton, importButton, fileInput),

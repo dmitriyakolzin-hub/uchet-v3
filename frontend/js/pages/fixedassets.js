@@ -3,7 +3,7 @@
 import { api } from "../api.js";
 import { date as ruDate, isoDate, money, parseNumber, sumMoney } from "../format.js";
 import { openOperation } from "../opform.js";
-import { el, openForm, toast } from "../ui.js";
+import { el, instruction, openForm, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
@@ -39,7 +39,7 @@ export async function renderFixedAssets(view) {
 
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Основные средства"), el("label", { class: "inline" }, "Организация ", orgSelect)),
-    el("p", { class: "muted" }, "Поступление проводите в журнале: Дт 08 — Кт 60 с аналитикой «Основное средство». "
+    instruction("Поступление проводите в журнале: Дт 08 — Кт 60 с аналитикой «Основное средство». "
       + "«Ввести в эксплуатацию» переносит стоимость с 08 на 01. Амортизация — линейная, с месяца, следующего за вводом. "
       + "ОС, введённые до даты начальных остатков, вводятся без операции — их стоимость и амортизацию внесите "
       + "на вкладке «Начальные остатки» (Дт 01 — Кт 00, Дт 00 — Кт 02)."),
@@ -231,7 +231,7 @@ export async function renderFixedAssets(view) {
     } }, "Начислить за месяц");
     deprBox.replaceChildren(
       el("div", { class: "page-head section" }, el("h2", {}, "Амортизация")),
-      el("p", { class: "muted" }, "Начисляется за месяц по всем юрлицам одной операцией на юрлицо (последний день месяца): "
+      instruction("Начисляется за месяц по всем юрлицам одной операцией на юрлицо (последний день месяца): "
         + "стоимость / срок, в последний месяц срока — остаток. Месяцы — по порядку; отменять — с последнего."),
       el("div", { class: "filters" }, el("label", { class: "inline" }, "Месяц ", monthSelect), yearSelect, deprButton),
       preview.length

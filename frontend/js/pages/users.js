@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { editButton, el, makeTable, openForm, toast, yesNo } from "../ui.js";
+import { editButton, el, instruction, makeTable, openForm, toast, yesNo } from "../ui.js";
 
 // Таблица «организация → роль» внутри формы пользователя. Руководителю ЦФО выбирается его ЦФО (ветка).
 function rolesEditor(organizations, roles, memberships) {
@@ -54,7 +54,7 @@ function rolesEditor(organizations, roles, memberships) {
     organizations.length
       ? el("table", {}, el("tbody", {}, rows))
       : el("p", { class: "muted" }, "Организаций пока нет."),
-    el("p", { class: "muted" }, "Руководитель ЦФО видит и вводит данные только по выбранному ЦФО и его подчинённым. "
+    instruction("Руководитель ЦФО видит и вводит данные только по выбранному ЦФО и его подчинённым. "
       + "Руководитель ЦФУ видит только заявки своего ЦФУ. Финансовый менеджер — деньги, заявки и календарь, "
       + "без справочников, бюджета и пользователей."),
   );

@@ -366,3 +366,18 @@ table.request-card th { text-align: left; width: 180px; color: #475467; font-wei
 table.pay-sheet tr.sheet-block[data-level="0"] td { font-weight: 700; background: #e4ebf6; text-transform: uppercase; letter-spacing: .02em; }
 table.pay-sheet tr.sheet-block[data-level="0"] td .add-ref { text-transform: none; letter-spacing: 0; }
 table.pay-sheet .add-ref { font-size: 12px; padding: 0 4px; }
+/* «Инструкция» — правила страницы свёрнуты в кнопку (раздел 26, 16.3) */
+details.instruction { margin: 4px 0 10px; }
+details.instruction > summary { display: inline-block; cursor: pointer; list-style: none; font-size: 13px; color: #1849a9;
+  border: 1px solid #b2ccff; border-radius: 6px; padding: 3px 10px; background: #f5f8ff; }
+details.instruction > summary::-webkit-details-marker { display: none; }
+details.instruction > summary::before { content: "ⓘ "; }
+details.instruction[open] > summary { background: #e0eaff; }
+details.instruction .instruction-body { margin-top: 6px; padding: 8px 12px; border-left: 3px solid #b2ccff; color: var(--muted, #667085);
+  font-size: 13px; max-width: 900px; }
+/* шапка таблиц остаётся при прокрутке */
+.sheet-scroll { max-height: calc(100vh - 180px); }
+table.requests thead th, table.registry thead th, table.suppliers thead th, table.periodic thead th {
+  position: sticky; top: 0; z-index: 2; background: #f9fafb; }
+tr.clickable-row { cursor: pointer; }
+tr.clickable-row:hover td { background: var(--accent-soft, #eef4ff); }
