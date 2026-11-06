@@ -512,8 +512,9 @@ class AmountIn(BaseModel):
 @router.post("/payment-requests/{request_id}/amount", response_model=RequestOut)
 def change_amount(request_id: int, body: AmountIn, user: CurrentUser, db: DbSession):
     """Поправить сумму в календаре (docs/TZ.md, раздел 24, «Детали 14.6»): заявка на согласовании или согласованная,
-    статус не меняется, в истории — «было → стало»."""
-    req, branch = _request(db, user, request_id, Perm.POST)
+    статус не меняется, в истории — «было → стало». Корректировка — финансовый директор и администратор
+    (docs/TZ.md, раздел 26, «Детали 16.2»)."""
+    req, branch = _request(db, user, request_id, Perm.SUPERVISE)
     _status(req, "pending", "approved")
     _not_linked(req)
     if req.source == "supplier":

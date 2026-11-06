@@ -12,7 +12,16 @@ from sqlalchemy.orm import Session
 from app.api.access import forbid_scoped, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import Article, BankAccount, CalendarBalance, Cfo, Counterparty, LegalEntity, PaymentRequest
+from app.models import (
+    Article,
+    BankAccount,
+    CalendarBalance,
+    CalendarTransfer,
+    Cfo,
+    Counterparty,
+    LegalEntity,
+    PaymentRequest,
+)
 from app.services import calendar, calendar_sheet
 from app.services.report_xlsx import XlsxColumn, build
 
@@ -270,6 +279,10 @@ class SheetRow(BaseModel):
     subtitle: str = ""  # договор строки расшифровки
     signed: bool = False  # технические операции: + пришло, − ушло
     balance: BalanceRef | None = None  # остаток на начало можно ввести вручную
+    source: str | None = None  # ключ счёта / кассы (bank:…, cash:…)
+    source_ref: BalanceRef | None = None  # счёт или касса строки — для ручного поступления
+    entity_id: int | None = None
+    add: str | None = None  # «+»: inflow — ожидаемое поступление на счёт, transfer — плановый перевод
     cells: dict[dt.date, SheetCell] = {}
 
 
@@ -292,7 +305,7 @@ def _add(target: dict, day, fact=None, plan=None) -> None:
 
 
 def _sheet(db: Session, user, organization_id: int, date_from: dt.date, date_to: dt.date, legal_entity_id,
-           include_pending: bool) -> SheetOut:
+           include_pending: bool, with_statements: bool = True) -> SheetOut:
     get_organization_for(db, user, organization_id, Perm.VIEW)
     forbid_scoped(db, user, organization_id)
     period(date_from, date_to)
@@ -300,7 +313,7 @@ def _sheet(db: Session, user, organization_id: int, date_from: dt.date, date_to:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Календарь по статьям — не больше 2 месяцев")
     _scope(db, organization_id, legal_entity_id, None, None)
     sheet = calendar_sheet.build(db, organization_id, date_from, date_to, legal_entity_id=legal_entity_id,
-                                 include_pending=include_pending)
+                                 include_pending=include_pending, with_statements=with_statements)
     today = sheet.today
     request_ids = {i.source_id for ln in sheet.lines for c in ln.cells.values() for i in c.items if i.source == "request"}
     requests = {r.id: r for r in db.scalars(select(PaymentRequest).where(PaymentRequest.id.in_(request_ids)))} \
@@ -328,7 +341,7 @@ def _sheet(db: Session, user, organization_id: int, date_from: dt.date, date_to:
             _add(target.cells, day, c.fact, c.plan)
 
     def source_tree(prefix: str, title: str, values, include_all: bool, level: int = 0, parent: str | None = None,
-                    balance: bool = False, leaf=None) -> None:
+                    balance: bool = False, leaf=None, add: str | None = None) -> None:
         """Блок → юрлицо → безнал / наличные → счёт или касса (→ leaf: строки под счётом)."""
         block = push(SheetRow(key=prefix, parent=parent, level=level, kind="block", title=title))
         for entity_id, entity_name in sheet.entities.items():
@@ -345,10 +358,11 @@ def _sheet(db: Session, user, organization_id: int, date_from: dt.date, date_to:
                     cells = values(src)
                     if not include_all and not cells:
                         continue
+                    real = src.bank_account_id is not None or src.cash_cfo_id is not None
+                    ref = BalanceRef(bank_account_id=src.bank_account_id, cash_cfo_id=src.cash_cfo_id) if real else None
                     row = SheetRow(key=f"{channel.key}:{src.key}", parent=channel.key, level=level + 3, kind="source",
-                                   title=src.title, cells=cells,
-                                   balance=BalanceRef(bank_account_id=src.bank_account_id, cash_cfo_id=src.cash_cfo_id)
-                                   if balance and (src.bank_account_id or src.cash_cfo_id) else None)
+                                   title=src.title, cells=cells, source=src.key, entity_id=src.entity_id,
+                                   source_ref=ref, balance=ref if balance else None, add=add if real else None)
                     channel_body += [row, *(leaf(row, src) if leaf else [])]
                     merge(channel, row)
                 if channel_body:
@@ -373,34 +387,11 @@ def _sheet(db: Session, user, organization_id: int, date_from: dt.date, date_to:
         return {d: SheetCell(fact=v if d < today else None, plan=v if d >= today else None)
                 for d, v in src.closing.items()}
 
-    source_tree("open", "Деньги на начало", opening, include_all=True, balance=True)
-    source_tree("in", "Поступления", lambda src: pairs(src.fact_in, src.plan_in), include_all=False)
-    # технические операции: вид → счёт / касса, сумма со знаком
-    tech_types = [t for t in calendar_sheet.TECH_TITLES if any(t in src.tech for src in sheet.sources)]
-    if tech_types:
-        tech = push(SheetRow(key="tech", parent=None, level=0, kind="block", title="Технические операции", signed=True))
-        many = len(sheet.entities) > 1
-        for t in tech_types:
-            type_row = push(SheetRow(key=f"tech:{t}", parent="tech", level=1, kind="type",
-                                     title=calendar_sheet.TECH_TITLES[t], signed=True))
-            for src in sheet.sources:
-                if t not in src.tech:
-                    continue
-                title = f"{sheet.entities.get(src.entity_id, '')} · {src.title}" if many else src.title
-                row = push(SheetRow(key=f"tech:{t}:{src.key}", parent=type_row.key, level=2, kind="source",
-                                    title=title, signed=True,
-                                    cells={d: detail_cell(c) for d, c in src.tech[t].items()}))
-                merge(type_row, row)
-            merge(tech, type_row)
-    source_tree("out", "Оплаты", lambda src: pairs(src.fact_out, src.plan_out), include_all=False)
-    source_tree("close", "Деньги на конец", closing, include_all=True)
-
-    # расшифровка платежей: та же логика + статья ДДС → контрагент и договор
-    rows.append(SheetRow(key="details", parent=None, level=0, kind="section", title="Расшифровка платежей"))
-    for direction, title in (("in", "Поступления"), ("out", "Оплаты")):
+    def article_leaf(direction: str):
+        """Под счётом: статья ДДС → контрагент · договор (как в расшифровке платежей)."""
         own_lines = [ln for ln in sheet.lines if ln.direction == direction]
 
-        def leaf(row: SheetRow, src, own_lines=own_lines) -> list[SheetRow]:
+        def leaf(row: SheetRow, src) -> list[SheetRow]:
             articles: dict = {}
             for ln in own_lines:
                 if ln.source_key == src.key:
@@ -408,22 +399,53 @@ def _sheet(db: Session, user, organization_id: int, date_from: dt.date, date_to:
             result = []
             for (article_id, article_title), lns in articles.items():
                 art = SheetRow(key=f"{row.key}:a{article_id}", parent=row.key, level=row.level + 1, kind="article",
-                               title=article_title)
+                               title=article_title, source=src.key)
                 result.append(art)
                 for ln in lns:
                     line_row = SheetRow(
                         key=f"{art.key}:{ln.counterparty_id}:{ln.contract_id}", parent=art.key, level=art.level + 1,
-                        kind="line", title=ln.title, subtitle=ln.contract_title,
+                        kind="line", title=ln.title, subtitle=ln.contract_title, source=src.key,
                         cells={d: detail_cell(c) for d, c in ln.cells.items()})
                     result.append(line_row)
                     merge(art, line_row)
             return result
 
-        line_keys = {ln.source_key for ln in own_lines}
-        source_tree(f"det:{direction}", title,
-                    lambda src, line_keys=line_keys, own_lines=own_lines: _line_sums(src, own_lines)
-                    if src.key in line_keys else {},
-                    include_all=False, parent="details", level=1, leaf=leaf)
+        return leaf
+
+    source_tree("open", "Деньги на начало", opening, include_all=True, balance=True)
+    source_tree("in", "Поступления", lambda src: pairs(src.fact_in, src.plan_in), include_all=True,
+                leaf=article_leaf("in"), add="inflow")
+    # технические операции: вид → счёт / касса → встречный счёт / касса, сумма со знаком; «+» — плановый перевод
+    tech = push(SheetRow(key="tech", parent=None, level=0, kind="block", title="Технические операции", signed=True,
+                         add="transfer"))
+    for t in calendar_sheet.TECH_TITLES:
+        own = [src for src in sheet.sources if t in src.tech]
+        if not own:
+            continue
+        type_row = push(SheetRow(key=f"tech:{t}", parent="tech", level=1, kind="type",
+                                 title=calendar_sheet.TECH_TITLES[t], signed=True))
+        for src in own:
+            row = push(SheetRow(key=f"tech:{t}:{src.key}", parent=type_row.key, level=2, kind="source",
+                                title=sheet.titles.get(src.key, src.title), signed=True, source=src.key,
+                                entity_id=src.entity_id))
+            for corr_key, cells in src.tech[t].items():
+                line_row = push(SheetRow(key=f"{row.key}:{corr_key}", parent=row.key, level=3, kind="line",
+                                         title=("из: " if any((c.fact or c.plan or 0) > 0 for c in cells.values())
+                                                else "в: ") + sheet.titles.get(corr_key, corr_key),
+                                         signed=True, source=src.key, cells={d: detail_cell(c) for d, c in cells.items()}))
+                merge(row, line_row)
+            merge(type_row, row)
+        merge(tech, type_row)
+    source_tree("out", "Оплаты", lambda src: pairs(src.fact_out, src.plan_out), include_all=False)
+    source_tree("close", "Деньги на конец", closing, include_all=True)
+
+    # расшифровка платежей: оплаты по той же логике + статья ДДС → контрагент и договор
+    # (поступления раскрыты до контрагента прямо в блоке «Поступления»)
+    rows.append(SheetRow(key="details", parent=None, level=0, kind="section", title="Расшифровка платежей"))
+    out_keys = {ln.source_key for ln in sheet.lines if ln.direction == "out"}
+    out_lines = [ln for ln in sheet.lines if ln.direction == "out"]
+    source_tree("det:out", "Оплаты", lambda src: _line_sums(src, out_lines) if src.key in out_keys else {},
+                include_all=False, parent="details", level=1, leaf=article_leaf("out"))
     return SheetOut(date_from=date_from, date_to=date_to, today=today, days=sheet.days, rows=rows)
 
 
@@ -438,8 +460,8 @@ def _line_sums(src, own_lines) -> dict:
 
 @router.get("/organizations/{organization_id}/payment-calendar/sheet", response_model=SheetOut)
 def calendar_sheet_view(organization_id: int, user: CurrentUser, db: DbSession, date_from: dt.date, date_to: dt.date,
-                        legal_entity_id: int | None = None, include_pending: bool = False):
-    return _sheet(db, user, organization_id, date_from, date_to, legal_entity_id, include_pending)
+                        legal_entity_id: int | None = None, include_pending: bool = False, with_statements: bool = True):
+    return _sheet(db, user, organization_id, date_from, date_to, legal_entity_id, include_pending, with_statements)
 
 
 def _money_text(c: SheetCell | None) -> Decimal | None:
@@ -450,9 +472,9 @@ def _money_text(c: SheetCell | None) -> Decimal | None:
 
 @router.get("/organizations/{organization_id}/payment-calendar/sheet.xlsx")
 def calendar_sheet_xlsx(organization_id: int, user: CurrentUser, db: DbSession, date_from: dt.date, date_to: dt.date,
-                        legal_entity_id: int | None = None, include_pending: bool = False):
+                        legal_entity_id: int | None = None, include_pending: bool = False, with_statements: bool = True):
     """Те же строки деревом (уровень — отступ); в ячейке — факт + план одной суммой."""
-    data = _sheet(db, user, organization_id, date_from, date_to, legal_entity_id, include_pending)
+    data = _sheet(db, user, organization_id, date_from, date_to, legal_entity_id, include_pending, with_statements)
     columns = [XlsxColumn("Показатель", 42), XlsxColumn("Договор", 16)]
     columns += [XlsxColumn(f"{d:%d.%m} {WEEKDAYS[d.weekday()]}", 13, money=True) for d in data.days]
     rows = [(r.level, [r.title, r.subtitle or None, *[_money_text(r.cells.get(d)) for d in data.days]],
@@ -487,5 +509,101 @@ def set_balance(organization_id: int, body: BalanceIn, user: CurrentUser, db: Db
                                cash_cfo_id=body.cash_cfo_id, day=body.day, amount=body.amount, entered_by=user.id))
     else:
         row.amount, row.entered_by = body.amount, user.id
+    db.commit()
+    return Response(status_code=204)
+
+
+# --- плановые технические операции в календаре (docs/TZ.md, раздел 26, «Детали 16.2») ---
+
+
+class TransferIn(BaseModel):
+    from_bank_account_id: int | None = None
+    from_cash_cfo_id: int | None = None
+    to_bank_account_id: int | None = None
+    to_cash_cfo_id: int | None = None
+    day: dt.date
+    amount: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    description: str = Field(default="", max_length=500)
+    legal_entity_id: int | None = None  # только касса ↔ касса без юрлица «Компании»
+
+
+class TransferOut(TransferIn):
+    id: int
+    legal_entity_id: int
+
+
+def _transfer_entity(db: Session, organization_id: int, body: TransferIn) -> int:
+    for side in ("from", "to"):
+        bank, cash = getattr(body, f"{side}_bank_account_id"), getattr(body, f"{side}_cash_cfo_id")
+        if (bank is None) == (cash is None):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                detail="Укажите, откуда и куда: расчётный счёт или кассу")
+        _scope(db, organization_id, None, bank, cash)
+    if (body.from_bank_account_id, body.from_cash_cfo_id) == (body.to_bank_account_id, body.to_cash_cfo_id):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Откуда и куда — один и тот же счёт")
+    for bank_id in (body.from_bank_account_id, body.to_bank_account_id):
+        if bank_id is not None:
+            return db.get(BankAccount, bank_id).legal_entity_id
+    roots = calendar_sheet._root_entity(db, organization_id)
+    entity = roots.get(body.from_cash_cfo_id) or roots.get(body.to_cash_cfo_id) or body.legal_entity_id
+    if entity is None:
+        entities = list(db.scalars(select(LegalEntity.id).where(LegalEntity.organization_id == organization_id)))
+        if len(entities) != 1:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Укажите юрлицо перемещения между кассами")
+        entity = entities[0]
+    _scope(db, organization_id, entity, None, None)
+    return entity
+
+
+def _transfer_out(t: CalendarTransfer) -> TransferOut:
+    return TransferOut(id=t.id, legal_entity_id=t.legal_entity_id, from_bank_account_id=t.from_bank_account_id,
+                       from_cash_cfo_id=t.from_cash_cfo_id, to_bank_account_id=t.to_bank_account_id,
+                       to_cash_cfo_id=t.to_cash_cfo_id, day=t.day, amount=t.amount, description=t.description)
+
+
+@router.post("/organizations/{organization_id}/calendar-transfers", response_model=TransferOut, status_code=201)
+def add_transfer(organization_id: int, body: TransferIn, user: CurrentUser, db: DbSession):
+    """Плановый перевод между своими счетами / сдача наличных / снятие в кассу (право проводить)."""
+    get_organization_for(db, user, organization_id, Perm.POST)
+    t = CalendarTransfer(organization_id=organization_id, legal_entity_id=_transfer_entity(db, organization_id, body),
+                         created_by=user.id, **body.model_dump(exclude={"legal_entity_id"}))
+    db.add(t)
+    db.commit()
+    db.refresh(t)
+    return _transfer_out(t)
+
+
+def _get_transfer(db: Session, user, transfer_id: int) -> CalendarTransfer:
+    t = db.get(CalendarTransfer, transfer_id)
+    if t is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Перевод не найден")
+    try:
+        get_organization_for(db, user, t.organization_id, Perm.POST)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_404_NOT_FOUND:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Перевод не найден") from None
+        raise
+    return t
+
+
+@router.get("/calendar-transfers/{transfer_id}", response_model=TransferOut)
+def get_transfer(transfer_id: int, user: CurrentUser, db: DbSession):
+    return _transfer_out(_get_transfer(db, user, transfer_id))
+
+
+@router.put("/calendar-transfers/{transfer_id}", response_model=TransferOut)
+def update_transfer(transfer_id: int, body: TransferIn, user: CurrentUser, db: DbSession):
+    t = _get_transfer(db, user, transfer_id)
+    t.legal_entity_id = _transfer_entity(db, t.organization_id, body)
+    for key, value in body.model_dump(exclude={"legal_entity_id"}).items():
+        setattr(t, key, value)
+    db.commit()
+    db.refresh(t)
+    return _transfer_out(t)
+
+
+@router.delete("/calendar-transfers/{transfer_id}", status_code=204)
+def delete_transfer(transfer_id: int, user: CurrentUser, db: DbSession) -> Response:
+    db.delete(_get_transfer(db, user, transfer_id))
     db.commit()
     return Response(status_code=204)

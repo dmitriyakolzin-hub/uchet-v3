@@ -77,10 +77,14 @@ def test_sheet(client, env):
     assert rows["open"]["cells"][d(0)]["fact"] == "30000.00"  # счёт + касса
     assert rows["in"]["cells"][d(-2)] == {"fact": "50000.00", "plan": None, "ops": [], "items": []}
     assert rows["out"]["cells"][d(0)]["plan"] == "1000.00" and rows["out"]["cells"][d(-1)]["fact"] == "20000.00"
-    assert f"in:e{le}:cash" not in rows  # по кассе поступлений нет
-    tech = rows[f"tech:withdrawal:{bank}"]
+    assert rows[f"in:e{le}:cash:{cash}"]["add"] == "inflow"  # касса — можно добавить поступление
+    assert rows[f"in:e{le}:bank:{bank}"]["source_ref"]["bank_account_id"] == env["bank_acc"]["id"]
+    tech = rows[f"tech:withdrawal:{bank}:{cash}"]  # счёт → встречная касса
+    assert tech["title"] == "в: Касса: Офис" and tech["kind"] == "line"
     assert tech["cells"][d(-1)]["fact"] == "-5000.00" and tech["cells"][d(-1)]["ops"][0]["number"]
     assert rows[f"tech:withdrawal:{cash}"]["cells"][d(-1)]["fact"] == "5000.00"
+    assert rows[f"tech:withdrawal:{cash}:{bank}"]["title"] == "из: Основной ··0001"
+    assert rows["tech"]["add"] == "transfer"
     assert rows["tech:withdrawal"]["title"] == "Снятие с расчётного счёта в кассу"
     assert rows["tech"]["cells"][d(-1)]["fact"] == "0.00"
     closing = rows[f"close:e{le}:bank:{bank}"]["cells"]
@@ -98,7 +102,8 @@ def test_sheet(client, env):
     cell = line["cells"][d(2)]
     assert cell["plan"] == "30000.00" and cell["items"][0]["movable"] and cell["items"][0]["amount_editable"]
     assert line["cells"][d(0)]["items"][0]["overdue"] is True
-    income = rows[f"det:in:e{le}:bank:{bank}:a{env['art']['Поступление от покупателей']}"]
+    assert not any(k.startswith("det:in") for k in rows)  # поступления раскрыты в своём блоке
+    income = rows[f"in:e{le}:bank:{bank}:a{env['art']['Поступление от покупателей']}"]
     assert income["cells"][d(-2)]["fact"] == "50000.00"
 
     # ручной остаток на завтра (по банк-клиенту) — прогноз идёт от него
@@ -156,3 +161,58 @@ def test_periodic_keeps_manual_move(client, env):
     rows = client.get(f"{env['o']}/periodic-payments", headers=env["h"]).json()  # подстройка под договор не откатывает
     m = rows[0]["months"][0]
     assert (m["pay_date"], m["amount"]) == (moved, "5500.00")
+
+
+def test_planned_transfer_and_manual_mode(client, env, db):
+    """Плановый перевод из календаря закрывается проведённым; «без выписок» — только введённое вручную."""
+    from app.models import Operation
+
+    office = env["office"]["id"]
+    client.post(f"{env['o']}/cash-desks", headers=env["h"], json={"cfo_id": office})
+    le, bank, cash = env["le"].id, f"bank:{env['bank_acc']['id']}", f"cash:{office}:{env['le'].id}"
+    url = f"{env['o']}/calendar-transfers"
+    body = {"from_bank_account_id": env["bank_acc"]["id"], "to_cash_cfo_id": office, "day": d(2), "amount": "3000",
+            "description": "на размен"}
+    resp = client.post(url, headers=env["h"], json=body)
+    assert resp.status_code == 201, resp.text
+    transfer = resp.json()
+    assert transfer["legal_entity_id"] == le
+    assert client.post(url, headers=env["h"], json={**body, "to_cash_cfo_id": None}).status_code == 422
+    assert client.post(url, headers=env["h"], json={**body, "to_cash_cfo_id": None,
+                                                    "to_bank_account_id": env["bank_acc"]["id"]}).status_code == 422
+    assert client.post(url, headers=env["ceo"], json=body).status_code == 403
+    rows = rows_of(sheet(client, env))
+    line = rows[f"tech:withdrawal:{bank}:{cash}"]
+    assert line["cells"][d(2)]["plan"] == "-3000.00" and line["cells"][d(2)]["items"][0]["source"] == "transfer"
+    assert rows[f"close:e{le}:cash:{cash}"]["cells"][d(2)]["plan"] == "3000.00"
+    assert rows[f"close:e{le}:bank:{bank}"]["cells"][d(2)]["plan"] == "-3000.00"
+    assert client.put(f"/api/calendar-transfers/{transfer['id']}", headers=env["h"],
+                      json={**body, "amount": "3500"}).json()["amount"] == "3500.00"
+
+    # проведённый такой же перевод (в пределах 14 дней) закрывает плановый
+    move = env["art"]["Перевод между своими счетами"]
+    resp = client.post(f"{env['o']}/operations?post=true", headers=env["h"], json={
+        "legal_entity_id": le, "op_date": d(0), "article_id": move, "postings": [{
+            "debit_account_id": env["acc"]["50"], "credit_account_id": env["acc"]["51"], "amount": "3500",
+            "debit": {"cfo": office, "cash_flow_item": move},
+            "credit": {"bank_account": env["bank_acc"]["id"], "cash_flow_item": move}}]})
+    assert resp.status_code == 201, resp.text
+    rows = rows_of(sheet(client, env))
+    line = rows[f"tech:withdrawal:{bank}:{cash}"]
+    assert d(2) not in line["cells"] and line["cells"][d(0)]["fact"] == "-3500.00"
+
+    # «без выписок»: операция, загруженная из выписки, не учитывается
+    operation(client, env, d(-1), "50000", True)
+    op = db.query(Operation).filter(Operation.description.is_(None) | (Operation.description == "")).order_by(
+        Operation.id.desc()).first()
+    op.import_key = f"{env['bank_acc']['id']}:in:{d(-1)}:1:50000:x"
+    db.commit()
+    full = rows_of(sheet(client, env))
+    manual = rows_of(sheet(client, env, with_statements="false"))
+    assert full[f"in:e{le}:bank:{bank}"]["cells"][d(-1)]["fact"] == "50000.00"
+    assert d(-1) not in manual[f"in:e{le}:bank:{bank}"]["cells"]
+    assert manual[f"open:e{le}:bank:{bank}"]["cells"][d(0)]["fact"] == "0.00"
+    assert full[f"open:e{le}:bank:{bank}"]["cells"][d(0)]["fact"] == "50000.00"
+
+    assert client.delete(f"/api/calendar-transfers/{transfer['id']}", headers=env["ceo"]).status_code == 403
+    assert client.delete(f"/api/calendar-transfers/{transfer['id']}", headers=env["h"]).status_code == 204

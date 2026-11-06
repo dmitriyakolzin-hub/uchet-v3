@@ -728,4 +728,13 @@
   signed, balance); `source_tree` в `api/calendar.py` строит блок → юрлицо → канал → счёт (→ статья → строка в расшифровке);
   Excel — то же дерево. `RequestOut.periodic_id/period`. Интерфейс: `renderSheet` (раскрытие по ключам в localStorage,
   «Развернуть всё»), `requestView` — карточка заявки с условиями периодического платежа. Тестов 389, ui_smoke дополнен.
+- 2026-11-06 — 16.1 влита (PR 68). Шаг 16.2 (ветка `etap-16-2-calendar-manual`), `docs/TZ.md`, раздел 26 «Детали 16.2».
+  Миграция 0045: `calendar_transfers` (плановый перевод: откуда/куда — счёт или касса, юрлицо, дата, сумма). `calendar_sheet`:
+  `with_statements` (без операций из выписки — `from_statement()`: import_key не NULL и не «xlsx:»), `Source.tech` — вид →
+  встречный счёт → день (факт и план), плановые переводы закрываются проведённым (±14 дней), остатки учитывают план
+  технических. API: `/payment-calendar/sheet?with_statements=`, строки с `source`, `source_ref`, `entity_id`, `add`;
+  «Поступления» раскрыты до статьи и контрагента, в расшифровке — только оплаты; `POST/GET/PUT/DELETE calendar-transfers`
+  (право POST); `POST /payment-requests/{id}/amount` — право SUPERVISE. Интерфейс: `drill` (провал в любую цифру, остатки
+  с формулой), `inflowForm`, `transferForm`, переключатель «С выписками / Без выписок», перенос и правка — только SUPERVISE,
+  операции из окна для остальных — только просмотр. Тестов 390, ui_smoke дополнен.
 
