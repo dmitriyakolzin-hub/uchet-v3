@@ -429,108 +429,127 @@ export async function renderCalendar(view) {
   sheetPending.addEventListener("change", () => { sheetFilter.include_pending = sheetPending.checked; loadSheet(); });
   const sheetQuery = () => new URLSearchParams(Object.entries(sheetFilter).filter(([, v]) => v !== "" && v !== false)).toString();
   sheetBox.append(
-    el("p", { class: "muted" }, "Как лист 1: колонки — дни, строки — остатки по счетам и кассам, поступления и платежи "
-      + "по статьям ДДС (строка — контрагент и договор). В ячейке зелёным — факт из выписки (журнал), серым — план "
-      + "календаря (заявки, ведомости, регламентные, инвестпроекты; просроченные — на сегодня). Щелчок по ячейке — "
-      + "что в ней; заявку можно перетащить на другой день или поправить сумму. Щелчок по остатку счёта — ввести остаток "
-      + "по банк-клиенту."),
+    el("p", { class: "muted" }, "Колонки — дни. Блоки «Деньги на начало», «Поступления», «Технические операции» "
+      + "(переводы между счетами, инкассация, снятие в кассу), «Оплаты», «Деньги на конец» раскрываются на юрлица, безнал "
+      + "и наличные, счета и кассы; ниже — «Расшифровка платежей» до статьи, контрагента и договора. В ячейке зелёным — "
+      + "факт из выписки (журнал), серым — план календаря (заявки, ведомости, регламентные, инвестпроекты; просроченные — "
+      + "на сегодня). Щелчок по ячейке — операции и заявки (карточка, сумма, перенос; заявку можно перетащить на другой "
+      + "день). Щелчок по остатку счёта в «Деньгах на начало» — ввести остаток по банк-клиенту."),
     el("div", { class: "filters" },
       el("label", { class: "inline" }, "С ", sheetInput("date_from", "Календарь с")),
       el("label", { class: "inline" }, "по ", sheetInput("date_to", "Календарь по")),
       sheetEntity, el("label", { class: "check" }, sheetPending, " с заявками на согласовании"),
+      el("button", { type: "button", class: "secondary", onclick: () => expandAll(true) }, "Развернуть всё"),
+      el("button", { type: "button", class: "secondary", onclick: () => expandAll(false) }, "Свернуть"),
       el("button", { type: "button", class: "secondary",
         onclick: () => api.download(`/api/organizations/${org.id}/payment-calendar/sheet.xlsx?${sheetQuery()}`,
           "payment_calendar.xlsx").catch((err) => toast(err.message, "error")) }, "Скачать в Excel")),
     sheetTable,
   );
 
-  function pairNode(p, negative) {
+  // раскрытые строки (ключи) — помним между обновлениями и заходами
+  const SHEET_OPEN_KEY = "uchet3_calendar_open";
+  let sheetOpen = new Set();
+  try { sheetOpen = new Set(JSON.parse(localStorage.getItem(SHEET_OPEN_KEY) || "[]")); } catch { /* не страшно */ }
+  const saveOpen = () => { try { localStorage.setItem(SHEET_OPEN_KEY, JSON.stringify([...sheetOpen])); } catch { /* не страшно */ } };
+  let sheetData = null;
+
+  function pairNode(p, signed, negative) {
     if (!p) return "";
+    const sign = (v) => (signed && Number(v) > 0 ? "+" : "");
     const parts = [];
-    if (p.fact !== null && p.fact !== undefined) parts.push(el("div", { class: "fact" }, money(p.fact)));
-    if (p.plan !== null && p.plan !== undefined) parts.push(el("div", { class: `plan${negative && Number(p.plan) < 0 ? " neg" : ""}` }, money(p.plan)));
+    if (p.fact !== null && p.fact !== undefined) {
+      parts.push(el("div", { class: `fact${negative && Number(p.fact) < 0 ? " neg" : ""}` }, sign(p.fact) + money(p.fact)));
+    }
+    if (p.plan !== null && p.plan !== undefined) {
+      parts.push(el("div", { class: `plan${negative && Number(p.plan) < 0 ? " neg" : ""}` }, sign(p.plan) + money(p.plan)));
+    }
     return parts;
   }
 
   async function loadSheet() {
     sheetEntity.replaceChildren(...[["", "Все юрлица"], ...ref.entities.map((e) => [String(e.id), e.short_name])]
       .map(([v, t]) => el("option", { value: v, selected: v === sheetFilter.legal_entity_id }, t)));
-    let data;
     try {
-      data = await api.get(`/api/organizations/${org.id}/payment-calendar/sheet?${sheetQuery()}`);
+      sheetData = await api.get(`/api/organizations/${org.id}/payment-calendar/sheet?${sheetQuery()}`);
     } catch (err) {
       sheetTable.replaceChildren(el("p", { class: "error" }, err.message));
       return;
     }
+    renderSheet();
+  }
+
+  function renderSheet() {
+    const data = sheetData;
+    const byKey = new Map(data.rows.map((r) => [r.key, r]));
+    const parents = new Set(data.rows.map((r) => r.parent).filter(Boolean));
+    const visible = (row) => {
+      for (let p = row.parent; p; p = byKey.get(p)?.parent) if (!sheetOpen.has(p)) return false;
+      return true;
+    };
     const dayClass = (d) => {
       const wd = new Date(`${d}T00:00:00`).getDay();
       return [wd === 0 || wd === 6 ? "weekend" : "", d === data.today ? "today" : ""].filter(Boolean).join(" ");
     };
-    const head = el("tr", {}, ...["Статья / контрагент", "Договор", "Безнал", "Касса", "Всего"].map((t, i) =>
-      el("th", { class: i === 0 ? "sticky" : "" }, t)),
-    ...data.days.map((d) => el("th", { class: dayClass(d) }, d.slice(8, 10) + "." + d.slice(5, 7),
-      el("div", { class: "small" }, DAY_NAMES[new Date(`${d}T00:00:00`).getDay()]))));
-    const rows = [];
-    const left = (title, cls = "", contract = "", totals = null) => [
-      el("td", { class: `sticky ${cls}` }, title), el("td", {}, contract),
-      el("td", { class: "num" }, totals ? money(totals[0]) : ""), el("td", { class: "num" }, totals ? money(totals[1]) : ""),
-      el("td", { class: "num" }, totals ? money((Number(totals[0]) + Number(totals[1])).toFixed(2)) : "")];
-    const section = (title) => rows.push(el("tr", { class: "sheet-section" }, el("td", { class: "sticky" }, title),
-      el("td", { colspan: 4 + data.days.length })));
-
-    for (const [kind, title] of [["bank", "р/с"], ["cash", "касса"]]) {
-      const own = data.sources.filter((src) => src.kind === kind);
-      if (!own.length) continue;
-      const t = data.totals[kind];
-      rows.push(el("tr", { class: "sheet-total" }, ...left(`НА НАЧАЛО ${title.toUpperCase()}`),
-        ...data.days.map((d) => el("td", { class: `num ${dayClass(d)}` }, pairNode(t.opening[d])))));
-      for (const src of own) {
-        const [type, id] = src.key.split(":");
-        const editable = can("post") && id !== "none";
-        rows.push(el("tr", { "data-source": src.title }, ...left(src.title, "indent"),
-          ...data.days.map((d) => el("td", { class: `num ${dayClass(d)}${editable ? " clickable" : ""}`,
-            title: editable ? "Ввести остаток на начало дня" : "",
-            onclick: editable ? () => balanceForm(src, type, Number(id), d) : undefined }, pairNode(src.opening[d])))));
+    const head = el("tr", {}, el("th", { class: "sticky" }, ""),
+      ...data.days.map((d) => el("th", { class: dayClass(d) }, d.slice(8, 10) + "." + d.slice(5, 7),
+        el("div", { class: "small" }, DAY_NAMES[new Date(`${d}T00:00:00`).getDay()]))));
+    const body = [];
+    for (const row of data.rows) {
+      if (!visible(row)) continue;
+      const hasChildren = parents.has(row.key);
+      const open = sheetOpen.has(row.key);
+      const toggle = hasChildren ? el("button", { type: "button", class: "tree-toggle", "aria-expanded": String(open),
+        "aria-label": `${open ? "Свернуть" : "Раскрыть"}: ${row.title}`,
+        onclick: () => { if (open) sheetOpen.delete(row.key); else sheetOpen.add(row.key); saveOpen(); renderSheet(); } },
+      open ? "▾" : "▸") : el("span", { class: "tree-toggle" }, "");
+      const tr = el("tr", { class: `sheet-${row.kind}`, "data-key": row.key },
+        el("td", { class: "sticky", style: `padding-left: ${6 + row.level * 16}px`, title: row.subtitle ? `${row.title}, ${row.subtitle}` : row.title },
+          toggle, " ", row.title, row.subtitle ? el("span", { class: "muted" }, ` · ${row.subtitle}`) : ""));
+      if (row.kind === "section") {
+        tr.append(el("td", { colspan: data.days.length }));
+        body.push(tr);
+        continue;
       }
-      rows.push(el("tr", {}, ...left(`Поступления ${title}`), ...data.days.map((d) => el("td", { class: `num ${dayClass(d)}` }, pairNode(t.inflow[d])))));
-      rows.push(el("tr", {}, ...left(`Платежи ${title}`), ...data.days.map((d) => el("td", { class: `num ${dayClass(d)}` }, pairNode(t.outflow[d])))));
-      rows.push(el("tr", { class: "sheet-total" }, ...left(`НА КОНЕЦ ${title.toUpperCase()}`),
-        ...data.days.map((d) => el("td", { class: `num ${dayClass(d)}${Number(t.closing[d]) < 0 ? " neg" : ""}` },
-          d < data.today ? el("div", { class: "fact" }, money(t.closing[d])) : el("div", { class: "plan" }, money(t.closing[d]))))));
-    }
-    for (const [direction, title] of [["in", "ПОСТУПЛЕНИЯ"], ["out", "ПЛАТЕЖИ"]]) {
-      const groups = data.groups.filter((g) => g.direction === direction);
-      if (!groups.length) continue;
-      section(title);
-      for (const g of groups) {
-        rows.push(el("tr", { class: "sheet-group" }, ...left(g.title, "", "", [g.bank, g.cash]),
-          ...data.days.map((d) => el("td", { class: `num ${dayClass(d)}` }, pairNode(g.cells[d])))));
-        for (const line of g.lines) {
-          const tr = el("tr", { "data-line": `${g.title}|${line.title}` }, ...left(line.title, "indent", line.contract_title, [line.bank, line.cash]));
-          for (const d of data.days) {
-            const cell = line.cells[d];
-            const movable = cell?.items.filter((i) => i.movable) ?? [];
-            const td = el("td", { class: `num ${dayClass(d)}${cell ? " clickable" : ""}`, "data-day": d,
-              draggable: movable.length && can("post") ? "true" : undefined,
-              onclick: cell ? () => cellDetails(g, line, d, cell) : undefined }, pairNode(cell));
-            if (movable.length && can("post")) {
-              td.addEventListener("dragstart", (e) => e.dataTransfer.setData("text/plain", JSON.stringify(movable.map((i) => i.source_id))));
-            }
-            td.addEventListener("dragover", (e) => { if (can("post")) e.preventDefault(); });
-            td.addEventListener("drop", (e) => {
-              e.preventDefault();
-              let ids = [];
-              try { ids = JSON.parse(e.dataTransfer.getData("text/plain")); } catch { return; }
-              moveRequests(ids, d);
-            });
-            tr.append(td);
-          }
-          rows.push(tr);
+      const negative = row.key.startsWith("close") || row.key.startsWith("open");
+      for (const d of data.days) {
+        const cell = row.cells[d];
+        const movable = row.kind === "line" ? (cell?.items ?? []).filter((i) => i.movable) : [];
+        const details = cell && ((cell.ops?.length ?? 0) || (cell.items?.length ?? 0));
+        const balance = row.balance && can("post") && row.key.startsWith("open:");
+        const td = el("td", { class: `num ${dayClass(d)}${details || balance ? " clickable" : ""}`, "data-day": d,
+          title: balance ? "Ввести остаток на начало дня по банк-клиенту" : "",
+          draggable: movable.length && can("post") ? "true" : undefined,
+          onclick: balance ? () => balanceForm(row, d) : details ? () => cellDetails(row, d, cell) : undefined },
+        pairNode(cell, row.signed, negative));
+        if (movable.length && can("post")) {
+          td.addEventListener("dragstart", (e) => e.dataTransfer.setData("text/plain", JSON.stringify(movable.map((i) => i.source_id))));
         }
+        if (row.kind === "line") {
+          td.addEventListener("dragover", (e) => { if (can("post")) e.preventDefault(); });
+          td.addEventListener("drop", (e) => {
+            e.preventDefault();
+            let ids = [];
+            try { ids = JSON.parse(e.dataTransfer.getData("text/plain")); } catch { return; }
+            moveRequests(ids, d);
+          });
+        }
+        tr.append(td);
       }
+      body.push(tr);
     }
-    if (!data.groups.length) rows.push(el("tr", {}, el("td", { class: "sticky muted" }, "Платежей за период нет."), el("td", { colspan: 4 + data.days.length })));
-    sheetTable.replaceChildren(el("table", { class: "pay-sheet" }, el("thead", {}, head), el("tbody", {}, ...rows)));
+    sheetTable.replaceChildren(el("table", { class: "pay-sheet" }, el("thead", {}, head), el("tbody", {}, ...body)));
+  }
+
+  function expandAll(open) {
+    if (!sheetData) return;
+    if (open) {
+      for (const r of sheetData.rows) if (r.parent) sheetOpen.add(r.parent);
+    } else {
+      sheetOpen.clear();
+    }
+    saveOpen();
+    renderSheet();
   }
 
   async function moveRequests(ids, day) {
@@ -547,46 +566,96 @@ export async function renderCalendar(view) {
     await loadSheet();
   }
 
-  function balanceForm(src, type, id, day) {
-    const current = src.opening[day];
+  function balanceForm(row, day) {
+    const current = row.cells[day];
     openForm({
-      title: `Остаток на начало ${date(day)}: ${src.title}`,
+      title: `Остаток на начало ${date(day)}: ${row.title}`,
       fields: [{ name: "amount", label: "Остаток по банк-клиенту, ₽",
         hint: `По журналу: ${current?.fact !== null && current?.fact !== undefined ? money(current.fact) : "—"}. Пусто — убрать ручной остаток` }],
       submitText: "Сохранить",
       onSubmit: async (v) => {
         const amount = v.amount === "" ? null : parseNumber(v.amount);
         if (v.amount !== "" && amount === null) throw new Error("Остаток — число, например 1 250 000,00");
-        await api.put(`/api/organizations/${org.id}/calendar-balances`, {
-          [type === "bank" ? "bank_account_id" : "cash_cfo_id"]: id, day, amount });
+        await api.put(`/api/organizations/${org.id}/calendar-balances`, { ...row.balance, day, amount });
         await loadSheet();
       },
     });
   }
 
-  function cellDetails(g, line, day, cell) {
+  function cellDetails(row, day, cell) {
     const close = () => dialog.close();
-    const ops = cell.ops.length ? el("ul", {}, ...cell.ops.map((o) => el("li", {},
+    const ops = cell.ops?.length ? el("ul", {}, ...cell.ops.map((o) => el("li", {},
       el("button", { type: "button", class: "link", onclick: async () => {
         close();
         openOperation({ ref, org, op: await api.get(`/api/operations/${o.operation_id}`), perms: org.permissions, onChanged: loadSheet });
       } }, `Операция № ${o.number}`), ` — ${money(o.amount)}`))) : el("p", { class: "muted" }, "Нет.");
-    const items = cell.items.length ? el("ul", {}, ...cell.items.map((i) => el("li", {},
+    const items = cell.items?.length ? el("ul", {}, ...cell.items.map((i) => el("li", {},
       `${i.title} — ${money(i.amount)}`, i.overdue ? el("span", { class: "over-budget" }, ` (просрочен, ${date(i.date)})`) : "",
+      i.source === "request" ? el("button", { type: "button", class: "link", onclick: () => { close(); requestView(i.source_id); } }, " Заявка") : "",
       i.amount_editable && can("post") ? el("button", { type: "button", class: "link", onclick: () => { close(); amountForm(i); } }, " Сумма") : "",
       i.movable && can("post") ? el("button", { type: "button", class: "link", onclick: async () => {
         close();
         move(await api.get(`/api/payment-requests/${i.source_id}`), loadSheet);
-      } }, " Перенести") : "",
-      i.source === "request" ? el("button", { type: "button", class: "link", onclick: async () => {
-        history(await api.get(`/api/payment-requests/${i.source_id}`));
-      } }, " История") : ""))) : el("p", { class: "muted" }, "Нет.");
+      } }, " Перенести") : ""))) : el("p", { class: "muted" }, "Нет.");
     const dialog = el("dialog", { class: "dialog wide" },
-      el("h2", {}, `${date(day)}: ${line.title}${line.contract_title ? `, договор ${line.contract_title}` : ""}`),
-      el("p", { class: "muted" }, g.title),
+      el("h2", {}, `${date(day)}: ${row.title}${row.subtitle ? `, договор ${row.subtitle}` : ""}`),
       el("h3", {}, "Факт (выписка, журнал)"), ops,
       el("h3", {}, "План (календарь)"), items,
       el("div", { class: "form-actions" }, el("button", { type: "button", onclick: close }, "Закрыть")));
+    document.body.append(dialog);
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.showModal();
+  }
+
+  // карточка заявки из календаря; периодический платёж — с условиями договора
+  async function requestView(id) {
+    let r;
+    try {
+      r = await api.get(`/api/payment-requests/${id}`);
+    } catch (err) {
+      toast(err.message, "error");
+      return;
+    }
+    let periodic = null;
+    if (r.periodic_id && r.contract_id) {
+      try {
+        const terms = await api.get(`/api/contracts/${r.contract_id}/payments`);
+        periodic = terms.find((t) => t.id === r.periodic_id) ?? null;
+      } catch { /* без условий */ }
+    }
+    const field = (title, value) => (value ? el("tr", {}, el("th", {}, title), el("td", {}, value)) : null);
+    const month = r.period ? new Date(`${r.period}T00:00:00`).toLocaleDateString("ru-RU", { month: "long", year: "numeric" }) : "";
+    const dialog = el("dialog", { class: "dialog wide" },
+      el("h2", {}, `Заявка № ${r.number}`),
+      el("table", { class: "recon request-card" }, el("tbody", {},
+        field("Статус", STATUS[r.status] + (r.status === "pending" && r.step_title ? ` (у: ${r.step_title})` : "")),
+        field("Вид", DIRECTION[r.direction]),
+        field("Дата оплаты", date(r.pay_date)),
+        field("Сумма", money(r.amount)),
+        field("Юрлицо", r.legal_entity_name),
+        field("Счёт / касса", r.source_name),
+        field("Контрагент", r.counterparty_name),
+        field("Договор", r.contract_name),
+        field("Статья ДДС", r.article_name),
+        field("ЦФО / ЦФУ", [r.cfo_name, r.executor_name].filter(Boolean).join(" · ")),
+        field("Назначение", r.description),
+        field("Маршрут", r.route_titles.join(" → ")),
+        field("Создал(а)", r.created_by_name),
+        field("Согласовал(а)", r.approved_by_name),
+        field("Оплачена", r.paid_on ? `${date(r.paid_on)}${r.operation_number ? `, операция № ${r.operation_number}` : ""}` : ""),
+        field("Периодический платёж", r.source === "periodic"
+          ? `за ${month}` + (periodic ? `: с ${date(periodic.valid_from)}${periodic.valid_to ? ` по ${date(periodic.valid_to)}` : ""}, `
+            + `${periodic.day}-го числа, ${money(periodic.amount)}` : "") : ""),
+        field("Файлы", r.files.length ? el("span", {}, ...r.files.map((f) => el("button", { type: "button", class: "link",
+          onclick: () => api.download(`/api/payment-request-files/${f.id}`, f.filename).catch((err) => toast(err.message, "error")) },
+        f.filename, " "))) : ""))),
+      el("div", { class: "form-actions" },
+        el("button", { type: "button", class: "secondary", onclick: () => history(r) }, "История"),
+        r.operation_id ? el("button", { type: "button", class: "secondary", onclick: async () => {
+          dialog.close();
+          openOperation({ ref, org, op: await api.get(`/api/operations/${r.operation_id}`), perms: org.permissions, onChanged: loadSheet });
+        } }, "Операция оплаты") : "",
+        el("button", { type: "button", onclick: () => dialog.close() }, "Закрыть")));
     document.body.append(dialog);
     dialog.addEventListener("close", () => dialog.remove());
     dialog.showModal();

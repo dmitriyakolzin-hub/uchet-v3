@@ -39,48 +39,84 @@ def approved(client, env, **fields):
     return act(client, env, req, "approve").json()
 
 
+def rows_of(data):
+    return {r["key"]: r for r in data["rows"]}
+
+
 def test_sheet(client, env):
+    office = env["office"]["id"]
+    assert client.post(f"{env['o']}/cash-desks", headers=env["h"], json={"cfo_id": office}).status_code == 204
     operation(client, env, d(-2), "50000", True)
     operation(client, env, d(-1), "20000", False)
+    # снятие с расчётного счёта в кассу — техническая операция
+    move = env["art"]["Перевод между своими счетами"]
+    resp = client.post(f"{env['o']}/operations?post=true", headers=env["h"], json={
+        "legal_entity_id": env["le"].id, "op_date": d(-1), "article_id": move, "postings": [{
+            "debit_account_id": env["acc"]["50"], "credit_account_id": env["acc"]["51"], "amount": "5000",
+            "debit": {"cfo": office, "cash_flow_item": move},
+            "credit": {"bank_account": env["bank_acc"]["id"], "cash_flow_item": move}}]})
+    assert resp.status_code == 201, resp.text
     req = approved(client, env, pay_date=d(2), amount="30000")
     approved(client, env, pay_date=d(-3), amount="1000")  # просрочена — на сегодня
 
     data = sheet(client, env)
     assert data["days"][0] == d(-3) and len(data["days"]) == 9
-    bank = next(s for s in data["sources"] if s["key"] == f"bank:{env['bank_acc']['id']}")
-    assert bank["title"] == "Основной ··0001"
-    assert (bank["opening"][d(-1)]["fact"], bank["opening"][d(0)]["fact"]) == ("50000.00", "30000.00")
-    assert bank["opening"][d(1)] == {"fact": None, "plan": "29000.00"}  # прогноз: 30 000 − 1 000
-    assert (bank["closing"][d(0)], bank["closing"][d(2)]) == ("29000.00", "-1000.00")
-    totals = data["totals"]["bank"]
-    assert totals["inflow"][d(-2)] == {"fact": "50000.00", "plan": None}
-    assert totals["outflow"][d(0)] == {"fact": None, "plan": "1000.00"}
+    rows = rows_of(data)
+    blocks = [r["title"] for r in data["rows"] if r["level"] == 0]
+    assert blocks == ["Деньги на начало", "Поступления", "Технические операции", "Оплаты", "Деньги на конец",
+                      "Расшифровка платежей"]
+    le, bank = env["le"].id, f"bank:{env['bank_acc']['id']}"
+    cash = f"cash:{office}:{le}"
+    account = rows[f"open:e{le}:bank:{bank}"]
+    assert (account["title"], account["parent"], account["balance"]["bank_account_id"]) == \
+        ("Основной ··0001", f"open:e{le}:bank", env["bank_acc"]["id"])
+    assert rows[f"open:e{le}"]["title"] == "А" and rows[f"open:e{le}:bank"]["title"] == "Безнал"
+    assert (account["cells"][d(-1)]["fact"], account["cells"][d(0)]["fact"]) == ("50000.00", "25000.00")
+    assert account["cells"][d(1)]["plan"] == "24000.00"  # прогноз: 25 000 − 1 000
+    assert rows[f"open:e{le}:cash:{cash}"]["cells"][d(0)]["fact"] == "5000.00"
+    assert rows["open"]["cells"][d(0)]["fact"] == "30000.00"  # счёт + касса
+    assert rows["in"]["cells"][d(-2)] == {"fact": "50000.00", "plan": None, "ops": [], "items": []}
+    assert rows["out"]["cells"][d(0)]["plan"] == "1000.00" and rows["out"]["cells"][d(-1)]["fact"] == "20000.00"
+    assert f"in:e{le}:cash" not in rows  # по кассе поступлений нет
+    tech = rows[f"tech:withdrawal:{bank}"]
+    assert tech["cells"][d(-1)]["fact"] == "-5000.00" and tech["cells"][d(-1)]["ops"][0]["number"]
+    assert rows[f"tech:withdrawal:{cash}"]["cells"][d(-1)]["fact"] == "5000.00"
+    assert rows["tech:withdrawal"]["title"] == "Снятие с расчётного счёта в кассу"
+    assert rows["tech"]["cells"][d(-1)]["fact"] == "0.00"
+    closing = rows[f"close:e{le}:bank:{bank}"]["cells"]
+    assert (closing[d(-1)]["fact"], closing[d(0)]["plan"], closing[d(2)]["plan"]) == \
+        ("25000.00", "24000.00", "-6000.00")
+    assert rows["close"]["cells"][d(2)]["plan"] == "-1000.00"  # + касса 5 000
 
-    groups = {(g["direction"], g["title"]): g for g in data["groups"]}
-    assert list(groups)[0][0] == "in"  # сначала поступления
-    income = groups[("in", "Поступление от покупателей")]["lines"][0]
-    assert (income["title"], income["cells"][d(-2)]["fact"]) == ("Арендодатель", "50000.00")
-    pay = groups[("out", "Оплата поставщикам")]
-    line = pay["lines"][0]
-    assert (line["title"], line["contract_title"], line["bank"]) == ("Арендодатель", "№ 1", "51000.00")
+    # расшифровка: оплаты → юрлицо → безнал → счёт → статья → контрагент + договор
+    base = f"det:out:e{le}:bank:{bank}"
+    article = rows[f"{base}:a{env['art']['Оплата поставщикам']}"]
+    assert article["title"] == "Оплата поставщикам" and rows[base]["parent"] == f"det:out:e{le}:bank"
+    line = next(r for r in data["rows"] if r["parent"] == article["key"])
+    assert (line["title"], line["subtitle"], line["kind"]) == ("Арендодатель", "№ 1", "line")
     assert line["cells"][d(-1)]["fact"] == "20000.00" and line["cells"][d(-1)]["ops"][0]["amount"] == "20000.00"
     cell = line["cells"][d(2)]
     assert cell["plan"] == "30000.00" and cell["items"][0]["movable"] and cell["items"][0]["amount_editable"]
     assert line["cells"][d(0)]["items"][0]["overdue"] is True
-    assert pay["cells"][d(2)] == {"fact": None, "plan": "30000.00"}
+    income = rows[f"det:in:e{le}:bank:{bank}:a{env['art']['Поступление от покупателей']}"]
+    assert income["cells"][d(-2)]["fact"] == "50000.00"
 
     # ручной остаток на завтра (по банк-клиенту) — прогноз идёт от него
     url = f"{env['o']}/calendar-balances"
     body = {"bank_account_id": env["bank_acc"]["id"], "day": d(1), "amount": "100000"}
     assert client.put(url, headers=env["h"], json=body).status_code == 204
     assert client.put(url, headers=env["h"], json={**body, "amount": "100500.50"}).status_code == 204
-    bank = next(s for s in sheet(client, env)["sources"] if s["key"].startswith("bank:") and s["key"] != "bank:none")
-    assert (bank["opening"][d(1)]["plan"], bank["closing"][d(2)]) == ("100500.50", "70500.50")
+    rows = rows_of(sheet(client, env))
+    assert rows[f"open:e{le}:bank:{bank}"]["cells"][d(1)]["plan"] == "100500.50"
+    assert rows[f"close:e{le}:bank:{bank}"]["cells"][d(2)]["plan"] == "70500.50"
     assert client.put(url, headers=env["h"], json={"day": d(1), "amount": "1"}).status_code == 422
     assert client.put(url, headers=env["ceo"], json=body).status_code == 403
     assert client.put(url, headers=env["h"], json={**body, "amount": None}).status_code == 204
-    bank = next(s for s in sheet(client, env)["sources"] if s["key"].startswith("bank:") and s["key"] != "bank:none")
-    assert bank["opening"][d(1)]["plan"] == "29000.00"
+    # ручной остаток кассы
+    assert client.put(url, headers=env["h"], json={"cash_cfo_id": office, "day": d(1), "amount": "7000"}).status_code == 204
+    rows = rows_of(sheet(client, env))
+    assert rows[f"open:e{le}:bank:{bank}"]["cells"][d(1)]["plan"] == "24000.00"
+    assert rows[f"open:e{le}:cash:{cash}"]["cells"][d(1)]["plan"] == "7000.00"
 
     # правка суммы в ячейке — та же заявка, с историей; перенос
     resp = act(client, env, req, "amount", amount="35000")
@@ -88,7 +124,8 @@ def test_sheet(client, env):
     events = client.get(f"/api/payment-requests/{req['id']}/events", headers=env["h"]).json()
     assert (events[-1]["action"], events[-1]["comment"]) == ("amount", "30000.00 → 35000.00")
     act(client, env, req, "move", pay_date=d(4), bank_account_id=env["bank_acc"]["id"])
-    line = next(g for g in sheet(client, env)["groups"] if g["title"] == "Оплата поставщикам")["lines"][0]
+    rows = rows_of(sheet(client, env))
+    line = next(r for r in rows.values() if r["parent"] == article["key"])
     assert d(2) not in line["cells"] and line["cells"][d(4)]["plan"] == "35000.00"
     assert act(client, env, req, "amount", h=env["ceo"], amount="1").status_code == 403
 
@@ -100,9 +137,9 @@ def test_sheet(client, env):
     assert client.get(f"{env['o']}/payment-calendar/sheet", headers=env["h"],
                       params={"date_from": d(0), "date_to": d(70)}).status_code == 422
     # будущий период: остаток на начало — прогноз
-    future = sheet(client, env, date_from=d(3), date_to=d(5))
-    bank = next(s for s in future["sources"] if s["key"].startswith("bank:") and s["key"] != "bank:none")
-    assert bank["opening"][d(4)]["plan"] == "29000.00" and bank["closing"][d(4)] == "-6000.00"
+    rows = rows_of(sheet(client, env, date_from=d(3), date_to=d(5)))
+    account = rows[f"open:e{le}:bank:{bank}"]
+    assert account["cells"][d(4)]["plan"] == "24000.00" and rows[f"close:e{le}:bank:{bank}"]["cells"][d(4)]["plan"] == "-11000.00"
 
 
 def test_periodic_keeps_manual_move(client, env):
