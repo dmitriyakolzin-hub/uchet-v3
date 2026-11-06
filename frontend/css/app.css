@@ -353,3 +353,12 @@ table.pay-sheet .neg, table.pay-sheet td.neg .plan, table.pay-sheet td.neg .fact
 .ms-actions { text-align: right; margin: 4px 0; }
 .ms-item { display: flex; gap: 6px; align-items: flex-start; padding: 2px 0; font-weight: normal; }
 .analytic .add-ref { font-size: 12px; margin-top: 2px; }
+/* календарь: раскрывающиеся блоки (раздел 26) */
+table.pay-sheet tr.sheet-block td { font-weight: 700; background: #f4f6fb; }
+table.pay-sheet tr.sheet-entity td { font-weight: 600; }
+table.pay-sheet tr.sheet-channel td.sticky { font-style: italic; }
+table.pay-sheet tr.sheet-article td { font-weight: 600; color: #344054; }
+table.pay-sheet tr.sheet-section td { font-weight: 700; background: #e4ebf6; text-transform: uppercase; letter-spacing: .02em; }
+table.pay-sheet td.sticky { min-width: 280px; }
+.tree-toggle { display: inline-block; width: 16px; border: 0; background: none; padding: 0; cursor: pointer; color: #475467; }
+table.request-card th { text-align: left; width: 180px; color: #475467; font-weight: 500; }

@@ -139,6 +139,8 @@ class RequestOut(BaseModel):
     linked_id: int | None = None  # поступление внутри группы: выплата плательщика
     linked_number: int | None = None
     group_name: str = ""  # выплата внутри группы: юрлицо-получатель
+    periodic_id: int | None = None  # периодический платёж: условия договора и месяц
+    period: dt.date | None = None
 
 
 class ListOut(BaseModel):
@@ -206,6 +208,7 @@ def _out(db: Session, requests: list[PaymentRequest], scoped: bool, user: User |
             can_act=user is not None and approval.can_act(db, user, r),
             files=files.get(r.id, []), sent_at=r.sent_at, linked_id=r.linked_id, linked_number=linked.get(r.linked_id),
             group_name=(g.short_name if (g := group_payments.receiver(db, r)) else ""),
+            periodic_id=r.periodic_id, period=r.period,
         ))
     return rows
 

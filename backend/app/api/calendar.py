@@ -222,9 +222,10 @@ def calendar_xlsx(organization_id: int, user: CurrentUser, db: DbSession, date_f
                     headers={"Content-Disposition": 'attachment; filename="payment_calendar.xlsx"'})
 
 
-# --- календарь по форме владельца, «лист 1» (docs/TZ.md, раздел 24, «Детали 14.6») ---
+# --- календарь по форме владельца: раскрывающиеся блоки (docs/TZ.md, раздел 24 «Детали 14.6», раздел 26 «Детали 16.1») ---
 
 MAX_SHEET_DAYS = 62
+CHANNELS = (("bank", "Безнал"), ("cash", "Наличные"))
 
 
 class PairOut(BaseModel):
@@ -255,39 +256,21 @@ class SheetCell(PairOut):
     items: list[SheetItem] = []
 
 
-class SheetLine(BaseModel):
-    counterparty_id: int | None
-    contract_id: int | None
-    title: str
-    contract_title: str
-    bank: Decimal
-    cash: Decimal
-    cells: dict[dt.date, SheetCell]
+class BalanceRef(BaseModel):
+    bank_account_id: int | None = None
+    cash_cfo_id: int | None = None
 
 
-class SheetGroup(BaseModel):
-    direction: str
-    article_id: int | None
-    title: str
-    bank: Decimal
-    cash: Decimal
-    cells: dict[dt.date, PairOut]
-    lines: list[SheetLine]
-
-
-class SheetSource(BaseModel):
+class SheetRow(BaseModel):
     key: str
-    kind: str
+    parent: str | None
+    level: int
+    kind: str  # block / entity / channel / source / type / article / line / section
     title: str
-    opening: dict[dt.date, PairOut]
-    closing: dict[dt.date, Decimal]
-
-
-class SheetTotals(BaseModel):
-    opening: dict[dt.date, PairOut]
-    inflow: dict[dt.date, PairOut]
-    outflow: dict[dt.date, PairOut]
-    closing: dict[dt.date, Decimal]
+    subtitle: str = ""  # договор строки расшифровки
+    signed: bool = False  # технические операции: + пришло, − ушло
+    balance: BalanceRef | None = None  # остаток на начало можно ввести вручную
+    cells: dict[dt.date, SheetCell] = {}
 
 
 class SheetOut(BaseModel):
@@ -295,19 +278,17 @@ class SheetOut(BaseModel):
     date_to: dt.date
     today: dt.date
     days: list[dt.date]
-    sources: list[SheetSource]
-    totals: dict[str, SheetTotals]  # bank / cash
-    groups: list[SheetGroup]
+    rows: list[SheetRow]
 
 
-def _pair(p) -> PairOut:
-    return PairOut(fact=p.fact, plan=p.plan)
-
-
-def _sum_pairs(pairs) -> PairOut:
-    fact = [p.fact for p in pairs if p.fact is not None]
-    plan = [p.plan for p in pairs if p.plan is not None]
-    return PairOut(fact=sum(fact, Decimal("0.00")) if fact else None, plan=sum(plan, Decimal("0.00")) if plan else None)
+def _add(target: dict, day, fact=None, plan=None) -> None:
+    if fact is None and plan is None:
+        return
+    cell = target.setdefault(day, SheetCell())
+    if fact is not None:
+        cell.fact = (cell.fact or Decimal("0.00")) + fact
+    if plan is not None:
+        cell.plan = (cell.plan or Decimal("0.00")) + plan
 
 
 def _sheet(db: Session, user, organization_id: int, date_from: dt.date, date_to: dt.date, legal_entity_id,
@@ -320,8 +301,8 @@ def _sheet(db: Session, user, organization_id: int, date_from: dt.date, date_to:
     _scope(db, organization_id, legal_entity_id, None, None)
     sheet = calendar_sheet.build(db, organization_id, date_from, date_to, legal_entity_id=legal_entity_id,
                                  include_pending=include_pending)
-    request_ids = {i.source_id for g in sheet.groups for ln in g.lines.values() for c in ln.cells.values()
-                   for i in c.items if i.source == "request"}
+    today = sheet.today
+    request_ids = {i.source_id for ln in sheet.lines for c in ln.cells.values() for i in c.items if i.source == "request"}
     requests = {r.id: r for r in db.scalars(select(PaymentRequest).where(PaymentRequest.id.in_(request_ids)))} \
         if request_ids else {}
 
@@ -332,37 +313,127 @@ def _sheet(db: Session, user, organization_id: int, date_from: dt.date, date_to:
                          status=i.status, overdue=i.overdue, movable=movable,
                          amount_editable=movable and req.source != "supplier")
 
-    groups = []
-    for g in sheet.groups:
-        lines = [SheetLine(counterparty_id=ln.counterparty_id, contract_id=ln.contract_id, title=ln.title,
-                           contract_title=ln.contract_title, bank=ln.bank, cash=ln.cash,
-                           cells={d: SheetCell(fact=c.fact, plan=c.plan, ops=[SheetOp(**o.__dict__) for o in c.ops],
-                                               items=[item_out(i) for i in c.items]) for d, c in ln.cells.items()})
-                 for ln in g.lines.values()]
-        cells = {d: _sum_pairs([ln.cells[d] for ln in lines if d in ln.cells]) for d in sheet.days
-                 if any(d in ln.cells for ln in lines)}
-        groups.append(SheetGroup(direction=g.direction, article_id=g.article_id, title=g.title,
-                                 bank=sum((ln.bank for ln in lines), Decimal("0.00")),
-                                 cash=sum((ln.cash for ln in lines), Decimal("0.00")), cells=cells, lines=lines))
-    totals = {}
-    for kind in ("bank", "cash"):
-        own = [s for s in sheet.sources if s.kind == kind]
+    def detail_cell(c) -> SheetCell:
+        return SheetCell(fact=c.fact, plan=c.plan, ops=[SheetOp(**o.__dict__) for o in c.ops],
+                         items=[item_out(i) for i in c.items])
 
-        def flows(fact_attr, plan_attr, d):
-            fact = sum((getattr(s, fact_attr).get(d, Decimal("0.00")) for s in own), Decimal("0.00"))
-            plan = sum((getattr(s, plan_attr).get(d, Decimal("0.00")) for s in own), Decimal("0.00"))
-            return PairOut(fact=fact or None, plan=plan or None)
+    rows: list[SheetRow] = []
 
-        totals[kind] = SheetTotals(
-            opening={d: _sum_pairs([s.opening[d] for s in own if d in s.opening]) for d in sheet.days},
-            inflow={d: flows("fact_in", "plan_in", d) for d in sheet.days},
-            outflow={d: flows("fact_out", "plan_out", d) for d in sheet.days},
-            closing={d: sum((s.closing.get(d, Decimal("0.00")) for s in own), Decimal("0.00")) for d in sheet.days})
-    return SheetOut(date_from=date_from, date_to=date_to, today=sheet.today, days=sheet.days,
-                    sources=[SheetSource(key=s.key, kind=s.kind, title=s.title,
-                                         opening={d: _pair(p) for d, p in s.opening.items()}, closing=s.closing)
-                             for s in sheet.sources],
-                    totals=totals, groups=groups)
+    def push(row: SheetRow) -> SheetRow:
+        rows.append(row)
+        return row
+
+    def merge(target: SheetRow, source: SheetRow) -> None:
+        for day, c in source.cells.items():
+            _add(target.cells, day, c.fact, c.plan)
+
+    def source_tree(prefix: str, title: str, values, include_all: bool, level: int = 0, parent: str | None = None,
+                    balance: bool = False, leaf=None) -> None:
+        """Блок → юрлицо → безнал / наличные → счёт или касса (→ leaf: строки под счётом)."""
+        block = push(SheetRow(key=prefix, parent=parent, level=level, kind="block", title=title))
+        for entity_id, entity_name in sheet.entities.items():
+            entity = SheetRow(key=f"{prefix}:e{entity_id}", parent=prefix, level=level + 1, kind="entity",
+                              title=entity_name)
+            body: list[SheetRow] = []
+            for kind, channel_title in CHANNELS:
+                channel = SheetRow(key=f"{entity.key}:{kind}", parent=entity.key, level=level + 2, kind="channel",
+                                   title=channel_title)
+                channel_body: list[SheetRow] = []
+                for src in sheet.sources:
+                    if src.entity_id != entity_id or src.kind != kind:
+                        continue
+                    cells = values(src)
+                    if not include_all and not cells:
+                        continue
+                    row = SheetRow(key=f"{channel.key}:{src.key}", parent=channel.key, level=level + 3, kind="source",
+                                   title=src.title, cells=cells,
+                                   balance=BalanceRef(bank_account_id=src.bank_account_id, cash_cfo_id=src.cash_cfo_id)
+                                   if balance and (src.bank_account_id or src.cash_cfo_id) else None)
+                    channel_body += [row, *(leaf(row, src) if leaf else [])]
+                    merge(channel, row)
+                if channel_body:
+                    body += [channel, *channel_body]
+                    merge(entity, channel)
+            if body:
+                rows.extend([entity, *body])
+                merge(block, entity)
+
+    def pairs(src_dict_fact, src_dict_plan) -> dict:
+        cells = {}
+        for day in sheet.days:
+            fact, plan = src_dict_fact.get(day), src_dict_plan.get(day)
+            if fact or plan:
+                _add(cells, day, fact or None, plan or None)
+        return cells
+
+    def opening(src):
+        return {d: SheetCell(fact=p.fact, plan=p.plan) for d, p in src.opening.items()}
+
+    def closing(src):
+        return {d: SheetCell(fact=v if d < today else None, plan=v if d >= today else None)
+                for d, v in src.closing.items()}
+
+    source_tree("open", "Деньги на начало", opening, include_all=True, balance=True)
+    source_tree("in", "Поступления", lambda src: pairs(src.fact_in, src.plan_in), include_all=False)
+    # технические операции: вид → счёт / касса, сумма со знаком
+    tech_types = [t for t in calendar_sheet.TECH_TITLES if any(t in src.tech for src in sheet.sources)]
+    if tech_types:
+        tech = push(SheetRow(key="tech", parent=None, level=0, kind="block", title="Технические операции", signed=True))
+        many = len(sheet.entities) > 1
+        for t in tech_types:
+            type_row = push(SheetRow(key=f"tech:{t}", parent="tech", level=1, kind="type",
+                                     title=calendar_sheet.TECH_TITLES[t], signed=True))
+            for src in sheet.sources:
+                if t not in src.tech:
+                    continue
+                title = f"{sheet.entities.get(src.entity_id, '')} · {src.title}" if many else src.title
+                row = push(SheetRow(key=f"tech:{t}:{src.key}", parent=type_row.key, level=2, kind="source",
+                                    title=title, signed=True,
+                                    cells={d: detail_cell(c) for d, c in src.tech[t].items()}))
+                merge(type_row, row)
+            merge(tech, type_row)
+    source_tree("out", "Оплаты", lambda src: pairs(src.fact_out, src.plan_out), include_all=False)
+    source_tree("close", "Деньги на конец", closing, include_all=True)
+
+    # расшифровка платежей: та же логика + статья ДДС → контрагент и договор
+    rows.append(SheetRow(key="details", parent=None, level=0, kind="section", title="Расшифровка платежей"))
+    for direction, title in (("in", "Поступления"), ("out", "Оплаты")):
+        own_lines = [ln for ln in sheet.lines if ln.direction == direction]
+
+        def leaf(row: SheetRow, src, own_lines=own_lines) -> list[SheetRow]:
+            articles: dict = {}
+            for ln in own_lines:
+                if ln.source_key == src.key:
+                    articles.setdefault((ln.article_id, ln.article_title), []).append(ln)
+            result = []
+            for (article_id, article_title), lns in articles.items():
+                art = SheetRow(key=f"{row.key}:a{article_id}", parent=row.key, level=row.level + 1, kind="article",
+                               title=article_title)
+                result.append(art)
+                for ln in lns:
+                    line_row = SheetRow(
+                        key=f"{art.key}:{ln.counterparty_id}:{ln.contract_id}", parent=art.key, level=art.level + 1,
+                        kind="line", title=ln.title, subtitle=ln.contract_title,
+                        cells={d: detail_cell(c) for d, c in ln.cells.items()})
+                    result.append(line_row)
+                    merge(art, line_row)
+            return result
+
+        line_keys = {ln.source_key for ln in own_lines}
+        source_tree(f"det:{direction}", title,
+                    lambda src, line_keys=line_keys, own_lines=own_lines: _line_sums(src, own_lines)
+                    if src.key in line_keys else {},
+                    include_all=False, parent="details", level=1, leaf=leaf)
+    return SheetOut(date_from=date_from, date_to=date_to, today=today, days=sheet.days, rows=rows)
+
+
+def _line_sums(src, own_lines) -> dict:
+    cells: dict = {}
+    for ln in own_lines:
+        if ln.source_key == src.key:
+            for day, c in ln.cells.items():
+                _add(cells, day, c.fact, c.plan)
+    return cells
 
 
 @router.get("/organizations/{organization_id}/payment-calendar/sheet", response_model=SheetOut)
@@ -371,43 +442,21 @@ def calendar_sheet_view(organization_id: int, user: CurrentUser, db: DbSession, 
     return _sheet(db, user, organization_id, date_from, date_to, legal_entity_id, include_pending)
 
 
-def _money_text(p: PairOut) -> Decimal | None:
-    if p.fact is None and p.plan is None:
+def _money_text(c: SheetCell | None) -> Decimal | None:
+    if c is None or (c.fact is None and c.plan is None):
         return None
-    return (p.fact or Decimal("0.00")) + (p.plan or Decimal("0.00"))
+    return (c.fact or Decimal("0.00")) + (c.plan or Decimal("0.00"))
 
 
 @router.get("/organizations/{organization_id}/payment-calendar/sheet.xlsx")
 def calendar_sheet_xlsx(organization_id: int, user: CurrentUser, db: DbSession, date_from: dt.date, date_to: dt.date,
                         legal_entity_id: int | None = None, include_pending: bool = False):
-    """Те же строки; в ячейке — факт + план одной суммой."""
+    """Те же строки деревом (уровень — отступ); в ячейке — факт + план одной суммой."""
     data = _sheet(db, user, organization_id, date_from, date_to, legal_entity_id, include_pending)
-    columns = [XlsxColumn("Статья / контрагент", 34), XlsxColumn("Договор", 16), XlsxColumn("Безнал", 14, money=True),
-               XlsxColumn("Касса", 14, money=True), XlsxColumn("Всего", 14, money=True)]
+    columns = [XlsxColumn("Показатель", 42), XlsxColumn("Договор", 16)]
     columns += [XlsxColumn(f"{d:%d.%m} {WEEKDAYS[d.weekday()]}", 13, money=True) for d in data.days]
-    rows = []
-    for title, kind in (("Расчётные счета", "bank"), ("Касса", "cash")):
-        t = data.totals[kind]
-        rows.append((0, [f"На начало: {title.lower()}", None, None, None, None,
-                         *[_money_text(t.opening[d]) for d in data.days]], True))
-        for s in data.sources:
-            if s.kind == kind:
-                rows.append((1, [s.title, None, None, None, None, *[_money_text(s.opening[d]) for d in data.days]]))
-        rows.append((0, [f"Поступления: {title.lower()}", None, None, None, None,
-                         *[_money_text(t.inflow[d]) for d in data.days]]))
-        rows.append((0, [f"Платежи: {title.lower()}", None, None, None, None,
-                         *[_money_text(t.outflow[d]) for d in data.days]]))
-        rows.append((0, [f"На конец: {title.lower()}", None, None, None, None, *[t.closing[d] for d in data.days]], True))
-    for direction, title in (("in", "ПОСТУПЛЕНИЯ"), ("out", "ПЛАТЕЖИ")):
-        rows.append((0, [title], True))
-        for g in data.groups:
-            if g.direction != direction:
-                continue
-            rows.append((0, [g.title, None, g.bank, g.cash, g.bank + g.cash,
-                             *[_money_text(g.cells[d]) if d in g.cells else None for d in data.days]], True))
-            for ln in g.lines:
-                rows.append((1, [ln.title, ln.contract_title, ln.bank, ln.cash, ln.bank + ln.cash,
-                                 *[_money_text(ln.cells[d]) if d in ln.cells else None for d in data.days]]))
+    rows = [(r.level, [r.title, r.subtitle or None, *[_money_text(r.cells.get(d)) for d in data.days]],
+             r.kind in ("block", "section")) for r in data.rows]
     content = build("Платёжный календарь", f"{date_from:%d.%m.%Y} — {date_to:%d.%m.%Y}", columns, rows)
     return Response(content, media_type=XLSX_TYPE,
                     headers={"Content-Disposition": 'attachment; filename="payment_calendar_sheet.xlsx"'})
