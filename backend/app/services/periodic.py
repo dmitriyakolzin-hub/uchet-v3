@@ -53,11 +53,28 @@ def pay_day(month: dt.date, day: int) -> dt.date:
     return candidate
 
 
+FREQUENCY_STEP = {"month": 1, "quarter": 3, "year": 12}
+FREQUENCY_TITLES = {"month": "ежемесячно", "quarter": "раз в квартал", "year": "раз в год"}
+
+
+def due_in(t: ContractPayment, month: dt.date) -> bool:
+    """Платёж по этим условиям приходится на месяц: раз в месяц, квартал (каждые 3 месяца от «действует с») или год."""
+    step = FREQUENCY_STEP.get(t.frequency or "month", 1)
+    passed = (month.year - t.valid_from.year) * 12 + month.month - t.valid_from.month
+    return passed >= 0 and passed % step == 0
+
+
 def active_terms(terms: list[ContractPayment], month: dt.date) -> ContractPayment | None:
-    """Условия, действующие в день оплаты месяца (последние по «действует с»)."""
+    """Условия, действующие в день оплаты месяца (последние по «действует с»), если платёж приходится на этот месяц."""
     found = [t for t in terms
              if t.valid_from <= pay_day(month, t.day) and (t.valid_to is None or t.valid_to >= pay_day(month, t.day))]
-    return max(found, key=lambda t: t.valid_from) if found else None
+    current = max(found, key=lambda t: t.valid_from) if found else None
+    return current if current is not None and due_in(current, month) else None
+
+
+def group_key(t: ContractPayment) -> tuple:
+    """Условия одного договора сменяют друг друга; условия без договора — сами по себе."""
+    return ("c", t.contract_id) if t.contract_id else ("t", t.id)
 
 
 def add_terms(db: Session, contract: Contract, terms: ContractPayment) -> None:
@@ -83,25 +100,28 @@ def ensure(db: Session, organization_id: int, today: dt.date | None = None) -> i
     Автор заявки и записей истории — тот, кто завёл условия платежа."""
     today = today or dt.date.today()
     months = months_ahead(today)
-    contracts = {c.id: c for c in db.scalars(select(Contract).where(Contract.organization_id == organization_id))}
-    if not contracts:
+    terms_by_group: dict[tuple, list[ContractPayment]] = {}
+    for t in db.scalars(select(ContractPayment).where(ContractPayment.organization_id == organization_id)):
+        terms_by_group.setdefault(group_key(t), []).append(t)
+    if not terms_by_group:
         return 0
-    terms_by_contract: dict[int, list[ContractPayment]] = {}
-    for t in db.scalars(select(ContractPayment).where(ContractPayment.contract_id.in_(contracts))):
-        terms_by_contract.setdefault(t.contract_id, []).append(t)
-    existing: dict[tuple[int, dt.date], PaymentRequest] = {}
+    group_of = {t.id: key for key, terms in terms_by_group.items() for t in terms}
+    contracts = {c.id: c for c in db.scalars(select(Contract).where(
+        Contract.id.in_({k[1] for k in terms_by_group if k[0] == "c"})))}
+    existing: dict[tuple, PaymentRequest] = {}
     for req in db.scalars(select(PaymentRequest).where(PaymentRequest.organization_id == organization_id,
                                                        PaymentRequest.source == "periodic",
                                                        PaymentRequest.period.in_(months))):
-        existing[(req.contract_id, req.period)] = req
+        key = group_of.get(req.periodic_id) or ("c", req.contract_id)
+        existing[(key, req.period)] = req
     changed = 0
-    for contract_id, terms in terms_by_contract.items():
-        contract = contracts[contract_id]
-        if not contract.is_active:
+    for key, terms in terms_by_group.items():
+        contract = contracts.get(key[1]) if key[0] == "c" else None
+        if contract is not None and not contract.is_active:
             continue
         for month in months:
             current = active_terms(terms, month)
-            req = existing.get((contract_id, month))
+            req = existing.get((key, month))
             # поправленную вручную в календаре (дата, сумма) — не трогаем
             editable = req is not None and req.status in ("draft", "pending", "revision", "rejected") and not req.adjusted
             if current is None:
@@ -110,10 +130,14 @@ def ensure(db: Session, organization_id: int, today: dt.date | None = None) -> i
                     changed += 1
                 continue
             date = pay_day(month, current.day)
-            fields = dict(pay_date=date, legal_entity_id=contract.legal_entity_id, counterparty_id=contract.counterparty_id,
-                          contract_id=contract.id, bank_account_id=current.bank_account_id, article_id=current.article_id,
-                          cfo_id=current.cfo_id, executor_id=current.executor_id, amount=current.amount,
-                          description=(f"Периодический платёж за {MONTHS_GENITIVE[month.month - 1]} {month.year}"
+            title = current.name or "Периодический платёж"
+            fields = dict(pay_date=date,
+                          legal_entity_id=contract.legal_entity_id if contract else current.legal_entity_id,
+                          counterparty_id=contract.counterparty_id if contract else current.counterparty_id,
+                          contract_id=contract.id if contract else None, bank_account_id=current.bank_account_id,
+                          article_id=current.article_id, cfo_id=current.cfo_id, executor_id=current.executor_id,
+                          amount=current.amount,
+                          description=(f"{title} за {MONTHS_GENITIVE[month.month - 1]} {month.year}"
                                        + (f": {current.description}" if current.description else "")),
                           periodic_id=current.id)
             author = db.get(User, current.created_by)
@@ -123,13 +147,13 @@ def ensure(db: Session, organization_id: int, today: dt.date | None = None) -> i
                                      status="draft", created_by=author.id, **fields)
                 db.add(req)
                 db.flush()
-                approval.event(db, req, author, "created", "по условиям договора")
+                approval.event(db, req, author, "created", "по условиям периодического платежа")
                 approval.submit(db, req, author)
                 changed += 1
             elif editable and any(getattr(req, k) != v for k, v in fields.items()):
                 for k, v in fields.items():
                     setattr(req, k, v)
-                approval.event(db, req, author, "periodic_updated", "условия договора изменились")
+                approval.event(db, req, author, "periodic_updated", "условия периодического платежа изменились")
                 changed += 1
     db.flush()
     return changed

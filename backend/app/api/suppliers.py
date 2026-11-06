@@ -3,11 +3,12 @@
 
 import datetime as dt
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from starlette.concurrency import run_in_threadpool
 
 from app.api.access import get_organization_for
@@ -36,6 +37,7 @@ class PaymentRef(BaseModel):
 
 class InvoiceOut(BaseModel):
     id: int
+    contract_id: int | None = None
     kind: str
     number: str
     doc_date: dt.date
@@ -120,7 +122,7 @@ def list_invoices(organization_id: int, user: CurrentUser, db: DbSession, legal_
             remaining=sum((st.remaining for st in sts), Decimal("0.00")),
             over_limit=limit is not None and debt > limit,
             invoices=[InvoiceOut(
-                id=st.invoice.id, kind=st.invoice.kind, number=st.invoice.number, doc_date=st.invoice.doc_date,
+                id=st.invoice.id, contract_id=st.invoice.contract_id, kind=st.invoice.kind, number=st.invoice.number, doc_date=st.invoice.doc_date,
                 due_date=st.due, overdue_days=max(0, (today - st.due).days) if st.debt > 0 else 0,
                 amount=st.invoice.amount, paid=st.paid, planned=st.planned, remaining=st.remaining,
                 payments=[PaymentRef(id=r.id, number=r.number, status=r.status, status_title=STATUS_TITLES[r.status],
@@ -158,6 +160,95 @@ async def import_invoices(organization_id: int, request: Request, user: CurrentU
         return ImportOut(**result.__dict__)
 
     return await run_in_threadpool(run)
+
+
+class InvoiceIn(BaseModel):
+    """Накладная вручную (финансовый менеджер, финансовый директор, администратор)."""
+
+    legal_entity_id: int
+    counterparty_id: int
+    contract_id: int | None = None  # пусто — единственный договор поставщика с контрагентом (как при загрузке)
+    kind: Literal["invoice", "advance"] = "invoice"
+    number: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
+    doc_date: dt.date
+    amount: Amount
+
+
+class InvoiceRow(BaseModel):
+    id: int
+    legal_entity_id: int
+    counterparty_id: int
+    contract_id: int | None
+    kind: str
+    number: str
+    doc_date: dt.date
+    amount: Decimal
+
+
+def _invoice_row(inv: SupplierInvoice) -> InvoiceRow:
+    return InvoiceRow(id=inv.id, legal_entity_id=inv.legal_entity_id, counterparty_id=inv.counterparty_id,
+                      contract_id=inv.contract_id, kind=inv.kind, number=inv.number, doc_date=inv.doc_date,
+                      amount=inv.amount)
+
+
+def _apply_invoice(db, organization_id: int, inv: SupplierInvoice, body: InvoiceIn) -> None:
+    entity = db.get(LegalEntity, body.legal_entity_id)
+    cp = db.get(Counterparty, body.counterparty_id)
+    if entity is None or entity.organization_id != organization_id:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Юрлицо не найдено в этой организации")
+    if cp is None or cp.organization_id != organization_id:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Контрагент не найден в этой организации")
+    contract_id = body.contract_id
+    if contract_id is not None:
+        contract = db.get(Contract, contract_id)
+        if contract is None or contract.counterparty_id != cp.id or contract.legal_entity_id != entity.id:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                detail="Договор — этого контрагента и этого юрлица")
+    else:
+        contract_id = suppliers._Lookup(db, organization_id).contract(entity.id, cp.id)
+    if inv.id is not None:
+        state = suppliers.states(db, [inv])[0]
+        if body.amount < state.paid + state.planned:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                detail=f"Сумма меньше уже оплаченного и запланированного ({state.paid + state.planned:.2f})")
+    for key, value in body.model_dump().items():
+        setattr(inv, key, value)
+    inv.contract_id = contract_id
+
+
+@router.post("/organizations/{organization_id}/supplier-invoices", response_model=InvoiceRow, status_code=201)
+def add_invoice(organization_id: int, body: InvoiceIn, user: CurrentUser, db: DbSession):
+    get_organization_for(db, user, organization_id, Perm.POST)
+    inv = SupplierInvoice(organization_id=organization_id, created_by=user.id)
+    _apply_invoice(db, organization_id, inv, body)
+    db.add(inv)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Такая накладная уже есть") from None
+    return _invoice_row(inv)
+
+
+@router.put("/supplier-invoices/{invoice_id}", response_model=InvoiceRow)
+def update_invoice(invoice_id: int, body: InvoiceIn, user: CurrentUser, db: DbSession):
+    """Поправить накладную вручную: сумма не меньше оплаченного и запланированного по ней."""
+    inv = db.get(SupplierInvoice, invoice_id)
+    if inv is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Накладная не найдена")
+    try:
+        get_organization_for(db, user, inv.organization_id, Perm.POST)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_404_NOT_FOUND:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Накладная не найдена") from None
+        raise
+    _apply_invoice(db, inv.organization_id, inv, body)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Такая накладная уже есть") from None
+    return _invoice_row(inv)
 
 
 @router.delete("/supplier-invoices/{invoice_id}", status_code=204)

@@ -169,3 +169,32 @@ def test_group_payment(client, env, db):
     # выплату вернули — поступления нет
     assert act(client, env, req, "unapprove").json()["status"] == "pending"
     assert mirror() is None
+
+
+def test_manual_invoice(client, env, make_user, db, headers_for):
+    """Накладную добавляют и правят вручную финансовый менеджер и финансовый директор (раздел 26, «Детали 16.4»)."""
+    from app.models import Membership
+
+    fm = make_user(login="fm2")
+    db.add(Membership(user_id=fm.id, organization_id=env["org"].id, role="finance_manager"))
+    db.commit()
+    url = f"{env['o']}/supplier-invoices"
+    body = {"legal_entity_id": env["le"].id, "counterparty_id": env["cp"]["id"], "number": "Н-1",
+            "doc_date": days(-3).isoformat(), "amount": "9000"}
+    resp = client.post(url, headers=headers_for(fm), json=body)
+    assert resp.status_code == 201, resp.text
+    inv = resp.json()
+    assert inv["contract_id"] == env["contract"]["id"]  # единственный договор поставщика
+    assert client.post(url, headers=env["h"], json=body).status_code == 409
+    assert client.post(url, headers=env["ceo"], json=body).status_code == 403
+    pay = client.post(f"{env['o']}/supplier-payments", headers=env["h"], json={
+        "legal_entity_id": env["le"].id, "counterparty_id": env["cp"]["id"], "pay_date": days(1).isoformat(),
+        "amount": "4000"})
+    assert pay.status_code == 201, pay.text
+    edit = f"/api/supplier-invoices/{inv['id']}"
+    assert client.put(edit, headers=env["h"], json={**body, "amount": "3000"}).status_code == 422  # меньше запланированного
+    resp = client.put(edit, headers=headers_for(fm), json={**body, "amount": "9500", "number": "Н-1а"})
+    assert resp.status_code == 200 and resp.json()["number"] == "Н-1а"
+    group = invoices(client, env)["groups"][0]
+    assert (group["debt"], group["invoices"][0]["remaining"]) == ("9500.00", "5500.00")
+    assert client.put(edit, headers=env["other"], json=body).status_code == 404
