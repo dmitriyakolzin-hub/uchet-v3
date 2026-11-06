@@ -3,6 +3,7 @@ from app.models.article import Article
 from app.models.budget import Budget, BudgetCfoStatus, BudgetVersion, InvestmentProject, PlanChange, PlanTarget
 from app.models.calendar import (
     CalendarBalance,
+    CalendarTransfer,
     PaymentRequest,
     PaymentRequestEvent,
     PaymentRequestFile,
@@ -42,6 +43,7 @@ __all__ = [
     "BudgetCfoStatus",
     "BudgetVersion",
     "CalendarBalance",
+    "CalendarTransfer",
     "Cfo",
     "Contract",
     "ContractPayment",

@@ -22,6 +22,7 @@ from app.models import (
     Article,
     BankAccount,
     CalendarBalance,
+    CalendarTransfer,
     Cfo,
     Contract,
     Counterparty,
@@ -39,6 +40,12 @@ TECH_TYPES = {("bank", "bank"): "transfer", ("cash", "bank"): "collection", ("ba
               ("cash", "cash"): "cash_move"}
 TECH_TITLES = {"transfer": "Переводы между счетами", "collection": "Инкассация (сдача наличных в банк)",
                "withdrawal": "Снятие с расчётного счёта в кассу", "cash_move": "Перемещение между кассами"}
+TRANSFER_MATCH_DAYS = 14  # плановый перевод закрывается проведённым в пределах стольких дней
+
+
+def from_statement(operation=Operation):
+    """Операция загружена из банковской выписки (у загрузки из Excel ключ начинается с «xlsx:»)."""
+    return (operation.import_key.is_not(None)) & (~operation.import_key.like("xlsx:%"))
 
 
 @dataclass
@@ -82,10 +89,12 @@ class Source:
     fact_out: dict[dt.date, Decimal] = field(default_factory=dict)
     plan_in: dict[dt.date, Decimal] = field(default_factory=dict)
     plan_out: dict[dt.date, Decimal] = field(default_factory=dict)
-    tech: dict[str, dict[dt.date, Cell]] = field(default_factory=dict)  # вид → день → сумма со знаком и операции
+    # вид → встречный счёт / касса → день → сумма со знаком (факт и план) и операции / плановые переводы
+    tech: dict[str, dict[str, dict[dt.date, Cell]]] = field(default_factory=dict)
 
-    def tech_net(self, day: dt.date) -> Decimal:
-        return sum((cells[day].fact or ZERO for cells in self.tech.values() if day in cells), ZERO)
+    def tech_net(self, day: dt.date, plan: bool = False) -> Decimal:
+        return sum(((c[day].plan if plan else c[day].fact) or ZERO
+                    for by_corr in self.tech.values() for c in by_corr.values() if day in c), ZERO)
 
     @property
     def has_movement(self) -> bool:
@@ -112,6 +121,7 @@ class Sheet:
     entities: dict[int | None, str]
     sources: list[Source]
     lines: list[Line]
+    titles: dict[str, str] = field(default_factory=dict)  # ключ источника → «юрлицо · счёт»
 
 
 def _root_entity(db: Session, organization_id: int) -> dict[int, int | None]:
@@ -121,7 +131,9 @@ def _root_entity(db: Session, organization_id: int) -> dict[int, int | None]:
 
 
 def build(db: Session, organization_id: int, date_from: dt.date, date_to: dt.date, *,
-          legal_entity_id: int | None = None, include_pending: bool = False, today: dt.date | None = None) -> Sheet:
+          legal_entity_id: int | None = None, include_pending: bool = False, with_statements: bool = True,
+          today: dt.date | None = None) -> Sheet:
+    """with_statements=False — без операций из банковских выписок: только введённое вручную (раздел 26, «Детали 16.2»)."""
     today = today or dt.date.today()
     chain_start = min(date_from, today)
     days = [date_from + dt.timedelta(days=i) for i in range((date_to - date_from).days + 1)]
@@ -168,12 +180,18 @@ def build(db: Session, organization_id: int, date_from: dt.date, date_to: dt.dat
             cash_source(cfo.id, root_entity.get(cfo.id))
 
     # --- факт из журнала: остаток до начала цепочки и движение по дням ---
+    def manual_only(query, operation_col):
+        if with_statements:
+            return query
+        return query.where(operation_col.not_in(select(Operation.id).where(from_statement())))
+
     base = select_lines(organization_id, account_ids=money_roots, legal_entity_id=legal_entity_id,
                         date_to=chain_start - dt.timedelta(days=1)).subquery()
     signed = case((base.c.side == "debit", base.c.amount_rub), else_=-base.c.amount_rub)
     start: dict[str, Decimal] = {}
-    for account_id, bank_id, cfo_id, entity_id, amount in db.execute(
-            select(base.c.account_id, base.c.bank_account, base.c.cfo, base.c.legal_entity_id, func.sum(signed))
+    for account_id, bank_id, cfo_id, entity_id, amount in db.execute(manual_only(
+            select(base.c.account_id, base.c.bank_account, base.c.cfo, base.c.legal_entity_id, func.sum(signed)),
+            base.c.operation_id)
             .group_by(base.c.account_id, base.c.bank_account, base.c.cfo, base.c.legal_entity_id)).all():
         src = source_of(account_id in cash_ids, bank_id, cfo_id, entity_id)
         start[src.key] = start.get(src.key, ZERO) + Decimal(amount)
@@ -186,29 +204,38 @@ def build(db: Session, organization_id: int, date_from: dt.date, date_to: dt.dat
             lines_by_key[key] = Line(direction, src.key, article_id, counterparty_id, contract_id)
         return lines_by_key[key]
 
+    def tech_cell(src: Source, tech: str, corr: Source, day: dt.date) -> Cell:
+        return src.tech.setdefault(tech, {}).setdefault(corr.key, {}).setdefault(day, Cell())
+
+    fact_transfers: list[list] = []  # [источник, встречный, сумма со знаком, день, использован]
     if chain_start <= today:
         lines = select_lines(organization_id, account_ids=money_roots, legal_entity_id=legal_entity_id,
                              date_from=chain_start, date_to=min(date_to, today)).subquery()
         debit = lines.c.side == "debit"
-        rows = db.execute(
+        rows = db.execute(manual_only(
             select(lines.c.op_date, lines.c.operation_id, Operation.number, lines.c.side, lines.c.account_id,
                    lines.c.corr_account_id, lines.c.bank_account, lines.c.cfo, lines.c.legal_entity_id,
                    lines.c.cash_flow_item,
                    case((debit, Posting.ct_counterparty_id), else_=Posting.dt_counterparty_id),
-                   case((debit, Posting.ct_contract_id), else_=Posting.dt_contract_id), lines.c.amount_rub)
-            .join(Posting, Posting.id == lines.c.posting_id).join(Operation, Operation.id == lines.c.operation_id)
-            .order_by(lines.c.op_date, Operation.number)).all()
+                   case((debit, Posting.ct_contract_id), else_=Posting.dt_contract_id), lines.c.amount_rub,
+                   case((debit, Posting.ct_bank_account_id), else_=Posting.dt_bank_account_id),
+                   case((debit, Posting.ct_cfo_id), else_=Posting.dt_cfo_id))
+            .join(Posting, Posting.id == lines.c.posting_id).join(Operation, Operation.id == lines.c.operation_id),
+            lines.c.operation_id).order_by(lines.c.op_date, Operation.number)).all()
         for (day, op_id, number, side, account_id, corr_id, bank_id, cfo_id, entity_id, article_id, cp_id,
-             contract_id, amount) in rows:
+             contract_id, amount, corr_bank, corr_cfo) in rows:
             amount = Decimal(amount)
             kind = "cash" if account_id in cash_ids else "bank"
             src = source_of(kind == "cash", bank_id, cfo_id, entity_id)
-            if corr_id in money_ids:  # техническая операция: деньги ↔ деньги
+            if corr_id in money_ids:  # техническая операция: деньги ↔ деньги, разбивка по встречным деньгам
                 corr_kind = "cash" if corr_id in cash_ids else "bank"
+                corr = source_of(corr_kind == "cash", corr_bank, corr_cfo, entity_id)
                 tech = TECH_TYPES[(corr_kind, kind) if side == "debit" else (kind, corr_kind)]
-                cell = src.tech.setdefault(tech, {}).setdefault(day, Cell())
-                cell.fact = (cell.fact or ZERO) + (amount if side == "debit" else -amount)
-                cell.ops.append(Op(op_id, number, amount if side == "debit" else -amount))
+                value = amount if side == "debit" else -amount
+                cell = tech_cell(src, tech, corr, day)
+                cell.fact = (cell.fact or ZERO) + value
+                cell.ops.append(Op(op_id, number, value))
+                fact_transfers.append([src.key, corr.key, value, day, False])
                 continue
             bucket = src.fact_in if side == "debit" else src.fact_out
             bucket[day] = bucket.get(day, ZERO) + amount
@@ -234,6 +261,35 @@ def build(db: Session, organization_id: int, date_from: dt.date, date_to: dt.dat
                 cell.add(plan=item.amount)
                 cell.items.append(item)
 
+    # --- плановые технические операции, введённые в календаре; проведённый такой же перевод их закрывает ---
+    transfers = select(CalendarTransfer).where(CalendarTransfer.organization_id == organization_id,
+                                               CalendarTransfer.day <= date_to)
+    if legal_entity_id is not None:
+        transfers = transfers.where(CalendarTransfer.legal_entity_id == legal_entity_id)
+    for t in db.scalars(transfers.order_by(CalendarTransfer.day, CalendarTransfer.id)):
+        src = source_of(t.from_cash_cfo_id is not None, t.from_bank_account_id, t.from_cash_cfo_id, t.legal_entity_id)
+        dst = source_of(t.to_cash_cfo_id is not None, t.to_bank_account_id, t.to_cash_cfo_id, t.legal_entity_id)
+        done = next((f for f in fact_transfers if not f[4] and f[0] == src.key and f[1] == dst.key
+                     and f[2] == -t.amount and abs((f[3] - t.day).days) <= TRANSFER_MATCH_DAYS), None)
+        if done is not None:
+            done[4] = True
+            for f in fact_transfers:  # и встречная строка того же перевода
+                if not f[4] and f[0] == dst.key and f[1] == src.key and f[2] == t.amount and f[3] == done[3]:
+                    f[4] = True
+                    break
+            continue
+        if t.day < today - dt.timedelta(days=calendar.LOOKBACK_DAYS):
+            continue
+        day = max(t.day, today)
+        tech = TECH_TYPES[(src.kind, dst.kind)]
+        title = f"Перевод: {src.title} → {dst.title}" + (f" ({t.description})" if t.description else "")
+        for own, corr, value, direction in ((src, dst, -t.amount, "out"), (dst, src, t.amount, "in")):
+            cell = tech_cell(own, tech, corr, day)
+            cell.plan = (cell.plan or ZERO) + value
+            cell.items.append(calendar.Item("transfer", t.id, title, t.day, direction, t.amount, own.entity_id,
+                                            own.bank_account_id, own.cash_cfo_id, status="plan",
+                                            overdue=t.day < today))
+
     # --- остатки: вручную > по журналу (прошедшие дни и сегодня) > прогноз ---
     manual: dict[tuple[str, dt.date], Decimal] = {}
     by_cfo: dict[int, str] = {}
@@ -257,16 +313,19 @@ def build(db: Session, organization_id: int, date_from: dt.date, date_to: dt.dat
                 src.opening[day] = Pair(fact=journal if day <= today and real else None,
                                         plan=hand if hand is not None else (opening if day > today else None))
             fact = src.fact_in.get(day, ZERO) - src.fact_out.get(day, ZERO) + src.tech_net(day)
-            closing = opening + fact + src.plan_in.get(day, ZERO) - src.plan_out.get(day, ZERO)
+            closing = (opening + fact + src.plan_in.get(day, ZERO) - src.plan_out.get(day, ZERO)
+                       + src.tech_net(day, plan=True))
             journal += fact
             if day in shown:
                 src.closing[day] = closing
             day += dt.timedelta(days=1)
     for src in sources.values():  # техническое движение — только за показанные дни
-        for cells in src.tech.values():
-            for day in [d for d in cells if d not in shown]:
-                del cells[day]
-        src.tech = {k: v for k, v in src.tech.items() if v}
+        for by_corr in src.tech.values():
+            for cells in by_corr.values():
+                for day in [d for d in cells if d not in shown]:
+                    del cells[day]
+        src.tech = {t: {k: v for k, v in by_corr.items() if v} for t, by_corr in src.tech.items()}
+        src.tech = {t: v for t, v in src.tech.items() if v}
 
     # --- названия и порядок ---
     entity_ids = {s.entity_id for s in sources.values()}  # после чистки
@@ -302,5 +361,7 @@ def build(db: Session, organization_id: int, date_from: dt.date, date_to: dt.dat
     shown_sources = [s for s in sources.values() if s.bank_account_id is not None or s.kind == "cash" or s.has_movement]
     shown_sources.sort(key=lambda s: (entities.get(s.entity_id, ""), s.kind != "bank", s.bank_account_id is None,
                                       s.title.lower()))
+    titles = {k: (f"{entities.get(src.entity_id, '')} · {src.title}" if len(entities) > 1 else src.title)
+              for k, src in sources.items()}
     return Sheet(days, today, dict(sorted(entities.items(), key=lambda kv: (kv[0] is None, kv[1]))), shown_sources,
-                 sorted(all_lines, key=article_sort))
+                 sorted(all_lines, key=article_sort), titles)

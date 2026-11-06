@@ -175,3 +175,29 @@ class CalendarBalance(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
     entered_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CalendarTransfer(Base):
+    """Плановая техническая операция, введённая в календаре (docs/TZ.md, раздел 26, «Детали 16.2»): перевод между
+    своими счетами, сдача наличных в банк, снятие в кассу. Пока перевода нет в журнале — план; проведённый перевод
+    с тех же денег на те же на ту же сумму (±14 дней) его закрывает."""
+
+    __tablename__ = "calendar_transfers"
+    __table_args__ = (
+        CheckConstraint("(from_bank_account_id IS NULL) <> (from_cash_cfo_id IS NULL)", name="from_source"),
+        CheckConstraint("(to_bank_account_id IS NULL) <> (to_cash_cfo_id IS NULL)", name="to_source"),
+        CheckConstraint("amount > 0", name="amount"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"), index=True)
+    legal_entity_id: Mapped[int] = mapped_column(ForeignKey("legal_entities.id", ondelete="RESTRICT"))
+    from_bank_account_id: Mapped[int | None] = mapped_column(ForeignKey("bank_accounts.id", ondelete="CASCADE"))
+    from_cash_cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="CASCADE"))
+    to_bank_account_id: Mapped[int | None] = mapped_column(ForeignKey("bank_accounts.id", ondelete="CASCADE"))
+    to_cash_cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="CASCADE"))
+    day: Mapped[date] = mapped_column(Date)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    description: Mapped[str] = mapped_column(String(500), default="", server_default="")
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

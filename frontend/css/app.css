@@ -362,3 +362,7 @@ table.pay-sheet tr.sheet-section td { font-weight: 700; background: #e4ebf6; tex
 table.pay-sheet td.sticky { min-width: 280px; }
 .tree-toggle { display: inline-block; width: 16px; border: 0; background: none; padding: 0; cursor: pointer; color: #475467; }
 table.request-card th { text-align: left; width: 180px; color: #475467; font-weight: 500; }
+/* верхние блоки календаря — в формате «Расшифровки платежей» (раздел 26, 16.2) */
+table.pay-sheet tr.sheet-block[data-level="0"] td { font-weight: 700; background: #e4ebf6; text-transform: uppercase; letter-spacing: .02em; }
+table.pay-sheet tr.sheet-block[data-level="0"] td .add-ref { text-transform: none; letter-spacing: 0; }
+table.pay-sheet .add-ref { font-size: 12px; padding: 0 4px; }
