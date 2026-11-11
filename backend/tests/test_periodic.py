@@ -60,3 +60,37 @@ def test_periodic_requests(client, env):
     assert len(client.get(f"{o}/periodic-payments", headers=h["exec"]).json()) == 2
     assert len(client.get(f"{o}/periodic-payments", headers=h["cfo"]).json()) == 2
     assert client.get(f"{o}/periodic-payments", headers=h["other_exec"]).json() == []
+
+
+def test_standalone_periodic_payment(client, env):
+    """Периодический платёж без договора — зарплата, налог раз в квартал (раздел 26, «Детали 16.4»)."""
+    import datetime as dt
+
+    from app.services import periodic
+
+    o, h = env["o"], env["h"]
+    today = dt.date.today()
+    month = today.replace(day=1)
+    body = {"legal_entity_id": env["le"].id, "name": "НДФЛ", "frequency": "quarter", "valid_from": month.isoformat(),
+            "day": 28, "amount": "12000", "article_id": env["rent"]}
+    assert client.post(f"{o}/periodic-payments", headers=h["fm"], json=body).status_code == 201  # фин. менеджер — можно
+    assert client.post(f"{o}/periodic-payments", headers=h["ceo"], json=body).status_code == 403
+    assert client.post(f"{o}/periodic-payments", headers=h["fd"], json={**body, "legal_entity_id": 999999}).status_code == 422
+    rows = [r for r in client.get(f"{o}/periodic-payments", headers=h["fd"]).json() if r["name"] == "НДФЛ"]
+    assert len(rows) == 1 and rows[0]["frequency_title"] == "раз в квартал" and rows[0]["contract_id"] is None
+    months = [m["period"] for m in rows[0]["months"]]
+    assert months == [month.isoformat()]  # из трёх ближайших месяцев — только текущий (раз в квартал)
+    req = client.get(f"/api/payment-requests/{rows[0]['months'][0]['request_id']}", headers=h["fd"]).json()
+    assert req["description"].startswith("НДФЛ за ") and req["contract_id"] is None and req["source"] == "periodic"
+    assert req["pay_date"] == periodic.pay_day(month, 28).isoformat()
+
+    # правка вручную: ежемесячно и другая сумма — заявки подстраиваются
+    terms_id = rows[0]["id"]
+    resp = client.put(f"/api/contract-payments/{terms_id}", headers=h["fm"], json={**body, "frequency": "month", "amount": "13000"})
+    assert resp.status_code == 200, resp.text
+    rows = [r for r in client.get(f"{o}/periodic-payments", headers=h["fd"]).json() if r["name"] == "НДФЛ"]
+    assert len(rows[0]["months"]) == 3 and rows[0]["months"][1]["amount"] == "13000.00"
+    assert client.delete(f"/api/contract-payments/{terms_id}", headers=h["ceo"]).status_code == 403
+    assert client.delete(f"/api/contract-payments/{terms_id}", headers=h["fd"]).status_code == 204
+    listed = client.get(f"{o}/payment-requests", headers=h["fd"], params={"date_from": month.isoformat()}).json()["rows"]
+    assert not any(r["description"].startswith("НДФЛ") for r in listed)  # неутверждённые заявки удалены вместе с условиями

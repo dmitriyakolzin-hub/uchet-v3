@@ -381,3 +381,4 @@ table.requests thead th, table.registry thead th, table.suppliers thead th, tabl
   position: sticky; top: 0; z-index: 2; background: #f9fafb; }
 tr.clickable-row { cursor: pointer; }
 tr.clickable-row:hover td { background: var(--accent-soft, #eef4ff); }
+select.action-menu { min-width: 130px; font-size: 13px; padding: 3px 6px; }

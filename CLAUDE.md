@@ -744,4 +744,12 @@
   `ui.instruction()` — правила страниц свёрнуты в «Инструкцию» (календарь, статьи, бюджеты, закрытие, ОС, загрузка,
   остатки, зарплата, пользователи, ОСВ, дебиторка, склад); список заявок — 7 колонок, карточка по щелчку по строке
   (`requestView` с «Изменить»), шапки таблиц sticky. Тестов 391, ui_smoke дополнен.
+- 2026-11-06 — 16.3 влита (PR 70). Шаг 16.4 (ветка `etap-16-4-calendar-edits`), `docs/TZ.md`, раздел 26 «Детали 16.4».
+  Миграция 0046: `contract_payments` — `contract_id` необязателен, `organization_id`, `legal_entity_id` (заполнены из договора),
+  `counterparty_id`, `name`, `frequency` (month/quarter/year). `periodic`: `due_in`, `group_key` (договор или сами условия),
+  `ensure` по группам; API `POST /organizations/{id}/periodic-payments` (без договора или по договору), `PUT/DELETE
+  /contract-payments/{id}` по организации условий (удаление убирает неутверждённые заявки). Накладные: `POST
+  /organizations/{id}/supplier-invoices`, `PUT /supplier-invoices/{id}` (право POST; сумма ≥ оплачено + запланировано).
+  Интерфейс: «Действие…» (`select.action-menu`) в заявках, без колонки «Вид»; «Сегодня» в календаре; накладные свёрнуты
+  по контрагентам (`supExpanded`), `invoiceForm`; `periodicForm` во вкладке «Периодические платежи». Тестов 393, ui_smoke дополнен.
 

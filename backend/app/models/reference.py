@@ -187,18 +187,25 @@ class Warehouse(OrgScoped, Base):
 
 
 class ContractPayment(Base):
-    """Периодический платёж по договору (docs/TZ.md, раздел 24, «Детали 14.3»): сумма в определённое число месяца.
-    Изменение условий — новая запись «действует с»; прежняя закрывается днём раньше (история сохраняется)."""
+    """Периодический платёж (docs/TZ.md, раздел 24, «Детали 14.3»; раздел 26, «Детали 16.4»): сумма в определённое число
+    месяца — раз в месяц, квартал или год. По договору или без него (зарплата, налоги, кредит): тогда юрлицо и контрагент
+    указываются в самих условиях. Изменение условий по договору — новая запись «действует с»; прежняя закрывается днём раньше."""
 
     __tablename__ = "contract_payments"
     __table_args__ = (
         CheckConstraint("day BETWEEN 1 AND 31", name="day"),
         CheckConstraint("amount > 0", name="amount"),
         CheckConstraint("valid_to IS NULL OR valid_to >= valid_from", name="period"),
+        CheckConstraint("frequency IN ('month', 'quarter', 'year')", name="frequency"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
-    contract_id: Mapped[int] = mapped_column(ForeignKey("contracts.id", ondelete="CASCADE"), index=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    contract_id: Mapped[int | None] = mapped_column(ForeignKey("contracts.id", ondelete="CASCADE"), index=True)
+    legal_entity_id: Mapped[int] = mapped_column(ForeignKey("legal_entities.id", ondelete="RESTRICT"))
+    counterparty_id: Mapped[int | None] = mapped_column(ForeignKey("counterparties.id", ondelete="RESTRICT"))
+    name: Mapped[str] = mapped_column(String(255), default="", server_default="")  # «Зарплата», «НДФЛ», «Кредит Сбер»
+    frequency: Mapped[str] = mapped_column(String(10), default="month", server_default="month")
     valid_from: Mapped[date] = mapped_column(Date)
     valid_to: Mapped[date | None] = mapped_column(Date)
     day: Mapped[int] = mapped_column(SmallInteger)  # число месяца; выходной — ближайший рабочий день раньше

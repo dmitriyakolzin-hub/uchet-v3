@@ -127,8 +127,9 @@ export async function renderCalendar(view) {
 
   // подавать и править — право черновиков или руководитель ЦФУ; согласовывать — тот, чей сейчас шаг (r.can_act)
   const author = () => can("draft") || org.role === "executor_head";
+  // действия по заявке — выпадающим списком «Действие» (шаг 16.4)
   function actions(r) {
-    const button = (text, onclick, cls = "link") => el("button", { type: "button", class: cls, onclick }, text);
+    const button = (text, onclick) => ({ text, onclick });
     const run = (action, body) => act(r, action, body);
     const list = [];
     if (["draft", "rejected", "revision"].includes(r.status) && author()) {
@@ -155,7 +156,14 @@ export async function renderCalendar(view) {
     }
     if (r.status === "paid" && can("post")) list.push(button("Снять оплату", () => run("unpay")));
     list.push(button("История", () => history(r)));
-    return el("td", { class: "req-actions" }, ...list);
+    const menu = el("select", { class: "action-menu", "aria-label": `Действие по заявке № ${r.number}` },
+      el("option", { value: "" }, "Действие…"), ...list.map((a, i) => el("option", { value: String(i) }, a.text)));
+    menu.addEventListener("change", () => {
+      const chosen = list[Number(menu.value)];
+      menu.value = "";
+      chosen?.onclick();
+    });
+    return el("td", { class: "req-actions" }, menu);
   }
 
   // статус: у черновика пусто; на согласовании — кто уже согласовал и у кого сейчас; согласована — кем
@@ -242,17 +250,17 @@ export async function renderCalendar(view) {
     // в списке — главное; остальные поля заявки — в карточке (щелчок по строке) и при правке
     listBox.replaceChildren(data.rows.length
       ? el("table", { class: "recon versions requests" },
-        el("thead", {}, el("tr", {}, ...["Вид", "Дата оплаты", "Контрагент", "Назначение", "Сумма", "Файл", "Статус", ""]
+        el("thead", {}, el("tr", {}, ...["Дата оплаты", "Контрагент", "Назначение", "Сумма", "Файл", "Статус", "Действие"]
           .map((t) => el("th", {}, t)))),
         el("tbody", {}, ...data.rows.map((r) => {
           const tr = el("tr", { "data-number": r.number, title: `Заявка № ${r.number} — щёлкните, чтобы открыть`,
             class: `clickable-row${Number(r.budget?.over ?? 0) > 0 && r.status !== "paid" ? " over-budget-row" : ""}` },
-          el("td", {}, DIRECTION[r.direction]), el("td", {}, date(r.pay_date)),
+          el("td", {}, date(r.pay_date), r.direction === "in" ? el("div", { class: "muted small" }, "поступление") : null),
           el("td", {}, r.counterparty_name || "—", r.group_name ? el("div", { class: "muted" }, `внутри группы → ${r.group_name}`) : null),
           el("td", {}, r.description || ""),
           el("td", { class: "num" }, money(r.amount)), filesCell(r), statusCell(r), actions(r));
           tr.addEventListener("click", (e) => {
-            if (e.target.closest("button, a, input, label")) return;
+            if (e.target.closest("button, a, input, label, select")) return;
             requestView(r.id);
           });
           return tr;
@@ -408,25 +416,106 @@ export async function renderCalendar(view) {
     }
     const months = [...new Map(rows.flatMap((r) => r.months).map((m) => [m.period, m])).keys()].sort();
     const monthTitle = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
+    const editable = can("post");
     periodicBox.replaceChildren(
-      instruction("Условия платежа заводятся в договоре («Справочники» → «Договоры» → «периодический»). "
-        + "Каждый месяц по условиям сама создаётся заявка на нужное число (выходной — рабочий день раньше); согласует её "
-        + "финансовый директор."),
+      instruction("Периодический платёж — сумма в определённое число месяца: ежемесячно, раз в квартал или раз в год. "
+        + "По договору (здесь или в «Справочники» → «Договоры» → «периодический») или без него — зарплата, налоги, "
+        + "кредит. По условиям сама создаётся заявка на нужное число (выходной — рабочий день раньше) на текущий и два "
+        + "следующих месяца; согласует её финансовый директор. Добавить и изменить — финансовый менеджер, финансовый "
+        + "директор, администратор."),
+      editable ? el("div", { class: "filters" },
+        el("button", { type: "button", onclick: () => periodicForm(null) }, "+ Периодический платёж")) : "",
       rows.length ? el("table", { class: "recon versions periodic" },
-        el("thead", {}, el("tr", {}, ...["Контрагент / договор", "Назначение", "Сумма", "Число", "ЦФО / ЦФУ",
-          ...months.map(monthTitle)].map((t) => el("th", {}, t)))),
-        el("tbody", {}, ...rows.map((r) => el("tr", {},
-          el("td", {}, r.counterparty_name, el("div", { class: "muted" }, `Договор ${r.contract_name}`)),
+        el("thead", {}, el("tr", {}, ...["Платёж", "Назначение", "Сумма", "Правило", "ЦФО / ЦФУ",
+          ...months.map(monthTitle), ...(editable ? [""] : [])].map((t) => el("th", {}, t)))),
+        el("tbody", {}, ...rows.map((r) => el("tr", { "data-periodic": r.name || r.counterparty_name },
+          el("td", {}, r.name || r.counterparty_name || "—",
+            r.name && r.counterparty_name ? el("div", { class: "muted" }, r.counterparty_name) : null,
+            r.contract_name ? el("div", { class: "muted" }, `Договор ${r.contract_name}`) : null),
           el("td", {}, r.description || r.article_name),
           el("td", { class: "num" }, money(r.amount)),
-          el("td", {}, String(r.day)),
+          el("td", {}, `${r.frequency_title}, ${r.day}-го`,
+            el("div", { class: "muted small" }, `с ${date(r.valid_from)}${r.valid_to ? ` по ${date(r.valid_to)}` : ""}`)),
           el("td", {}, [r.cfo_name, r.executor_name].filter(Boolean).join(" · ")),
           ...months.map((period) => {
             const m = r.months.find((x) => x.period === period);
             return el("td", {}, m ? [date(m.pay_date), el("div", { class: `status req-${m.status}` }, m.status_title),
               m.paid_on ? el("div", { class: "muted" }, `оплачено ${date(m.paid_on)}`) : ""] : "");
-          })))))
+          }),
+          editable ? el("td", { class: "req-actions" },
+            el("button", { type: "button", class: "link", onclick: () => periodicForm(r) }, "Изменить"),
+            el("button", { type: "button", class: "link", onclick: async () => {
+              if (!confirm("Удалить условия периодического платежа?")) return;
+              try {
+                await api.delete(`/api/contract-payments/${r.id}`);
+                await loadPeriodic();
+              } catch (err) {
+                toast(err.message, "error");
+              }
+            } }, "Удалить")) : ""))))
         : el("p", { class: "muted" }, "Периодических платежей пока нет."));
+  }
+
+  // периодический платёж: по договору или без него (зарплата, налоги, кредит)
+  function periodicForm(r) {
+    const entities = ref.entities.filter((e) => e.is_active || e.id === r?.legal_entity_id);
+    const entityId = String(r?.legal_entity_id ?? entities[0]?.id ?? "");
+    const articles = ref.leafArticles.filter((a) => a.is_cash_flow && a.cash_flow_direction === "outflow" && !a.is_transfer);
+    const banks = (le) => options(ref.bankAccounts.filter((b) => String(b.legal_entity_id) === le), (b) => `${b.name} ··${b.number.slice(-4)}`);
+    const contracts = (cp, le) => [["", "— без договора —"], ...ref.contracts
+      .filter((c) => String(c.counterparty_id) === cp && String(c.legal_entity_id) === le)
+      .map((c) => [String(c.id), c.name || `№ ${c.number}`])];
+    const byContract = Boolean(r?.contract_id);
+    const dialog = openForm({
+      title: r ? "Периодический платёж" : "Новый периодический платёж",
+      fields: [
+        { name: "name", label: "Название", placeholder: "Зарплата, НДФЛ, кредит Сбер…" },
+        { name: "legal_entity_id", label: "Юрлицо", type: "select", options: entities.map((e) => [String(e.id), e.short_name]) },
+        { name: "counterparty_id", label: "Контрагент", type: "select", options: options(ref.counterparties, (c) => c.name) },
+        { name: "contract_id", label: "Договор", type: "select", options: contracts(String(r?.counterparty_id ?? ""), entityId),
+          hint: byContract ? "Платёж по договору: юрлицо, контрагент и договор не меняются" : "" },
+        { name: "frequency", label: "Правило", type: "select",
+          options: [["month", "Ежемесячно"], ["quarter", "Раз в квартал"], ["year", "Раз в год"]] },
+        { name: "day", label: "Число месяца", type: "number", required: true, hint: "Выходной или праздник — ближайший рабочий день раньше" },
+        { name: "valid_from", label: "Действует с", type: "date", required: true,
+          hint: "Квартал и год считаются от этого месяца" },
+        { name: "valid_to", label: "Действует по", type: "date" },
+        { name: "amount", label: "Сумма", required: true },
+        { name: "bank_account_id", label: "Расчётный счёт", type: "select", options: banks(entityId) },
+        { name: "article_id", label: "Статья ДДС", type: "select", options: options(articles, (a) => ref.articleLabel.get(a.id) ?? a.name) },
+        { name: "cfo_id", label: "ЦФО", type: "select", options: options(ref.cfos, (c) => ref.cfoLabel.get(c.id)) },
+        { name: "executor_id", label: "ЦФУ", type: "select", options: options(ref.executors, (e) => ref.executorLabel.get(e.id)) },
+        { name: "description", label: "Назначение", type: "textarea" },
+      ],
+      values: r ? { name: r.name, legal_entity_id: entityId, counterparty_id: String(r.counterparty_id ?? ""),
+        contract_id: String(r.contract_id ?? ""), frequency: r.frequency, day: String(r.day), valid_from: r.valid_from,
+        valid_to: r.valid_to ?? "", amount: String(r.amount).replace(".", ","), bank_account_id: String(r.bank_account_id ?? ""),
+        article_id: String(r.article_id ?? ""), cfo_id: String(r.cfo_id ?? ""), executor_id: String(r.executor_id ?? ""),
+        description: r.description }
+        : { legal_entity_id: entityId, frequency: "month", day: "10", valid_from: isoDay(new Date()).slice(0, 8) + "01" },
+      submitText: "Сохранить",
+      onSubmit: async (v) => {
+        const amount = parseNumber(v.amount);
+        if (amount === null) throw new Error("Сумма — число");
+        const body = { name: v.name, frequency: v.frequency, day: Number(v.day), valid_from: v.valid_from,
+          valid_to: v.valid_to || null, amount, bank_account_id: idOrNull(v.bank_account_id), article_id: idOrNull(v.article_id),
+          cfo_id: idOrNull(v.cfo_id), executor_id: idOrNull(v.executor_id), description: v.description,
+          legal_entity_id: Number(v.legal_entity_id), counterparty_id: idOrNull(v.counterparty_id),
+          contract_id: idOrNull(v.contract_id) };
+        if (r) await api.put(`/api/contract-payments/${r.id}`, body);
+        else await api.post(`/api/organizations/${org.id}/periodic-payments`, body);
+        await loadPeriodic();
+      },
+    });
+    const form = dialog.querySelector("form");
+    if (byContract) for (const name of ["legal_entity_id", "counterparty_id", "contract_id"]) form.elements[name].disabled = true;
+    const refresh = () => {
+      refill(form.elements.contract_id, contracts(form.elements.counterparty_id.value, form.elements.legal_entity_id.value),
+        form.elements.contract_id.value);
+      refill(form.elements.bank_account_id, banks(form.elements.legal_entity_id.value), form.elements.bank_account_id.value);
+    };
+    form.elements.counterparty_id.addEventListener("change", refresh);
+    form.elements.legal_entity_id.addEventListener("change", refresh);
   }
 
   // --- календарь по форме владельца («лист 1»): дни колонками, статьи → контрагент + договор (шаг 14.6) ---
@@ -441,6 +530,8 @@ export async function renderCalendar(view) {
     node.addEventListener("change", () => { sheetFilter[key] = node.value; loadSheet(); });
     return node;
   };
+  const sheetFrom = sheetInput("date_from", "Календарь с");
+  const sheetTo = sheetInput("date_to", "Календарь по");
   const sheetEntity = el("select", { "aria-label": "Юрлицо календаря" });
   sheetEntity.addEventListener("change", () => { sheetFilter.legal_entity_id = sheetEntity.value; loadSheet(); });
   const sheetPending = el("input", { type: "checkbox", "aria-label": "С заявками на согласовании" });
@@ -460,8 +551,14 @@ export async function renderCalendar(view) {
       + "ожидаемое поступление, «+» у «Технических операций» — плановый перевод между счетами и кассами; остаток "
       + "по банк-клиенту вводится в окне ячейки «Деньги на начало». «Без выписок» — только то, что введено вручную."),
     el("div", { class: "filters" },
-      el("label", { class: "inline" }, "С ", sheetInput("date_from", "Календарь с")),
-      el("label", { class: "inline" }, "по ", sheetInput("date_to", "Календарь по")),
+      el("label", { class: "inline" }, "С ", sheetFrom),
+      el("label", { class: "inline" }, "по ", sheetTo),
+      el("button", { type: "button", class: "secondary", onclick: () => {
+        // «Сегодня»: период с сегодняшнего дня на месяц вперёд
+        sheetFilter.date_from = sheetFrom.value = shiftDays(0);
+        sheetFilter.date_to = sheetTo.value = shiftDays(30);
+        loadSheet();
+      } }, "Сегодня"),
       sheetEntity, sheetMode, el("label", { class: "check" }, sheetPending, " с заявками на согласовании"),
       el("button", { type: "button", class: "secondary", onclick: () => expandAll(true) }, "Развернуть всё"),
       el("button", { type: "button", class: "secondary", onclick: () => expandAll(false) }, "Свернуть"),
@@ -885,10 +982,18 @@ export async function renderCalendar(view) {
       } }, "Загрузить из Excel"),
       el("button", { type: "button", class: "secondary",
         onclick: () => api.download(`/api/organizations/${org.id}/supplier-invoices/template.xlsx`, "supplier_invoices.xlsx")
-          .catch((err) => toast(err.message, "error")) }, "Скачать шаблон"), supFile),
+          .catch((err) => toast(err.message, "error")) }, "Скачать шаблон"),
+      el("button", { type: "button", class: "secondary", onclick: () => invoiceForm(null, null) }, "+ Накладная"),
+      el("button", { type: "button", class: "secondary", onclick: () => {
+        for (const g of supData?.groups ?? []) supExpanded.add(`${g.legal_entity_id}:${g.counterparty_id}`);
+        renderSuppliers();
+      } }, "Развернуть всё"),
+      el("button", { type: "button", class: "secondary", onclick: () => { supExpanded.clear(); renderSuppliers(); } }, "Свернуть"),
+      supFile),
     supTotals, supList,
   );
   let supData = null;
+  const supExpanded = new Set();  // раскрытые контрагенты (юрлицо:контрагент)
 
   function showSupplierImport(fileName, r) {
     const dialog = el("dialog", { class: "dialog wide" },
@@ -933,12 +1038,19 @@ export async function renderCalendar(view) {
     }
     const body = [];
     for (const g of groups) {
+      const groupKey = `${g.legal_entity_id}:${g.counterparty_id}`;
+      const open = supExpanded.has(groupKey);
+      const toggle = el("button", { type: "button", class: "tree-toggle", "aria-expanded": String(open),
+        "aria-label": `${open ? "Свернуть" : "Раскрыть"} накладные: ${g.counterparty_name}`,
+        onclick: () => { if (open) supExpanded.delete(groupKey); else supExpanded.add(groupKey); renderSuppliers(); } },
+      open ? "▾" : "▸");
       const boxes = g.invoices.map((inv) => el("input", { type: "checkbox", "data-id": inv.id,
         "aria-label": `Накладная № ${inv.number}`, disabled: Number(inv.remaining) <= 0 }));
       const terms = [g.deferral_days !== null ? `отсрочка ${g.deferral_days} дн.` : "",
         g.debt_limit ? `лимит ${money(g.debt_limit)}` : ""].filter(Boolean).join(" · ");
       body.push(el("tr", { class: `week-row${g.over_limit ? " gap-row" : ""}`, "data-counterparty": g.counterparty_name },
-        el("td", { colspan: 3 }, g.counterparty_name, ` · ${g.legal_entity_name}`,
+        el("td", { colspan: 3 }, toggle, " ", g.counterparty_name, ` · ${g.legal_entity_name}`,
+          el("span", { class: "muted small" }, ` · накладных: ${g.invoices.length}`),
           terms ? el("div", { class: "small" }, terms + (g.over_limit ? " — долг больше лимита" : "")) : null,
           g.group_name ? el("div", { class: "small" }, `юрлицо группы (${g.group_name}) — без согласования`) : null),
         el("td", { class: "num" }, money(g.debt)),
@@ -947,6 +1059,7 @@ export async function renderCalendar(view) {
         el("td", { class: "num" }, money(g.remaining)),
         el("td", {}, Number(g.remaining) > 0
           ? el("button", { type: "button", class: "link", onclick: () => planSupplier(g, boxes) }, "Запланировать оплату") : "")));
+      if (!open) continue;  // свёрнуто по контрагенту
       g.invoices.forEach((inv, i) => body.push(el("tr", { "data-invoice": inv.number },
         el("td", {}, boxes[i]),
         el("td", {}, `${inv.kind === "advance" ? "Аванс" : "Накладная"} № ${inv.number}`, el("div", { class: "muted" }, `от ${date(inv.doc_date)}`)),
@@ -956,7 +1069,8 @@ export async function renderCalendar(view) {
         el("td", {}, ...inv.payments.map((p) => el("div", { class: "small" },
           `заявка № ${p.number} · ${date(p.pay_date)} · ${money(p.amount)} · ${p.status_title}`))),
         el("td", { class: "num" }, money(inv.remaining)),
-        el("td", {}, inv.payments.length ? "" : el("button", { type: "button", class: "link", onclick: async () => {
+        el("td", {}, el("button", { type: "button", class: "link", onclick: () => invoiceForm(inv, g) }, "Изменить"),
+          inv.payments.length ? "" : el("button", { type: "button", class: "link", onclick: async () => {
           if (!confirm(`Удалить накладную № ${inv.number}?`)) return;
           try {
             await api.delete(`/api/supplier-invoices/${inv.id}`);
@@ -970,6 +1084,49 @@ export async function renderCalendar(view) {
       el("thead", {}, el("tr", {}, ...["", "Документ", "Срок оплаты", "Сумма", "Оплачено", "Заявки на оплату", "Остаток", ""]
         .map((t) => el("th", {}, t)))),
       el("tbody", {}, ...body)));
+  }
+
+  // накладная вручную: добавить или поправить (финансовый менеджер, финансовый директор, администратор)
+  function invoiceForm(inv, g) {
+    const entities = ref.entities.filter((e) => e.is_active || e.id === g?.legal_entity_id);
+    const entityId = String(g?.legal_entity_id ?? supFilter.legal_entity_id ?? entities[0]?.id ?? "");
+    const contractOptions = (cpId, leId) => [["", "— по умолчанию (договор поставщика) —"], ...ref.contracts
+      .filter((c) => String(c.counterparty_id) === cpId && String(c.legal_entity_id) === leId)
+      .map((c) => [String(c.id), c.name || `№ ${c.number}`])];
+    const dialog = openForm({
+      title: inv ? `Накладная № ${inv.number}` : "Новая накладная",
+      fields: [
+        { name: "legal_entity_id", label: "Юрлицо-покупатель", type: "select", required: true,
+          options: entities.map((e) => [String(e.id), e.short_name]) },
+        { name: "counterparty_id", label: "Поставщик", type: "select", required: true,
+          options: options(ref.counterparties, (c) => (c.inn ? `${c.name} (${c.inn})` : c.name), "— выберите —") },
+        { name: "contract_id", label: "Договор", type: "select",
+          options: contractOptions(String(g?.counterparty_id ?? ""), entityId) },
+        { name: "kind", label: "Документ", type: "select", options: [["invoice", "Накладная"], ["advance", "Аванс"]] },
+        { name: "number", label: "№", required: true },
+        { name: "doc_date", label: "Дата", type: "date", required: true },
+        { name: "amount", label: "Сумма", required: true },
+      ],
+      values: inv ? { legal_entity_id: entityId, counterparty_id: String(g.counterparty_id), contract_id: String(inv.contract_id ?? ""),
+        kind: inv.kind, number: inv.number, doc_date: inv.doc_date, amount: String(inv.amount).replace(".", ",") }
+        : { legal_entity_id: entityId, kind: "invoice", doc_date: isoDay(new Date()) },
+      submitText: "Сохранить",
+      onSubmit: async (v) => {
+        const amount = parseNumber(v.amount);
+        if (amount === null) throw new Error("Сумма — число");
+        const body = { legal_entity_id: Number(v.legal_entity_id), counterparty_id: Number(v.counterparty_id),
+          contract_id: idOrNull(v.contract_id), kind: v.kind, number: v.number, doc_date: v.doc_date, amount };
+        if (inv) await api.put(`/api/supplier-invoices/${inv.id}`, body);
+        else await api.post(`/api/organizations/${org.id}/supplier-invoices`, body);
+        supExpanded.add(`${body.legal_entity_id}:${body.counterparty_id}`);
+        await loadSuppliers();
+      },
+    });
+    const form = dialog.querySelector("form");
+    const refresh = () => refill(form.elements.contract_id, contractOptions(form.elements.counterparty_id.value,
+      form.elements.legal_entity_id.value), form.elements.contract_id.value);
+    form.elements.counterparty_id.addEventListener("change", refresh);
+    form.elements.legal_entity_id.addEventListener("change", refresh);
   }
 
   function planSupplier(g, boxes) {
