@@ -759,3 +759,9 @@
   `calendar.Item.employee_id`, `calendar_sheet.Line.employee_id` (факт — по `dt/ct_employee_id`), строка «Под отчёт: ФИО».
   Интерфейс: поле в заявке (скрыто, если не касса), «Подотчётное лицо» у счёта 71 в форме операции, «Авансовый отчёт»
   на «Деньгах». Тестов 394, ui_smoke дополнен.
+- 2026-11-12 — 16.5 влита (PR 72). Шаг 17.1 (ветка `etap-17-1-report-compare`), `docs/TZ.md`, раздел 27 «Детали 17.1».
+  Миграций нет. `app/services/report_compare.py`: `shift` (месяцы, конец месяца — конец), `compare(f, mode, build)` —
+  тот же отчёт за сдвинутый период (year/month, колонки по порядку) или среднее 6 месяцев (avg6). API ДДС/ОПиУ/управленческого
+  и их Excel: параметры `compare`, `costs`; в строках `compare`, `better`; в ответе `compare_title`, `revenue` (ОПиУ — строка
+  `revenue`; управленческий — `management_report.revenue_row`, код 1.0). `FormRowResult.better`. Интерфейс: `common.js:
+  compareBar` (localStorage `reports.compare`), `extraHtml` (`.cmp`, `.pct.good/.bad`, `.share`). Тестов 397, ui_smoke дополнен.

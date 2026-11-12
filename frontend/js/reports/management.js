@@ -5,7 +5,7 @@ import { money } from "../format.js";
 import { el, makeTable, openForm, toast } from "../ui.js";
 import { tableNotes } from "../notes.js";
 import { openPlanCells } from "../plancells.js";
-import { nestRows, openDrill, planArticle, TREE_OPTIONS } from "./common.js";
+import { compareBar, extraHtml, nestRows, openDrill, planArticle, TREE_OPTIONS } from "./common.js";
 
 const MODES = [["fact", "Факт"], ["plan", "План"], ["plan_fact", "План и факт"]];
 const PARTS = { fact: [["fact", "Факт"]], plan: [["plan", "План"]], plan_fact: [["plan", "План"], ["fact", "Факт"], ["dev", "Откл."]] };
@@ -20,7 +20,10 @@ export function managementReport({ box, ctx }) {
   const modeTabs = el("div", { class: "tabs" });
   const hint = el("p", { class: "muted" });
   const tableBox = el("div");
-  box.replaceChildren(modeTabs, hint, tableBox);
+  // «Сравнить» и «Косты» — у факта (шаг 17.1); выручка — строка «Выручка со скидками» формы
+  const bar = compareBar(() => load());
+  box.replaceChildren(modeTabs, hint, bar.node, tableBox);
+  const params = () => ctx.filters.params({ mode, ...(mode === "fact" ? bar.params() : {}) });
   const canEdit = () => ctx.org().permissions.includes("edit_reference");
 
   const table = makeTable(tableBox, {
@@ -109,7 +112,8 @@ export function managementReport({ box, ctx }) {
   }
 
   async function load() {
-    data = await api.get(`/api/organizations/${ctx.org().id}/reports/management?${ctx.filters.params({ mode })}`);
+    bar.node.hidden = mode !== "fact";
+    data = await api.get(`/api/organizations/${ctx.org().id}/reports/management?${params()}`);
     if (!data.form_loaded) {
       hint.textContent = "Форма отчёта не загружена: загрузите справочник статей из Excel на странице «Статьи ДДС и ОПиУ» "
         + "(загрузка сохраняет и строки показателей).";
@@ -119,14 +123,19 @@ export function managementReport({ box, ctx }) {
     hint.textContent = "Строки — в порядке загруженного справочника. Статьи: ОПиУ — по начислению, статьи только ДДС — по деньгам; "
       + "доходы, расходы, поступления и выплаты — положительными числами. Показатели считаются по формулам"
       + (canEdit() ? " (щёлкните по названию строки, чтобы поправить формулу или знак)" : "")
-      + ". Щёлкните по сумме факта статьи — откроются проводки, по плану (или «·») — плановые операции.";
+      + ". Щёлкните по сумме факта статьи — откроются проводки, по плану (или «·») — плановые операции."
+      + (data.compare ? ` Синим — сравнение ${data.compare_title}: зелёный процент — лучше, красный — хуже.` : "")
+      + (data.revenue ? ` «Косты» — доля к строке «${data.revenue_title || "выручка не найдена в форме"}».` : "");
     const parts = PARTS[mode];
     const cellText = (c) => {
       const v = c.getValue();
       const r = c.getRow().getData();
       const text = v === null || v === undefined || Number(v) === 0 ? "" : money(v);
       if (r.drill && c.getField().endsWith("|plan") && planArticle(r.drill)) return `<span class="drill">${text || "·"}</span>`;
-      return text && r.drill && c.getField().endsWith("|fact") ? `<span class="drill">${text}</span>` : text;
+      const main = text && r.drill && c.getField().endsWith("|fact") ? `<span class="drill">${text}</span>` : text;
+      if (mode !== "fact" || r.kind === "header") return main;
+      const colKey = c.getField().split("|")[0];
+      return main + extraHtml(v, r.compare?.[colKey], r.better, data.revenue?.[colKey]);
     };
     const sub = (c, part, title) => ({ title, field: `${c.key}|${part}`, hozAlign: "right", minWidth: 105, headerSort: false,
       formatter: cellText, cssClass: part === "dev" ? "dev-cell" : c.key === "total" ? "strong" : "" });
@@ -164,7 +173,7 @@ export function managementReport({ box, ctx }) {
         : part === "dev" ? "plan_fact" : mode;
       renderTabs();
     },
-    excel: () => api.download(`/api/organizations/${ctx.org().id}/reports/management.xlsx?${ctx.filters.params({ mode })}`,
+    excel: () => api.download(`/api/organizations/${ctx.org().id}/reports/management.xlsx?${params()}`,
       `management_${ctx.filters.dateFrom()}_${ctx.filters.dateTo()}.xlsx`),
   };
 }

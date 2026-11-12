@@ -2,7 +2,7 @@
 import { api } from "../api.js";
 import { tableNotes } from "../notes.js";
 import { el, makeTable } from "../ui.js";
-import { moneyCell, nestRows, openDrill, TREE_OPTIONS } from "./common.js";
+import { compareBar, extraHtml, moneyCell, nestRows, openDrill, TREE_OPTIONS } from "./common.js";
 
 const BOLD = new Set(["title", "section", "balance", "total"]);
 
@@ -11,10 +11,13 @@ function escape(text) {
 }
 
 /** Отчёт с колонками по месяцам (ДДС, ОПиУ): строки приходят с сервера готовыми. */
-export function columnsReport({ box, ctx, path, hint, fileName, onDetails, firstTitle = "Статья" }) {
+export function columnsReport({ box, ctx, path, hint, fileName, onDetails, firstTitle = "Статья", compare = false }) {
   const tableBox = el("div");
-  box.replaceChildren(el("p", { class: "muted" }, hint), tableBox);
+  // «Сравнить» и «Косты» — в ДДС и ОПиУ (шаг 17.1)
+  const bar = compare ? compareBar(() => load()) : null;
+  box.replaceChildren(el("p", { class: "muted" }, hint), ...(bar ? [bar.node] : []), tableBox);
   let data = null;
+  const extra = () => (bar ? bar.params() : {});
 
   const table = makeTable(tableBox, {
     index: "key",
@@ -53,7 +56,7 @@ export function columnsReport({ box, ctx, path, hint, fileName, onDetails, first
   });
 
   async function load() {
-    data = await api.get(`/api/organizations/${ctx.org().id}/reports/${path}?${ctx.filters.params()}`);
+    data = await api.get(`/api/organizations/${ctx.org().id}/reports/${path}?${ctx.filters.params(extra())}`);
     table.setColumns([
       { title: firstTitle, field: "title", minWidth: 260, widthGrow: 3, headerSort: false, frozen: true,
         formatter: (c) => {
@@ -64,7 +67,10 @@ export function columnsReport({ box, ctx, path, hint, fileName, onDetails, first
         title: c.title, field: c.key, hozAlign: "right", minWidth: 120, headerSort: false,
         cssClass: c.key === "total" ? "strong" : "", formatter: (cell) => {
           const r = cell.getRow().getData();
-          return r.drill ? moneyCell(cell) : moneyCell(cell).replace('class="drill"', "");
+          const main = r.drill ? moneyCell(cell) : moneyCell(cell).replace('class="drill"', "");
+          if (!r.values || !Object.keys(r.values).length) return main;
+          return main + extraHtml(cell.getValue(), r.compare?.[c.key], r.better,
+            r.kind === "balance" ? null : data.revenue?.[c.key]);
         },
       })),
     ]);
@@ -77,16 +83,16 @@ export function columnsReport({ box, ctx, path, hint, fileName, onDetails, first
     load,
     reset: async () => {},
     notes,
-    excel: () => api.download(`/api/organizations/${ctx.org().id}/reports/${path}.xlsx?${ctx.filters.params()}`,
+    excel: () => api.download(`/api/organizations/${ctx.org().id}/reports/${path}.xlsx?${ctx.filters.params(extra())}`,
       `${fileName}_${ctx.filters.dateFrom()}_${ctx.filters.dateTo()}.xlsx`),
   };
 }
 
 export function ddsReport({ box, ctx }) {
   return columnsReport({
-    box, ctx, path: "dds", fileName: "dds",
+    box, ctx, path: "dds", fileName: "dds", compare: true,
     hint: "Деньги — счета 50, 51, 52, 55. Переводы между своими счетами не показываются. "
       + "Щёлкните по сумме — откроются проводки, из которых она сложилась. При фильтре по ЦФО видна только касса. "
-      + "Правый щелчок по цифре (на телефоне — долгое нажатие) — примечание.",
+      + "Правый щелчок по цифре (на телефоне — долгое нажатие) — примечание. «Сравнить» — под цифрой синим сумма для сравнения и отклонение (зелёное — лучше, красное — хуже); «Косты» — доля к выручке ОПиУ того же месяца.",
   });
 }

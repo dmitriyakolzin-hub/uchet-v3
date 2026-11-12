@@ -28,7 +28,8 @@ from app.models import (
 )
 from app.models.journal import ANALYTIC_COLUMNS
 from app.services import report_xlsx as xlsx
-from app.services import management_report, reports
+from app.core.money import round_money
+from app.services import management_report, report_compare, reports
 from app.services.articles import subtree_ids
 from app.services.excel_import import XLSX_TYPE
 from app.services.reports import ReportFilter
@@ -237,6 +238,8 @@ class ReportRowOut(BaseModel):
     values: dict[str, Decimal]
     drill: dict | None
     parent: str | None = None
+    compare: dict[str, Decimal] | None = None  # сумма для сравнения по колонкам (переключатель «Сравнить»)
+    better: int = 1  # рост суммы — лучше (1) / хуже (−1) / без оценки (0)
 
 
 class ColumnsReportOut(BaseModel):
@@ -245,24 +248,51 @@ class ColumnsReportOut(BaseModel):
     columns: list[ColumnOut]
     money_account_ids: list[int] = []
     rows: list[ReportRowOut]
+    compare: str | None = None  # year / month / avg6
+    compare_title: str = ""
+    revenue: dict[str, Decimal] | None = None  # выручка ОПиУ по колонкам (переключатель «Косты»)
 
 
-def _dds(db: Session, f: ReportFilter) -> ColumnsReportOut:
+# Сравнение с другим периодом и «косты» (docs/TZ.md, раздел 27, «Детали 17.1»)
+CompareMode = Literal["year", "month", "avg6"] | None
+
+
+def _row_values(result: reports.ColumnsResult) -> dict[str, dict[str, Decimal]]:
+    return {r.key: r.values for r in result.rows}
+
+
+def _with_extras(db: Session, f: ReportFilter, out: ColumnsReportOut, build, compare: CompareMode,
+                 costs: bool) -> ColumnsReportOut:
+    if compare:
+        values = report_compare.compare(f, compare, lambda other: _row_values(build(db, other)))
+        for row in out.rows:
+            row.compare = {c.key: values.get(row.key, {}).get(c.key, Decimal("0.00")) for c in out.columns}
+        out.compare, out.compare_title = compare, report_compare.MODES[compare]
+    if costs:
+        revenue = next((r for r in reports.pl(db, f).rows if r.key == "revenue"), None)
+        out.revenue = {c.key: revenue.values.get(c.key, Decimal("0.00")) if revenue else Decimal("0.00")
+                       for c in out.columns}
+    return out
+
+
+def _dds(db: Session, f: ReportFilter, compare: CompareMode = None, costs: bool = False) -> ColumnsReportOut:
     result = reports.dds(db, f)
-    return ColumnsReportOut(
+    out = ColumnsReportOut(
         columns=[c.__dict__ for c in result.columns], money_account_ids=result.money_account_ids,
         rows=[r.__dict__ for r in result.rows],
     )
+    return _with_extras(db, f, out, reports.dds, compare, costs)
 
 
-def _pl(db: Session, f: ReportFilter) -> ColumnsReportOut:
+def _pl(db: Session, f: ReportFilter, compare: CompareMode = None, costs: bool = False) -> ColumnsReportOut:
     result = reports.pl(db, f)
-    return ColumnsReportOut(columns=[c.__dict__ for c in result.columns], rows=[r.__dict__ for r in result.rows])
+    out = ColumnsReportOut(columns=[c.__dict__ for c in result.columns], rows=[r.__dict__ for r in result.rows])
+    return _with_extras(db, f, out, reports.pl, compare, costs)
 
 
 @router.get("/pl", response_model=ColumnsReportOut)
-def get_pl(f: Filter, db: DbSession):
-    return _pl(db, f)
+def get_pl(f: Filter, db: DbSession, compare: CompareMode = None, costs: bool = False):
+    return _pl(db, f, compare, costs)
 
 
 def _balance(db: Session, f: ReportFilter) -> ColumnsReportOut:
@@ -380,8 +410,8 @@ def get_plan_fact(f: Filter, db: DbSession, kind: Literal["pl", "cf"] = "pl", ve
 
 
 @router.get("/dds", response_model=ColumnsReportOut)
-def get_dds(f: Filter, db: DbSession):
-    return _dds(db, f)
+def get_dds(f: Filter, db: DbSession, compare: CompareMode = None, costs: bool = False):
+    return _dds(db, f, compare, costs)
 
 
 # --- Excel ---
@@ -431,22 +461,66 @@ def get_osv_xlsx(f: Filter, db: DbSession):
     return _xlsx(content, f"osv_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
 
 
+def change_pct(value: Decimal, base: Decimal) -> Decimal | None:
+    """Отклонение в процентах: насколько сумма больше (меньше) по модулю, чем сумма для сравнения."""
+    if not base:
+        return None
+    if (value >= 0) == (base > 0):
+        return round_money((abs(value) - abs(base)) / abs(base) * 100)
+    return round_money((value - base) / abs(base) * 100)
+
+
+def share_pct(value: Decimal, revenue: Decimal) -> Decimal | None:
+    return round_money(abs(value) / revenue * 100) if revenue and revenue > 0 else None
+
+
+def extra_cells(value, base, revenue) -> list:
+    """Колонки Excel после суммы: сравнение и отклонение, % выручки — если переключатели включены."""
+    cells = []
+    if base is not None:
+        cells += [base, change_pct(value or Decimal("0.00"), base)]
+    if revenue is not None:
+        cells.append(share_pct(value or Decimal("0.00"), revenue))
+    return cells
+
+
+def extra_columns(title: str, compare: bool, costs: bool) -> list:
+    cols = []
+    if compare:
+        cols += [xlsx.XlsxColumn(f"{title}: сравнение", 15, True), xlsx.XlsxColumn(f"{title}: откл. %", 10, True)]
+    if costs:
+        cols.append(xlsx.XlsxColumn(f"{title}: % выручки", 10, True))
+    return cols
+
+
 def _columns_xlsx(title: str, data: ColumnsReportOut, subtitle: str, first_title: str = "Статья") -> bytes:
-    rows = [(r.level, [r.title] + [r.values.get(c.key) if r.values else None for c in data.columns],
-             r.kind in ("balance", "section", "total", "title")) for r in data.rows]
-    return xlsx.build(title, subtitle, [xlsx.XlsxColumn(first_title, 45)]
-                      + [xlsx.XlsxColumn(c.title, 16, True) for c in data.columns], rows)
+    if data.compare:
+        subtitle += f"; сравнение {data.compare_title}"
+    rows = []
+    for r in data.rows:
+        values = [r.title]
+        for c in data.columns:
+            value = r.values.get(c.key) if r.values else None
+            values.append(value)
+            values += extra_cells(value, r.compare.get(c.key) if r.compare is not None else None,
+                                  data.revenue.get(c.key) if data.revenue is not None else None)
+        rows.append((r.level, values, r.kind in ("balance", "section", "total", "title")))
+    columns = [xlsx.XlsxColumn(first_title, 45)]
+    for c in data.columns:
+        columns += [xlsx.XlsxColumn(c.title, 16, True), *extra_columns(c.title, bool(data.compare),
+                                                                        data.revenue is not None)]
+    return xlsx.build(title, subtitle, columns, rows)
 
 
 @router.get("/dds.xlsx")
-def get_dds_xlsx(f: Filter, db: DbSession):
-    content = _columns_xlsx("Движение денежных средств", _dds(db, f), _subtitle(db, f))
+def get_dds_xlsx(f: Filter, db: DbSession, compare: CompareMode = None, costs: bool = False):
+    content = _columns_xlsx("Движение денежных средств", _dds(db, f, compare, costs), _subtitle(db, f))
     return _xlsx(content, f"dds_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
 
 
 @router.get("/pl.xlsx")
-def get_pl_xlsx(f: Filter, db: DbSession):
-    content = _columns_xlsx("Отчёт о прибылях и убытках", _pl(db, f), _subtitle(db, f))
+def get_pl_xlsx(f: Filter, db: DbSession, compare: CompareMode = None, costs: bool = False):
+    content = _columns_xlsx("Отчёт о прибылях и убытках", _pl(db, f, compare, costs), _subtitle(db, f))
     return _xlsx(content, f"pl_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
 
 
@@ -622,6 +696,8 @@ class ManagementRowOut(BaseModel):
     error: str
     values: dict[str, dict[str, Decimal | None]]
     drill: dict | None
+    compare: dict[str, Decimal] | None = None  # факт для сравнения (режим «факт»)
+    better: int = 1
 
 
 class ManagementOut(BaseModel):
@@ -629,11 +705,16 @@ class ManagementOut(BaseModel):
     mode: str
     columns: list[ColumnOut]
     rows: list[ManagementRowOut]
+    compare: str | None = None
+    compare_title: str = ""
+    revenue: dict[str, Decimal] | None = None  # строка «Выручка со скидками» (переключатель «Косты»)
+    revenue_title: str = ""
     # версия плана по месяцам («YYYY-MM» → id) — для окна плановых операций: ОПиУ и ДДС — свои версии
     plan_versions: dict[str, dict[str, int]] = {}
 
 
-def _management(db: Session, f: ReportFilter, mode: str, version_id: int | None) -> ManagementOut:
+def _management(db: Session, f: ReportFilter, mode: str, version_id: int | None, compare: CompareMode = None,
+                costs: bool = False) -> ManagementOut:
     if version_id is not None:
         _check_version(db, f.organization_id, version_id)
     plan_pl, plan_cf = management_report.plan_filters(db, f, version_id) if mode != "fact" else (None, None)
@@ -648,34 +729,56 @@ def _management(db: Session, f: ReportFilter, mode: str, version_id: int | None)
         rows.append(ManagementRowOut(
             key=f"row:{r.row.id}", id=r.row.id, code=r.row.code, title=r.row.name, kind=r.row.kind, level=r.level,
             parent=r.parent, note=r.row.note, formula=r.row.formula, invert=r.row.invert, error=r.error,
-            values=values if r.row.kind != "header" else {}, drill=r.drill,
+            values=values if r.row.kind != "header" else {}, drill=r.drill, better=r.better,
         ))
     versions = {kind: dict(pf.plan_versions) for kind, pf in (("pl", plan_pl), ("cf", plan_cf)) if pf is not None}
-    return ManagementOut(form_loaded=bool(results), mode=mode, columns=[c.__dict__ for c in columns], rows=rows,
-                         plan_versions=versions)
+    out = ManagementOut(form_loaded=bool(results), mode=mode, columns=[c.__dict__ for c in columns], rows=rows,
+                        plan_versions=versions)
+    if mode == "fact" and compare and results:  # сравнение — только у факта
+        def build(other: ReportFilter) -> dict[str, dict[str, Decimal]]:
+            return {f"row:{x.row.id}": x.fact for x in management_report.build(db, other, None, None)[1]}
+
+        values = report_compare.compare(f, compare, build)
+        for row in out.rows:
+            if row.kind != "header":
+                row.compare = {c.key: values.get(row.key, {}).get(c.key, Decimal("0.00")) for c in columns}
+        out.compare, out.compare_title = compare, report_compare.MODES[compare]
+    if mode == "fact" and costs and results:
+        revenue = management_report.revenue_row(results)
+        out.revenue = {c.key: revenue.fact[c.key] if revenue else Decimal("0.00") for c in columns}
+        out.revenue_title = f"{revenue.row.code or ''} {revenue.row.name}".strip() if revenue else ""
+    return out
 
 
 @router.get("/management", response_model=ManagementOut)
 def get_management(f: Filter, db: DbSession, mode: Literal["fact", "plan", "plan_fact"] = "fact",
-                   version_id: int | None = None):
-    return _management(db, f, mode, version_id)
+                   version_id: int | None = None, compare: CompareMode = None, costs: bool = False):
+    return _management(db, f, mode, version_id, compare, costs)
 
 
 @router.get("/management.xlsx")
 def get_management_xlsx(f: Filter, db: DbSession, mode: Literal["fact", "plan", "plan_fact"] = "fact",
-                        version_id: int | None = None):
-    data = _management(db, f, mode, version_id)
+                        version_id: int | None = None, compare: CompareMode = None, costs: bool = False):
+    data = _management(db, f, mode, version_id, compare, costs)
     parts = {"fact": [("fact", "факт")], "plan": [("plan", "план")],
              "plan_fact": [("plan", "план"), ("fact", "факт"), ("dev", "отклонение")]}[mode]
     columns = [xlsx.XlsxColumn("Код", 12), xlsx.XlsxColumn("Строка", 50)]
     for c in data.columns:
         columns += [xlsx.XlsxColumn(f"{c.title}: {title}" if mode == "plan_fact" else c.title, 15, True)
                     for _, title in parts]
+        columns += extra_columns(c.title, bool(data.compare), data.revenue is not None)
     rows = []
     for r in data.rows:
         values = [r.code, r.title]
         for c in data.columns:
             values += [r.values.get(c.key, {}).get(part) for part, _ in parts]
+            if r.kind == "header":
+                values += [None] * (2 * bool(data.compare) + (data.revenue is not None))
+                continue
+            fact = r.values.get(c.key, {}).get("fact")
+            values += extra_cells(fact, (r.compare or {}).get(c.key) if data.compare else None,
+                                  data.revenue.get(c.key) if data.revenue is not None else None)
         rows.append((r.level, values, r.kind != "article"))
-    content = xlsx.build("Управленческий отчёт", _subtitle(db, f), columns, rows)
+    subtitle = _subtitle(db, f) + (f"; сравнение {data.compare_title}" if data.compare else "")
+    content = xlsx.build("Управленческий отчёт", subtitle, columns, rows)
     return _xlsx(content, f"management_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")

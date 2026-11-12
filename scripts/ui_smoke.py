@@ -607,6 +607,15 @@ with sync_playwright() as p:
     expect(page.locator("button.tab.active", has_text="ДДС")).to_be_visible()
     expect(page.locator(".tabulator-row", has_text="Оплата поставщикам").locator(
         ".tabulator-cell[tabulator-field=total]")).to_have_class(re.compile("note-focus"))
+    # сравнение с прошлым месяцем и косты (шаг 17.1): под цифрой — сумма для сравнения и процент
+    page.locator("[aria-label='Сравнить']").select_option("month")
+    expect(page.locator(".tabulator-cell .cmp").first).to_be_visible()
+    page.locator("[aria-label='Косты']").check()
+    expect(page.locator(".tabulator-row", has_text="Оплата поставщикам").locator(".share").first).to_be_visible()
+    page.screenshot(path=f"{OUT}/19c_compare.png", full_page=True)
+    page.locator("[aria-label='Сравнить']").select_option("")
+    page.locator("[aria-label='Косты']").uncheck()
+    expect(page.locator(".tabulator-cell .cmp")).to_have_count(0)
     # ОПиУ: в стенде расходов с «Статьёй ОПиУ» нет — отчёт строится, итоговые строки на месте
     page.click("button.tab:has-text('ОПиУ')")
     expect(page.locator(".tabulator-row", has_text="Чистая прибыль")).to_be_visible()
@@ -621,8 +630,12 @@ with sync_playwright() as p:
     expect(profit).not_to_contain_text("нет строки")
     expect(profit).to_contain_text("= - 2.6")
     expect(page.locator(".tabulator-row", has_text="Дератизация")).to_be_visible()
+    page.locator(".compare-bar:visible [aria-label='Сравнить']").select_option("avg6")
+    expect(profit.locator(".cmp").first).to_be_visible()
+    page.locator(".compare-bar:visible [aria-label='Сравнить']").select_option("")
     page.click("button.tab:has-text('План и факт')")
     expect(page.locator(".tabulator-col-title", has_text="Откл.").first).to_be_visible()
+    expect(page.locator(".compare-bar:visible")).to_have_count(0)  # сравнение — только у факта
     page.screenshot(path=f"{OUT}/19b_management.png", full_page=True)
     # Баланс: актив = пассив, деньги и уставный капитал; дебиторка раскрывается по контрагентам
     page.click("button.tab:has-text('Баланс')")
