@@ -163,3 +163,67 @@ export function nestRows(rows) {
 
 export const TREE_OPTIONS = { dataTree: true, dataTreeStartExpanded: false, dataTreeChildIndent: 18,
   dataTreeElementColumn: "title" };
+
+// --- Сравнение с другим периодом и «косты» (docs/TZ.md, раздел 27, «Детали 17.1») ---
+const COMPARE_MODES = [["", "Без сравнения"], ["year", "С прошлым годом"], ["month", "С прошлым месяцем"],
+  ["avg6", "Со средним за 6 мес."]];
+const COMPARE_KEY = "reports.compare";
+
+function loadCompare() {
+  try {
+    return { compare: "", costs: false, ...JSON.parse(localStorage.getItem(COMPARE_KEY) || "{}") };
+  } catch {
+    return { compare: "", costs: false };
+  }
+}
+
+/** Переключатели «Сравнить» и «Косты»; состояние общее для отчётов и запоминается в браузере. */
+export function compareBar(onChange) {
+  const state = loadCompare();
+  const select = el("select", { "aria-label": "Сравнить" },
+    ...COMPARE_MODES.map(([v, t]) => el("option", { value: v, selected: v === state.compare }, t)));
+  const costs = el("input", { type: "checkbox", "aria-label": "Косты", checked: state.costs });
+  const save = () => {
+    state.compare = select.value;
+    state.costs = costs.checked;
+    try {
+      localStorage.setItem(COMPARE_KEY, JSON.stringify(state));
+    } catch { /* без памяти браузера — только на эту страницу */ }
+    onChange();
+  };
+  select.addEventListener("change", save);
+  costs.addEventListener("change", save);
+  const node = el("div", { class: "filters compare-bar" },
+    el("label", {}, "Сравнить ", select),
+    el("label", { class: "check", title: "Доля каждой цифры к выручке того же месяца" }, costs, " Косты (% к выручке)"));
+  return {
+    node,
+    params: () => ({ compare: select.value || null, costs: costs.checked ? "true" : null }),
+  };
+}
+
+/** Отклонение в процентах — как в Excel: изменение суммы по модулю (для сумм одного знака). */
+function changePct(value, base) {
+  const v = Number(value || 0);
+  const b = Number(base || 0);
+  if (!b) return null;
+  return (v >= 0) === (b > 0) ? (Math.abs(v) - Math.abs(b)) / Math.abs(b) * 100 : (v - b) / Math.abs(b) * 100;
+}
+
+const pctText = (x) => `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} %`;
+
+/** Строки под суммой ячейки: сумма для сравнения и отклонение (зелёное — лучше, красное — хуже), % выручки. */
+export function extraHtml(value, base, better, revenue) {
+  let html = "";
+  if (base !== undefined && base !== null) {
+    const pct = changePct(value, base);
+    const diff = Number(value || 0) - Number(base || 0);
+    const tone = !better || !diff ? "" : diff * better > 0 ? " good" : " bad";
+    html += `<div class="cmp">${Number(base) ? money(base) : "0"}${pct === null ? "" : ` · <span class="pct${tone}">${pctText(pct)}</span>`}</div>`;
+  }
+  if (revenue !== undefined && revenue !== null && Number(value || 0)) {
+    const r = Number(revenue);
+    html += `<div class="share">${r > 0 ? `${(Math.abs(Number(value)) / r * 100).toLocaleString("ru-RU", { maximumFractionDigits: 1 })} % выручки` : "нет выручки"}</div>`;
+  }
+  return html;
+}

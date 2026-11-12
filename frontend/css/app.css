@@ -382,3 +382,9 @@ table.requests thead th, table.registry thead th, table.suppliers thead th, tabl
 tr.clickable-row { cursor: pointer; }
 tr.clickable-row:hover td { background: var(--accent-soft, #eef4ff); }
 select.action-menu { min-width: 130px; font-size: 13px; padding: 3px 6px; }
+/* сравнение и косты в отчётах (шаг 17.1) */
+.tabulator-cell .cmp { color: #175cd3; font-size: 0.82em; line-height: 1.2; white-space: nowrap; }
+.tabulator-cell .share { color: #7a5af8; font-size: 0.82em; line-height: 1.2; white-space: nowrap; }
+.tabulator-cell .pct.good { color: #067647; font-weight: 600; }
+.tabulator-cell .pct.bad { color: #b42318; font-weight: 600; }
+.compare-bar { margin: 4px 0 8px; }

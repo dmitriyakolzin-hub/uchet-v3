@@ -94,6 +94,7 @@ class FormRowResult:
     plan: dict[str, Decimal]
     drill: dict | None
     error: str = ""
+    better: int = 1  # рост суммы — лучше (1), хуже (−1: расходы, выплаты), без оценки (0: заголовок)
 
 
 def _sign(article: Article) -> int:
@@ -170,6 +171,11 @@ def build(db: Session, f: ReportFilter, plan_pl: ReportFilter | None, plan_cf: R
             if article is None:
                 result.error = "статья не найдена в справочнике"
             else:
+                income = (article.pl_section in INCOME_SECTIONS) if article.is_pl \
+                    else article.cash_flow_direction == "inflow"
+                result.better = 1 if income else -1  # доход, поступление — рост лучше; расход, выплата — хуже
+                if row.invert:
+                    result.better = -result.better
                 result.fact = article_values(article, fact_pl, fact_cf, row.invert)
                 result.plan = article_values(article, *plan_sums, row.invert)
                 if article.is_pl:  # те же условия, что у суммы: ОПиУ без реформации, деньги без переводов
@@ -178,6 +184,10 @@ def build(db: Session, f: ReportFilter, plan_pl: ReportFilter | None, plan_cf: R
                 else:
                     result.drill = {"period": "turnover", "a_tree": [f"cash_flow_item:{article.id}"], "opening": False,
                                     "account_id": money, "exclude_corr_ids": money}
+        if row.kind == "header":
+            result.better = 0
+        elif row.kind == "indicator" and row.invert:
+            result.better = -1
         results.append(result)
         if row.code:
             by_code[row.code] = result
@@ -225,3 +235,18 @@ def plan_filters(db: Session, f: ReportFilter, version_id: int | None = None) ->
                     else reports.actual_plan_versions(db, f.organization_id, months, kind))
         result.append(replace(f, with_drafts=False, plan_versions=tuple(sorted(versions.items()))))
     return result[0], result[1]
+
+
+REVENUE_CODE = "1.0"  # «Выручка со скидками» в форме «Малины»
+
+
+def revenue_row(results: list[FormRowResult]) -> FormRowResult | None:
+    """Строка выручки для «костов»: код 1.0, иначе «Выручка со скидками», иначе первая «Выручка…»."""
+    rows = [r for r in results if r.row.kind != "header"]
+    for test in (lambda r: r.row.code == REVENUE_CODE,
+                 lambda r: r.row.name.lower().startswith("выручка со скидками"),
+                 lambda r: r.row.name.lower().startswith("выручка")):
+        found = next((r for r in rows if test(r)), None)
+        if found:
+            return found
+    return None
