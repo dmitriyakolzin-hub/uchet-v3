@@ -26,6 +26,7 @@ from app.models import (
     Cfo,
     Contract,
     Counterparty,
+    Employee,
     LegalEntity,
     Operation,
     Posting,
@@ -108,6 +109,7 @@ class Line:
     article_id: int | None
     counterparty_id: int | None
     contract_id: int | None
+    employee_id: int | None = None  # подотчётное лицо: выдача под отчёт (Дт 71)
     article_title: str = ""
     title: str = ""
     contract_title: str = ""
@@ -198,10 +200,10 @@ def build(db: Session, organization_id: int, date_from: dt.date, date_to: dt.dat
 
     lines_by_key: dict[tuple, Line] = {}
 
-    def line(direction: str, src: Source, article_id, counterparty_id, contract_id) -> Line:
-        key = (direction, src.key, article_id, counterparty_id, contract_id)
+    def line(direction: str, src: Source, article_id, counterparty_id, contract_id, employee_id=None) -> Line:
+        key = (direction, src.key, article_id, counterparty_id, contract_id, employee_id)
         if key not in lines_by_key:
-            lines_by_key[key] = Line(direction, src.key, article_id, counterparty_id, contract_id)
+            lines_by_key[key] = Line(direction, src.key, article_id, counterparty_id, contract_id, employee_id)
         return lines_by_key[key]
 
     def tech_cell(src: Source, tech: str, corr: Source, day: dt.date) -> Cell:
@@ -219,11 +221,12 @@ def build(db: Session, organization_id: int, date_from: dt.date, date_to: dt.dat
                    case((debit, Posting.ct_counterparty_id), else_=Posting.dt_counterparty_id),
                    case((debit, Posting.ct_contract_id), else_=Posting.dt_contract_id), lines.c.amount_rub,
                    case((debit, Posting.ct_bank_account_id), else_=Posting.dt_bank_account_id),
-                   case((debit, Posting.ct_cfo_id), else_=Posting.dt_cfo_id))
+                   case((debit, Posting.ct_cfo_id), else_=Posting.dt_cfo_id),
+                   case((debit, Posting.ct_employee_id), else_=Posting.dt_employee_id))
             .join(Posting, Posting.id == lines.c.posting_id).join(Operation, Operation.id == lines.c.operation_id),
             lines.c.operation_id).order_by(lines.c.op_date, Operation.number)).all()
         for (day, op_id, number, side, account_id, corr_id, bank_id, cfo_id, entity_id, article_id, cp_id,
-             contract_id, amount, corr_bank, corr_cfo) in rows:
+             contract_id, amount, corr_bank, corr_cfo, employee_id) in rows:
             amount = Decimal(amount)
             kind = "cash" if account_id in cash_ids else "bank"
             src = source_of(kind == "cash", bank_id, cfo_id, entity_id)
@@ -240,7 +243,7 @@ def build(db: Session, organization_id: int, date_from: dt.date, date_to: dt.dat
             bucket = src.fact_in if side == "debit" else src.fact_out
             bucket[day] = bucket.get(day, ZERO) + amount
             if day in shown:
-                cell = line("in" if side == "debit" else "out", src, article_id, cp_id, contract_id).cells \
+                cell = line("in" if side == "debit" else "out", src, article_id, cp_id, contract_id, employee_id).cells \
                     .setdefault(day, Cell())
                 cell.add(fact=amount)
                 cell.ops.append(Op(op_id, number, amount))
@@ -256,7 +259,8 @@ def build(db: Session, organization_id: int, date_from: dt.date, date_to: dt.dat
             bucket[day] = bucket.get(day, ZERO) + item.amount
             if day in shown:
                 article_id = item.article_id or (salary.id if item.source == "payout" and salary else None)
-                cell = line(item.direction, src, article_id, item.counterparty_id, item.contract_id).cells \
+                cell = line(item.direction, src, article_id, item.counterparty_id, item.contract_id,
+                            item.employee_id).cells \
                     .setdefault(day, Cell())
                 cell.add(plan=item.amount)
                 cell.items.append(item)
@@ -339,12 +343,19 @@ def build(db: Session, organization_id: int, date_from: dt.date, date_to: dt.dat
     cp_ids = {ln.counterparty_id for ln in all_lines if ln.counterparty_id}
     counterparties = dict(db.execute(select(Counterparty.id, Counterparty.name).where(Counterparty.id.in_(cp_ids))).all()) \
         if cp_ids else {}
+    emp_ids = {ln.employee_id for ln in all_lines if ln.employee_id}
+    employees = dict(db.execute(select(Employee.id, Employee.full_name).where(Employee.id.in_(emp_ids))).all()) \
+        if emp_ids else {}
     ct_ids = {ln.contract_id for ln in all_lines if ln.contract_id}
     contracts = {c.id: c for c in db.scalars(select(Contract).where(Contract.id.in_(ct_ids)))} if ct_ids else {}
     for ln in all_lines:
         article = articles.get(ln.article_id)
         ln.article_title = (f"{article.code} {article.name}" if article.code else article.name) if article else "Без статьи"
-        ln.title = counterparties.get(ln.counterparty_id, "Без контрагента")
+        ln.title = counterparties.get(ln.counterparty_id, "")
+        if ln.employee_id:
+            person = employees.get(ln.employee_id, "")
+            ln.title = f"{ln.title} (через {person})" if ln.title else f"Под отчёт: {person}"
+        ln.title = ln.title or "Без контрагента"
         contract = contracts.get(ln.contract_id)
         ln.contract_title = (contract.name or f"№ {contract.number}") if contract else ""
 

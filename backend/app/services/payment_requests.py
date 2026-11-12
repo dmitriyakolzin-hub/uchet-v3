@@ -9,18 +9,22 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.models import (
+    Account,
     Article,
     BankAccount,
     Cfo,
     Contract,
     Counterparty,
+    Employee,
     Executor,
     LegalEntity,
     Operation,
     PaymentRequest,
 )
-from app.services import reports
-from app.services.articles import is_group
+from app.schemas.journal import AnalyticsIn, OperationIn, PostingIn
+from app.services import journal, reports
+from app.services.articles import is_group, system_article
+from app.services.journal import JournalError
 from app.services.ledger import select_lines
 
 
@@ -70,6 +74,10 @@ def validate(db: Session, req: PaymentRequest, branch: set[int] | None) -> None:
             raise RequestError("Договор должен быть с контрагентом заявки")
         if contract.legal_entity_id != entity.id:
             raise RequestError("Договор должен быть заключён юрлицом заявки")
+    employee = own(Employee, req.employee_id, "Подотчётное лицо")
+    if employee is not None:
+        if req.direction != "out" or req.cash_cfo_id is None:
+            raise RequestError("Подотчётное лицо указывается только при выдаче из кассы")
     own(Cfo, req.cfo_id, "ЦФО")
     own(Executor, req.executor_id, "ЦФУ")
     if req.article_id is not None:
@@ -182,3 +190,30 @@ def mark_paid(db: Session, req: PaymentRequest, paid_on: dt.date, operation_id: 
         if op is None or op.organization_id != req.organization_id or op.budget_version_id is not None:
             raise RequestError("Операция журнала не найдена")
     req.status, req.paid_on, req.operation_id, req.confirmed_by_statement = "paid", paid_on, operation_id, confirmed
+
+
+def pay_advance(db: Session, req: PaymentRequest, user, paid_on: dt.date) -> Operation:
+    """Выдача под отчёт по кассовой заявке: проведённая операция Дт 71 (подотчётное лицо) — Кт 50 (касса),
+    статья ДДС — из заявки, без неё — «Выдача под отчёт» (docs/TZ.md, раздел 26, «Детали 16.5»)."""
+    if req.status != "approved":
+        raise RequestError(f"Заявка {STATUS_TITLES[req.status]} — отметить оплату можно только у согласованной")
+    article_id = req.article_id
+    if article_id is None:
+        article = system_article(db, req.organization_id, "advance_report")
+        if article is None:
+            raise RequestError("Нет статьи «Выдача под отчёт» — укажите статью ДДС в заявке")
+        article_id = article.id
+    accounts = dict(db.execute(select(Account.code, Account.id).where(Account.code.in_(("50", "71")))).all())
+    posting = PostingIn(debit_account_id=accounts["71"], credit_account_id=accounts["50"], amount=req.amount,
+                        debit=AnalyticsIn(employee=req.employee_id),
+                        credit=AnalyticsIn(cfo=req.cash_cfo_id, executor=req.executor_id, cash_flow_item=article_id))
+    description = f"Выдача под отчёт по заявке № {req.number}" + (f": {req.description}" if req.description else "")
+    body = OperationIn(legal_entity_id=req.legal_entity_id, op_date=paid_on, article_id=article_id,
+                       description=description[:2000], postings=[posting])
+    try:
+        op = journal.create_posted(db, req.organization_id, body, user)
+    except JournalError as exc:
+        raise RequestError(f"Операция не прошла проверку журнала: {exc}") from None
+    mark_paid(db, req, paid_on, op.id)
+    req.operation_created = True
+    return op

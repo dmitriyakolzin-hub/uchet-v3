@@ -26,6 +26,7 @@ from app.models import (
     Cfo,
     Contract,
     Counterparty,
+    Employee,
     Executor,
     LegalEntity,
     Membership,
@@ -54,6 +55,7 @@ class RequestIn(BaseModel):
     cash_cfo_id: int | None = None
     counterparty_id: int | None = None
     contract_id: int | None = None
+    employee_id: int | None = None  # подотчётное лицо (выдача из кассы)
     article_id: int | None = None
     cfo_id: int | None = None
     executor_id: int | None = None
@@ -76,6 +78,7 @@ class RejectIn(BaseModel):
 class PayIn(BaseModel):
     paid_on: dt.date
     operation_number: int | None = None  # № операции журнала, которой оплачено (необязательно)
+    # выдача под отчёт: без № операции заявка сама создаёт и проводит Дт 71 — Кт 50
 
 
 class BudgetOut(BaseModel):
@@ -108,6 +111,8 @@ class RequestOut(BaseModel):
     counterparty_name: str
     contract_id: int | None
     contract_name: str
+    employee_id: int | None = None
+    employee_name: str = ""
     article_id: int | None
     article_name: str
     cfo_id: int | None
@@ -174,6 +179,7 @@ def _out(db: Session, requests: list[PaymentRequest], scoped: bool, user: User |
     users = _names(db, User, ids("created_by") + ids("approved_by"), lambda u: u.full_name or u.login)
     operations = _names(db, Operation, ids("operation_id"), lambda o: o.number)
     linked = _names(db, PaymentRequest, ids("linked_id"), lambda x: x.number)
+    employees = _names(db, Employee, ids("employee_id"), lambda e: e.full_name)
     approved_steps: dict[int, list[str]] = {}
     for request_id, action, step in db.execute(
             select(PaymentRequestEvent.request_id, PaymentRequestEvent.action, PaymentRequestEvent.step)
@@ -204,6 +210,7 @@ def _out(db: Session, requests: list[PaymentRequest], scoped: bool, user: User |
             bank_account_id=None if scoped else r.bank_account_id, cash_cfo_id=r.cash_cfo_id, source_name=source,
             counterparty_id=r.counterparty_id, counterparty_name=counterparties.get(r.counterparty_id, ""),
             contract_id=r.contract_id, contract_name=contracts.get(r.contract_id, ""),
+            employee_id=r.employee_id, employee_name=employees.get(r.employee_id, ""),
             article_id=r.article_id, article_name=articles.get(r.article_id, ""),
             cfo_id=r.cfo_id, cfo_name=cfos.get(r.cfo_id, ""),
             executor_id=r.executor_id, executor_name=executors.get(r.executor_id, ""),
@@ -391,7 +398,8 @@ def request_events(request_id: int, user: CurrentUser, db: DbSession):
 
 
 EDIT_TITLES = {"direction": "вид", "pay_date": "дата оплаты", "legal_entity_id": "юрлицо", "bank_account_id": "счёт",
-               "cash_cfo_id": "касса", "counterparty_id": "контрагент", "contract_id": "договор", "article_id": "статья",
+               "cash_cfo_id": "касса", "counterparty_id": "контрагент", "contract_id": "договор",
+               "employee_id": "подотчётное лицо", "article_id": "статья",
                "cfo_id": "ЦФО", "executor_id": "ЦФУ", "amount": "сумма", "description": "назначение"}
 
 
@@ -572,7 +580,10 @@ def pay_request(request_id: int, body: PayIn, user: CurrentUser, db: DbSession):
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
                                 detail=f"Операция № {body.operation_number} не найдена в журнале")
     try:
-        service.mark_paid(db, req, body.paid_on, operation_id)
+        if operation_id is None and req.employee_id is not None and req.cash_cfo_id is not None:
+            service.pay_advance(db, req, user, body.paid_on)
+        else:
+            service.mark_paid(db, req, body.paid_on, operation_id)
     except RequestError as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
@@ -582,9 +593,13 @@ def pay_request(request_id: int, body: PayIn, user: CurrentUser, db: DbSession):
 
 @router.post("/payment-requests/{request_id}/unpay", response_model=RequestOut)
 def unpay_request(request_id: int, user: CurrentUser, db: DbSession):
-    """Снять отметку об оплате: заявка снова «согласована», операция журнала остаётся."""
+    """Снять отметку об оплате: заявка снова «согласована»; операция журнала остаётся, кроме созданной самой
+    заявкой (выдача под отчёт) — она удаляется."""
     req, branch = _request(db, user, request_id, Perm.POST)
     _status(req, "paid")
+    if req.operation_created and req.operation_id is not None and (op := db.get(Operation, req.operation_id)):
+        db.delete(op)
+    req.operation_created = False
     req.status, req.paid_on, req.operation_id, req.confirmed_by_statement = "approved", None, None, False
     approval.event(db, req, user, "unpaid")
     return _save(db, req, branch, user)

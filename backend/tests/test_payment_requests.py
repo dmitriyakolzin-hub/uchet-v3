@@ -155,3 +155,47 @@ def test_statement_confirms_request(client, env):
     assert op["article_id"] == env["art"]["Оплата поставщикам"] and "заявка № 1" in op["description"]
     assert op["postings"][0]["debit"] == {"counterparty": env["cp"]["id"], "contract": env["contract"]["id"]}
     assert client.get(f"/api/payment-requests/{other['id']}", headers=env["h"]).json()["status"] == "approved"
+
+
+def test_cash_advance(client, env, db):
+    """Кассовая заявка с подотчётным лицом: оплата сама проводит Дт 71 — Кт 50 (docs/TZ.md, раздел 26, «Детали 16.5»)."""
+    import datetime as dt
+
+    from app.models import Account, Operation, Posting
+
+    today = dt.date.today()
+    person = env["post"]("employees", {"full_name": "Подотчётов Пётр"})
+    base = {"counterparty_id": None, "contract_id": None, "employee_id": person["id"], "article_id": None,
+            "amount": "5000", "description": "Хозтовары"}
+    assert create(client, env, **base).status_code == 422  # подотчётное лицо — только из кассы
+    assert create(client, env, **base, bank_account_id=env["bank_acc"]["id"]).status_code == 422
+    assert create(client, env, **{**base, "article_id": env["art"]["Поступление от покупателей"]},
+                  cash_cfo_id=env["shop"]["id"], direction="in").status_code == 422
+    resp = create(client, env, **base, cash_cfo_id=env["shop"]["id"], pay_date=today.isoformat())
+    assert resp.status_code == 201, resp.text
+    req = resp.json()
+    assert (req["employee_id"], req["employee_name"]) == (person["id"], "Подотчётов Пётр")
+    req = act(client, env, act(client, env, req, "submit").json(), "approve").json()
+    assert req["status"] == "approved", req
+
+    sheet = client.get(f"{env['o']}/payment-calendar/sheet", headers=env["h"],
+                       params={"date_from": today.isoformat(), "date_to": today.isoformat()})
+    assert sheet.status_code == 200, sheet.text
+    assert any(r["title"] == "Под отчёт: Подотчётов Пётр" for r in sheet.json()["rows"])
+
+    req = act(client, env, req, "pay", paid_on=today.isoformat()).json()
+    assert req["status"] == "paid" and req["operation_number"], req
+    op_id = req["operation_id"]
+    op = db.get(Operation, op_id)
+    assert op.status == "posted"
+    posting = db.query(Posting).filter_by(operation_id=op.id).one()
+    codes = {a.id: a.code for a in db.query(Account).filter(Account.code.in_(("50", "71")))}
+    assert (codes[posting.debit_account_id], codes[posting.credit_account_id], posting.amount) == ("71", "50", 5000)
+    assert (posting.dt_employee_id, posting.ct_cfo_id) == (person["id"], env["shop"]["id"])
+    assert posting.ct_cash_flow_article_id == env["art"]["Выдача под отчёт"]
+
+    # снять оплату — созданная заявкой операция удаляется
+    req = act(client, env, req, "unpay").json()
+    assert req["status"] == "approved" and req["operation_id"] is None
+    db.expire_all()
+    assert db.query(Operation).filter_by(id=op_id).count() == 0

@@ -256,7 +256,9 @@ export async function renderCalendar(view) {
           const tr = el("tr", { "data-number": r.number, title: `Заявка № ${r.number} — щёлкните, чтобы открыть`,
             class: `clickable-row${Number(r.budget?.over ?? 0) > 0 && r.status !== "paid" ? " over-budget-row" : ""}` },
           el("td", {}, date(r.pay_date), r.direction === "in" ? el("div", { class: "muted small" }, "поступление") : null),
-          el("td", {}, r.counterparty_name || "—", r.group_name ? el("div", { class: "muted" }, `внутри группы → ${r.group_name}`) : null),
+          el("td", {}, r.counterparty_name || (r.employee_name ? `Под отчёт: ${r.employee_name}` : "—"),
+            r.counterparty_name && r.employee_name ? el("div", { class: "muted" }, `через ${r.employee_name}`) : null,
+            r.group_name ? el("div", { class: "muted" }, `внутри группы → ${r.group_name}`) : null),
           el("td", {}, r.description || ""),
           el("td", { class: "num" }, money(r.amount)), filesCell(r), statusCell(r), actions(r));
           tr.addEventListener("click", (e) => {
@@ -299,12 +301,15 @@ export async function renderCalendar(view) {
   }
 
   function pay(r, after = load) {
+    const advance = Boolean(r.employee_id && r.cash_cfo_id);
     openForm({
       title: `Оплата заявки № ${r.number}`,
       fields: [
         { name: "paid_on", label: "Дата оплаты", type: "date", required: true },
         { name: "operation_number", label: "№ операции журнала", type: "number",
-          hint: "Необязательно: операция, которой проведена оплата (касса, другой банк)" },
+          hint: advance
+            ? `Оставьте пустым — выдача под отчёт проведётся сама: Дт 71 (${r.employee_name}) — Кт 50 (касса)`
+            : "Необязательно: операция, которой проведена оплата (касса, другой банк)" },
       ],
       values: { paid_on: r.pay_date },
       submitText: "Отметить оплату",
@@ -365,6 +370,10 @@ export async function renderCalendar(view) {
         { name: "legal_entity_id", label: "Юрлицо", type: "select", options: entities.map((e) => [String(e.id), e.short_name]) },
         { name: "source", label: direction === "in" ? "Куда поступит" : "Откуда платим", type: "select", options: sourceOptions(entityId),
           hint: onlyRequests() ? "Расчётный счёт выбирает финансовая служба" : "Можно выбрать при согласовании" },
+        { name: "employee_id", label: "Подотчётное лицо", type: "select",
+          options: options(ref.employees.filter((e) => e.id !== r?.employee_id), (e) => e.full_name)
+            .concat(r?.employee_id ? [[String(r.employee_id), r.employee_name]] : []),
+          hint: "Кому выдаются деньги из кассы; при оплате — Дт 71 — Кт 50. Контрагент тогда необязателен" },
         { name: "counterparty_id", label: "Контрагент", type: "select", options: options(ref.counterparties, (c) => c.name) },
         { name: "contract_id", label: "Договор", type: "select", options: contractOptions(String(r?.counterparty_id ?? ""), entityId) },
         { name: "article_id", label: "Статья ДДС", type: "select", options: options(articles, (a) => ref.articleLabel.get(a.id)) },
@@ -380,7 +389,7 @@ export async function renderCalendar(view) {
         pay_date: r?.pay_date ?? ref.today, legal_entity_id: entityId,
         source: r ? sourceValue(r) : cashRequest ? (sourceOptions(entityId).find(([v]) => v.startsWith("cash:"))?.[0] ?? "") : "",
         counterparty_id: String(r?.counterparty_id ?? ""), contract_id: String(r?.contract_id ?? ""),
-        article_id: String(r?.article_id ?? ""), cfo_id: String(r?.cfo_id ?? (org.cfo_scope ?? "")),
+        employee_id: String(r?.employee_id ?? ""), article_id: String(r?.article_id ?? ""), cfo_id: String(r?.cfo_id ?? (org.cfo_scope ?? "")),
         executor_id: String(r?.executor_id ?? (org.executor_scope?.[0] ?? "")), amount: r ? money(r.amount) : "",
         description: r?.description ?? "",
       },
@@ -389,6 +398,7 @@ export async function renderCalendar(view) {
         const body = {
           direction, pay_date: v.pay_date, legal_entity_id: Number(v.legal_entity_id), ...sourceBody(v.source),
           counterparty_id: idOrNull(v.counterparty_id), contract_id: idOrNull(v.contract_id), article_id: idOrNull(v.article_id),
+          employee_id: direction === "out" && v.source.startsWith("cash:") ? idOrNull(v.employee_id) : null,
           cfo_id: idOrNull(v.cfo_id), executor_id: idOrNull(v.executor_id), amount: parseNumber(v.amount), description: v.description,
         };
         if (r) await api.put(`/api/payment-requests/${r.id}`, body);
@@ -397,10 +407,20 @@ export async function renderCalendar(view) {
       },
     });
     const form = dialog.querySelector("form");
-    const { legal_entity_id: entity, source, counterparty_id: cp, contract_id: contract } = form.elements;
+    const { legal_entity_id: entity, source, counterparty_id: cp, contract_id: contract, employee_id: person } = form.elements;
+    // подотчётное лицо — только при выдаче из кассы
+    const personNodes = [form.querySelector(`label[for="${person.id}"]`), person,
+      person.nextElementSibling?.tagName === "SMALL" ? person.nextElementSibling : null].filter(Boolean);
+    const togglePerson = () => {
+      const off = direction !== "out" || !source.value.startsWith("cash:");
+      personNodes.forEach((n) => { n.hidden = off; });
+    };
+    togglePerson();
+    source.addEventListener("change", togglePerson);
     entity.addEventListener("change", () => {
       refill(source, sourceOptions(entity.value), source.value);
       refill(contract, contractOptions(cp.value, entity.value), contract.value);
+      togglePerson();
     });
     cp.addEventListener("change", () => refill(contract, contractOptions(cp.value, entity.value), ""));
   }
@@ -895,6 +915,7 @@ export async function renderCalendar(view) {
         field("Юрлицо", r.legal_entity_name),
         field("Счёт / касса", r.source_name),
         field("Контрагент", r.counterparty_name),
+        field("Подотчётное лицо", r.employee_name),
         field("Договор", r.contract_name),
         field("Статья ДДС", r.article_name),
         field("Бюджет", r.budget ? `остаток по статье ${money(r.budget.remaining ?? 0)}`

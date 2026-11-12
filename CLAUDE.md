@@ -752,4 +752,10 @@
   /organizations/{id}/supplier-invoices`, `PUT /supplier-invoices/{id}` (право POST; сумма ≥ оплачено + запланировано).
   Интерфейс: «Действие…» (`select.action-menu`) в заявках, без колонки «Вид»; «Сегодня» в календаре; накладные свёрнуты
   по контрагентам (`supExpanded`), `invoiceForm`; `periodicForm` во вкладке «Периодические платежи». Тестов 393, ui_smoke дополнен.
-
+- 2026-11-12 — 16.4 влита (PR 71; GitHub временно блокировал аккаунт, CI перезапущен). Шаг 16.5 (ветка `etap-16-5-accountable`),
+  `docs/TZ.md`, раздел 26 «Детали 16.5». Миграция 0047: `payment_requests.employee_id` (подотчётное лицо, только касса и выплата),
+  `operation_created`. `payment_requests.pay_advance` (Дт 71 — Кт 50 через `journal.create_posted`, статья из заявки или
+  `advance_report`); `/pay` без № операции у такой заявки вызывает его, `/unpay` удаляет созданную операцию.
+  `calendar.Item.employee_id`, `calendar_sheet.Line.employee_id` (факт — по `dt/ct_employee_id`), строка «Под отчёт: ФИО».
+  Интерфейс: поле в заявке (скрыто, если не касса), «Подотчётное лицо» у счёта 71 в форме операции, «Авансовый отчёт»
+  на «Деньгах». Тестов 394, ui_smoke дополнен.
