@@ -127,10 +127,12 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
     const account = accountsById.get(accountId);
     // ЦФУ (исполнитель) — необязательно, там, где ведётся ЦФО
     const kinds = account ? [...account.analytics, ...(account.analytics.includes("cfo") ? ["executor"] : [])] : [];
+    // у счёта 71 сотрудник — подотчётное лицо
+    const titleOf = (kind) => (kind === "employee" && account?.code?.startsWith("71") ? "Подотчётное лицо" : KIND_TITLES[kind]);
     box.replaceChildren(
       ...kinds.map((kind) => {
         const empty = kind === "executor" ? "— без ЦФУ —" : kind === "contract" ? "— без договора —"
-          : `— ${KIND_TITLES[kind].toLowerCase()} —`;
+          : `— ${titleOf(kind).toLowerCase()} —`;
         const control = select([["", empty], ...optionsFor(kind, side, posting, values)], values[kind] ?? "", {
           "data-side": side, "data-kind": kind, "aria-label": `${KIND_TITLES[kind]} (${side === "debit" ? "дебет" : "кредит"})`,
         });
@@ -141,7 +143,7 @@ export function openOperation({ ref, org, op, perms, onChanged, opening = false,
           ? el("button", { type: "button", class: "link add-ref", "aria-label": `Новый ${KIND_TITLES[kind].toLowerCase()} (${side === "debit" ? "дебет" : "кредит"})`,
             onclick: () => (kind === "counterparty" ? addCounterparty : addContract)(posting, side) }, "+ новый")
           : null;
-        return el("label", { class: "analytic" }, KIND_TITLES[kind], control, add);
+        return el("label", { class: "analytic" }, titleOf(kind), control, add);
       }),
     );
     updateQuantityVisibility(posting);

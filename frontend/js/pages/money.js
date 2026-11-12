@@ -123,6 +123,8 @@ export async function renderMoney(view) {
         el("button", { type: "button", class: "secondary", onclick: () => openPreset("withdraw") }, "Снять с расчётного счёта"),
         el("button", { type: "button", class: "secondary", onclick: () => openPreset("advance") }, "Выдать под отчёт"),
       ] : []),
+      el("button", { type: "button", class: "secondary", onclick: () => openPreset("report"),
+        title: "Подотчётное лицо отчиталось: Дт 60 / 26 / 44 — Кт 71" }, "Авансовый отчёт"),
       el("span", { class: "muted" }, hint),
     ] : []),
     ...(org.permissions.includes("edit_reference") && !org.restricted ? [
@@ -165,8 +167,13 @@ export async function renderMoney(view) {
   }
 
   function openPreset(kind) {
-    const side = moneySide(selected);
     let preset;
+    if (kind === "report") { // авансовый отчёт: расход выбирается в форме, кредит — 71 по подотчётному лицу
+      openOperation({ ref, org, op: null, perms: org.permissions, onChanged: reload,
+        preset: { posting: { credit_account_id: accountId("71") } } });
+      return;
+    }
+    const side = moneySide(selected);
     const transfer = articleId("transfer");
     // касса ↔ расчётный счёт — перевод между своими счетами (в ДДС гасится); счёт выбирается в форме
     if (kind === "deposit") {

@@ -43,6 +43,7 @@ class Item:
     status: str = ""
     overdue: bool = False
     contract_id: int | None = None
+    employee_id: int | None = None  # подотчётное лицо кассовой заявки
 
 
 def _months(date_from: dt.date, date_to: dt.date) -> list[tuple[int, int]]:
@@ -58,7 +59,7 @@ def _requests(db: Session, organization_id: int, date_from, date_to, include_pen
     return [
         Item("request", r.id, f"Заявка № {r.number}" + (f": {r.description}" if r.description else ""), r.pay_date,
              r.direction, r.amount, r.legal_entity_id, r.bank_account_id, r.cash_cfo_id, r.counterparty_id,
-             r.article_id, r.status, contract_id=r.contract_id)
+             r.article_id, r.status, contract_id=r.contract_id, employee_id=r.employee_id)
         for r in db.scalars(select(PaymentRequest).where(
             PaymentRequest.organization_id == organization_id, PaymentRequest.status.in_(statuses),
             PaymentRequest.pay_date.between(date_from, date_to)))

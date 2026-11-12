@@ -54,6 +54,8 @@ class PaymentRequest(Base):
     cash_cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"))
     counterparty_id: Mapped[int | None] = mapped_column(ForeignKey("counterparties.id", ondelete="RESTRICT"))
     contract_id: Mapped[int | None] = mapped_column(ForeignKey("contracts.id", ondelete="RESTRICT"))
+    # подотчётное лицо: выдача из кассы сотруднику (docs/TZ.md, раздел 26, «Детали 16.5»)
+    employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id", ondelete="RESTRICT"))
     article_id: Mapped[int | None] = mapped_column(ForeignKey("articles.id", ondelete="RESTRICT"))  # статья ДДС
     cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"))
     executor_id: Mapped[int | None] = mapped_column(ForeignKey("executors.id", ondelete="RESTRICT"))
@@ -86,6 +88,8 @@ class PaymentRequest(Base):
     # сумму или дату поправили вручную в календаре (docs/TZ.md, раздел 24, «Детали 14.6»): периодический платёж
     # больше не подстраивает такую заявку под условия договора
     adjusted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # операцию оплаты создала сама заявка (Дт 71 — Кт 50): при отмене оплаты она удаляется
+    operation_created: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class PaymentRequestEvent(Base):

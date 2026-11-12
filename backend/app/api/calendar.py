@@ -402,8 +402,9 @@ def _sheet(db: Session, user, organization_id: int, date_from: dt.date, date_to:
                                title=article_title, source=src.key)
                 result.append(art)
                 for ln in lns:
+                    person = f":e{ln.employee_id}" if ln.employee_id else ""
                     line_row = SheetRow(
-                        key=f"{art.key}:{ln.counterparty_id}:{ln.contract_id}", parent=art.key, level=art.level + 1,
+                        key=f"{art.key}:{ln.counterparty_id}:{ln.contract_id}{person}", parent=art.key, level=art.level + 1,
                         kind="line", title=ln.title, subtitle=ln.contract_title, source=src.key,
                         cells={d: detail_cell(c) for d, c in ln.cells.items()})
                     result.append(line_row)
