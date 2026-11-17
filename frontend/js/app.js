@@ -1,6 +1,7 @@
 import { api, clearSession, hasSession, login } from "./api.js";
 import { renderAccounts } from "./pages/accounts.js";
 import { renderArticles } from "./pages/articles.js";
+import { renderAssets } from "./pages/assets.js";
 import { renderBudgets } from "./pages/budgets.js";
 import { renderCalendar } from "./pages/calendar.js";
 import { renderClosing } from "./pages/closing.js";
@@ -28,6 +29,7 @@ const PAGES = {
   budgets: { title: "Бюджеты", render: renderBudgets },
   payroll: { title: "Зарплата", render: renderPayroll },
   fixedassets: { title: "Основные средства", render: renderFixedAssets },
+  assets: { title: "Имущество", render: renderAssets },
   closing: { title: "Закрытие периода", render: renderClosing },
   import: { title: "Загрузка из Excel", render: renderImport },
   organizations: { title: "Организации", render: renderOrganizations },
@@ -57,11 +59,14 @@ function showLogin() {
   form.login.focus();
 }
 
-// руководитель ЦФУ (во всех своих организациях) работает только с заявками (docs/TZ.md, раздел 24)
-const REQUESTS_ONLY = new Set(["calendar", "password"]);
-const requestsOnly = () => !me.is_admin && me.memberships?.length > 0
-  && me.memberships.every((m) => m.role === "executor_head");
-const allowed = (key, page) => (!page.adminOnly || me.is_admin) && (!requestsOnly() || REQUESTS_ONLY.has(key));
+// роли с узким меню: руководитель ЦФУ — только заявки (docs/TZ.md, раздел 24); инженер, оператор АХО, МОЛ —
+// только имущество (раздел 28). Если во всех организациях у пользователя такие роли — меню из их разделов.
+const LIMITED = { executor_head: ["calendar"], engineer: ["assets"], aho_operator: ["assets"], mol: ["assets"] };
+const limitedPages = () => {
+  if (me.is_admin || !me.memberships?.length || !me.memberships.every((m) => LIMITED[m.role])) return null;
+  return new Set(["password", ...me.memberships.flatMap((m) => LIMITED[m.role])]);
+};
+const allowed = (key, page) => (!page.adminOnly || me.is_admin) && (!limitedPages() || limitedPages().has(key));
 
 function buildNav() {
   nav.replaceChildren(
@@ -73,7 +78,8 @@ function buildNav() {
 
 async function route() {
   if (!me) return;
-  const home = requestsOnly() ? "calendar" : DEFAULT_PAGE;
+  const limited = limitedPages();
+  const home = limited ? [...limited].find((k) => k !== "password") : DEFAULT_PAGE;
   let key = location.hash.replace(/^#\//, "") || home;
   if (!PAGES[key] || !allowed(key, PAGES[key])) key = home;
   for (const link of nav.querySelectorAll("a")) {

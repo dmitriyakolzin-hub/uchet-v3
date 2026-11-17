@@ -103,7 +103,7 @@ def register(router: APIRouter, resource: OrgResource) -> None:
     Out = resource.out_schema
 
     def list_items(organization_id: int, user: CurrentUser, db: DbSession):
-        get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST)
+        get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST, Perm.ASSETS)
         query = (
             select(Model)
             .where(Model.organization_id == organization_id)

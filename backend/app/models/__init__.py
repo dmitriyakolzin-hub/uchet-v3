@@ -1,5 +1,6 @@
 from app.models.account import Account, AccountAnalytic
 from app.models.article import Article
+from app.models.asset import AssetCategory, AssetEvent, AssetItem, AssetItemFile
 from app.models.budget import Budget, BudgetCfoStatus, BudgetVersion, InvestmentProject, PlanChange, PlanTarget
 from app.models.calendar import (
     CalendarBalance,
@@ -37,6 +38,10 @@ __all__ = [
     "Account",
     "AccountAnalytic",
     "Article",
+    "AssetCategory",
+    "AssetEvent",
+    "AssetItem",
+    "AssetItemFile",
     "Bank",
     "BankAccount",
     "Budget",

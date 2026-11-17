@@ -765,3 +765,16 @@
   и их Excel: параметры `compare`, `costs`; в строках `compare`, `better`; в ответе `compare_title`, `revenue` (ОПиУ — строка
   `revenue`; управленческий — `management_report.revenue_row`, код 1.0). `FormRowResult.better`. Интерфейс: `common.js:
   compareBar` (localStorage `reports.compare`), `extraHtml` (`.cmp`, `.pct.good/.bad`, `.share`). Тестов 397, ui_smoke дополнен.
+- 2026-11-17 — 17.1 влита (PR 73). Этап 19 «Движение имущества» согласован — `docs/TZ.md`, раздел 28 (решения владельца:
+  что отслеживаем, каждая штука — карточка, заявку согласует ФД, МОЛ входит сам, QR, лизинг со стоимостью). Шаг 19.1 (ветка
+  `etap-19-1-assets-base`), «Детали 19.1». Миграция 0048: роли `accountant`, `engineer`, `aho_operator`, `mol`; права
+  `Perm.ASSETS`/`ASSETS_EDIT`; `employees.user_id` (уникален в организации); `asset_categories` (справочник `asset-categories`,
+  стартовые — `models/asset.seed_asset_categories` и событие `after_insert` организации), `asset_items` (номер «ИН-000001»
+  сквозной, место ЦФО + склад, МОЛ, статус stock/in_use/repair/disposed, владение own/leasing/rent, `fixed_asset_id`),
+  `asset_events`, `asset_item_files`; карточки ОС перенесены в единицы. `app/services/assets.py`: `next_numbers`, `ensure`
+  (карточки ОС → единицы, статус следует за вводом и выбытием), `Labels`/`changes_text` (история «было → стало»), Excel
+  (`registry_xlsx`, `import_items`). API `app/api/assets.py`: `Scope` (МОЛ — своё, руководитель ЦФО — ветка + своё),
+  `/asset-items` (список, создание N, карточка, правка, удаление, `bulk`, события, файлы, `.xlsx`), шаблон и загрузка,
+  `/organizations/{id}/members`. Списки справочников и юрлиц доступны и с правом ASSETS. Интерфейс: страница «Имущество»
+  (`js/pages/assets.js`), меню по ролям (`app.js: LIMITED`), вкладка «Категории имущества», «Пользователь системы»
+  у сотрудника. Тестов 399, ui_smoke дополнен.

@@ -434,6 +434,8 @@ const TABS = [
         { title: "Уволен", field: "fired_on", width: 110, formatter: date },
         { title: "Юрлицо", field: "legal_entity_id", width: 110, formatter: (c) => d.entities.find((e) => e.id === c.getValue())?.short_name ?? "" },
         { title: "Статья затрат", field: "pl_item_id", widthGrow: 2, formatter: (c) => d.articleIndex.label.get(c.getValue()) ?? "" },
+        { title: "Пользователь", field: "user_id", widthGrow: 1,
+          formatter: (c) => d.members.find((m) => m.user_id === c.getValue())?.name ?? "" },
         ...(state.canEdit ? [{ title: "", field: "_salary", width: 90, hozAlign: "center", headerSort: false,
           formatter: () => "оклады", cssClass: "link-like", cellClick: (_e, c) => openSalaries(c.getRow().getData()) }] : []),
       ];
@@ -455,6 +457,9 @@ const TABS = [
         { name: "pl_item_id", label: "Статья затрат на оплату труда (ОПиУ)", type: "select", numeric: true,
           options: [["", "— не указана —"], ...d.articleIndex.leaves.filter((a) => a.is_pl && a.is_active)
             .map((a) => [String(a.id), d.articleIndex.label.get(a.id)])] },
+        { name: "user_id", label: "Пользователь системы", type: "select", numeric: true, nullable: true,
+          hint: "Если сотрудник — МОЛ, он увидит своё имущество в разделе «Имущество» и сможет подтверждать получение",
+          options: [["", "— нет —"], ...d.members.map((m) => [String(m.user_id), `${m.name} (${m.role_title})`])] },
       ];
     },
   },
@@ -533,6 +538,14 @@ const TABS = [
     },
   },
   {
+    // категории имущества (docs/TZ.md, раздел 28)
+    key: "asset-categories",
+    title: "Категории имущества",
+    addText: "Добавить категорию",
+    columns: () => [{ title: "Категория", field: "name", widthGrow: 2, headerFilter: "input", headerFilterPlaceholder: "поиск" }],
+    fields: () => [{ name: "name", label: "Название", required: true, placeholder: "Холодильное оборудование" }],
+  },
+  {
     // метки примечаний к цифрам отчётов и операциям (docs/TZ.md, раздел 23)
     key: "note-labels",
     title: "Метки примечаний",
@@ -584,7 +597,8 @@ export async function renderReferences(view) {
     const tab = TABS.find((t) => t.key === tabKey);
     // заранее загружаем только то, что нужно этой вкладке
     const need = (keys, load) => (keys.includes(tab.key) ? load() : []);
-    const [entities, banks, currencies, counterparties, cfos, units, articles, employees, executors, projects] = await Promise.all([
+    const canMembers = org.permissions.includes("edit_reference");
+    const [entities, banks, currencies, counterparties, cfos, units, articles, employees, executors, projects, members] = await Promise.all([
       api.get(`/api/organizations/${org.id}/legal-entities`),
       need(["bank-accounts", "salary-projects", "counterparties"], () => api.get("/api/banks")),
       need(["bank-accounts", "contracts"], () => api.get("/api/currencies")),
@@ -595,9 +609,10 @@ export async function renderReferences(view) {
       need(["executors"], () => api.get(`/api/organizations/${org.id}/employees`)),
       need(["executors", "investment-projects"], () => api.get(`/api/organizations/${org.id}/executors`)),
       need(["contracts"], () => api.get(`/api/organizations/${org.id}/investment-projects`)),
+      need(["employees"], () => (canMembers ? api.get(`/api/organizations/${org.id}/members`) : [])),
     ]);
     const d = { entities, banks, currencies, counterparties, cfos, units, articles, articleIndex: articleIndex(articles),
-      employees, executors, projects, org,
+      employees, executors, projects, members, org,
       rub: currencies.find((c) => c.is_base) };
     const state = { canEdit: org.permissions.includes("edit_reference"), ref: null };
     state.ref = await referenceTab(tabBox, {

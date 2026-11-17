@@ -10,6 +10,7 @@ from app.api.org_resources import OrgResource, Ref, register
 from app.core.permissions import Perm
 from app.models import (
     Article,
+    AssetCategory,
     Bank,
     BankAccount,
     Cfo,
@@ -22,6 +23,7 @@ from app.models import (
     FixedAsset,
     InvestmentProject,
     LegalEntity,
+    Membership,
     Nomenclature,
     SalaryProject,
     Unit,
@@ -162,6 +164,13 @@ def _check_employee(db, employee: Employee, _creating: bool) -> None:
             raise ValueError(f"«{article.name}» — группа статей, выберите подстатью")
     if employee.hired_on and employee.fired_on and employee.fired_on < employee.hired_on:
         raise ValueError("Дата увольнения раньше даты приёма")
+    if employee.user_id is not None:  # пользователь — с ролью в этой организации, один сотрудник на пользователя
+        if db.get(Membership, (employee.user_id, employee.organization_id)) is None:
+            raise ValueError("Пользователь не работает в этой организации")
+        taken = db.scalar(select(Employee.id).where(Employee.organization_id == employee.organization_id,
+                                                    Employee.user_id == employee.user_id, Employee.id != employee.id))
+        if taken:
+            raise ValueError("Этот пользователь уже связан с другим сотрудником")
 
 
 # после ввода в эксплуатацию стоимость, срок и юрлицо меняются только через отмену ввода
@@ -259,8 +268,14 @@ for resource in (
         order_by=lambda m: [m.full_name],
         refs={"cfo_id": Ref(Cfo, "ЦФО"), "legal_entity_id": LEGAL_ENTITY,
               "pl_item_id": Ref(Article, "Статья затрат")},
-        nullable_fields={"inn", "cfo_id", "hired_on", "fired_on", "legal_entity_id", "pl_item_id"},
+        nullable_fields={"inn", "cfo_id", "hired_on", "fired_on", "legal_entity_id", "pl_item_id", "user_id"},
         check=_check_employee,
+    ),
+    OrgResource(  # категории имущества (docs/TZ.md, раздел 28); добавляют и бухгалтер, оператор АХО
+        path="asset-categories", model=AssetCategory, title="Категория имущества",
+        create_schema=s.AssetCategoryCreate, update_schema=s.AssetCategoryUpdate, out_schema=s.AssetCategoryOut,
+        conflict_message="Такая категория уже есть", order_by=lambda m: [m.name],
+        create_perms=(Perm.EDIT_REFERENCE, Perm.ASSETS_EDIT),
     ),
     OrgResource(
         path="nomenclature", model=Nomenclature, title="Номенклатура",

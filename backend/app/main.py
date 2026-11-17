@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import (
     accounts,
     articles,
+    assets,
     auth,
     budgets,
     calendar,
@@ -71,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(periodic.router)
     app.include_router(registry.router)
     app.include_router(suppliers.router)
+    app.include_router(assets.router)
 
     # Запрет изменений в закрытом периоде срабатывает при записи в базу (app/services/period.py) —
     # из любого раздела; ответ — понятная ошибка, а не «внутренняя ошибка сервера»

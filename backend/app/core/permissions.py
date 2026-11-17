@@ -13,6 +13,11 @@ class Role(StrEnum):
     CEO = "ceo"
     CFO_HEAD = "cfo_head"
     EXECUTOR_HEAD = "executor_head"
+    # движение имущества (docs/TZ.md, раздел 28)
+    ACCOUNTANT = "accountant"
+    ENGINEER = "engineer"
+    AHO_OPERATOR = "aho_operator"
+    MOL = "mol"
 
 
 class Perm(StrEnum):
@@ -24,6 +29,9 @@ class Perm(StrEnum):
     SUPERVISE = "supervise"
     # заявки на оплату (свои — подавать, видеть, согласовывать на своём шаге)
     REQUEST = "request"
+    # имущество: смотреть (руководитель ЦФО — своей ветки, МОЛ — только своё) и заводить / править карточки
+    ASSETS = "assets"
+    ASSETS_EDIT = "assets_edit"
     MANAGE_USERS = "manage_users"
 
 
@@ -33,18 +41,28 @@ ROLE_TITLES: dict[Role, str] = {
     Role.CEO: "CEO",
     Role.CFO_HEAD: "Руководитель ЦФО",
     Role.EXECUTOR_HEAD: "Руководитель ЦФУ",
+    Role.ACCOUNTANT: "Бухгалтер",
+    Role.ENGINEER: "Инженер",
+    Role.AHO_OPERATOR: "Оператор АХО",
+    Role.MOL: "МОЛ",
 }
 
 ROLE_PERMS: dict[Role, frozenset[Perm]] = {
     Role.FINANCE_DIRECTOR: frozenset({Perm.VIEW, Perm.EDIT_REFERENCE, Perm.DRAFT, Perm.POST, Perm.SUPERVISE,
-                                      Perm.REQUEST}),
+                                      Perm.REQUEST, Perm.ASSETS, Perm.ASSETS_EDIT}),
     # деньги, заявки, календарь, реестр; без справочников, бюджета и пользователей (docs/TZ.md, раздел 24)
-    Role.FINANCE_MANAGER: frozenset({Perm.VIEW, Perm.DRAFT, Perm.POST, Perm.REQUEST}),
-    Role.CEO: frozenset({Perm.VIEW, Perm.REQUEST}),
+    Role.FINANCE_MANAGER: frozenset({Perm.VIEW, Perm.DRAFT, Perm.POST, Perm.REQUEST, Perm.ASSETS}),
+    Role.CEO: frozenset({Perm.VIEW, Perm.REQUEST, Perm.ASSETS}),
     # Руководитель ЦФО ограничен своей веткой ЦФО (memberships.cfo_id, app/api/access.py: cfo_scope)
-    Role.CFO_HEAD: frozenset({Perm.VIEW, Perm.DRAFT, Perm.REQUEST}),
+    Role.CFO_HEAD: frozenset({Perm.VIEW, Perm.DRAFT, Perm.REQUEST, Perm.ASSETS}),
     # Руководитель ЦФУ — только заявки своего ЦФУ (memberships.executor_id, access.executor_scope)
     Role.EXECUTOR_HEAD: frozenset({Perm.REQUEST}),
+    # бухгалтер — как финансовый менеджер, плюс учёт имущества (docs/TZ.md, раздел 28)
+    Role.ACCOUNTANT: frozenset({Perm.VIEW, Perm.DRAFT, Perm.POST, Perm.REQUEST, Perm.ASSETS, Perm.ASSETS_EDIT}),
+    # инженер, оператор АХО и МОЛ работают только с имуществом; МОЛ видит только своё
+    Role.ENGINEER: frozenset({Perm.ASSETS}),
+    Role.AHO_OPERATOR: frozenset({Perm.ASSETS, Perm.ASSETS_EDIT}),
+    Role.MOL: frozenset({Perm.ASSETS}),
 }
 
 ADMIN_PERMS: frozenset[Perm] = frozenset(Perm)

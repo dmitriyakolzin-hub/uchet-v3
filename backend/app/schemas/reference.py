@@ -257,6 +257,7 @@ class EmployeeCreate(BaseModel):
     fired_on: dt.date | None = None
     legal_entity_id: int | None = None  # работодатель
     pl_item_id: int | None = None  # статья затрат ОПиУ для начисленной зарплаты
+    user_id: int | None = None  # пользователь системы (МОЛ видит своё имущество)
 
 
 class EmployeeUpdate(BaseModel):
@@ -270,6 +271,7 @@ class EmployeeUpdate(BaseModel):
     fired_on: dt.date | None = None
     legal_entity_id: int | None = None
     pl_item_id: int | None = None
+    user_id: int | None = None
     is_active: bool | None = None
 
 
@@ -286,6 +288,7 @@ class EmployeeOut(_Out):
     fired_on: dt.date | None
     legal_entity_id: int | None
     pl_item_id: int | None
+    user_id: int | None = None
     is_active: bool
 
 
@@ -402,6 +405,25 @@ class NoteLabelOut(_Out):
     organization_id: int
     name: str
     color: str
+    is_active: bool
+
+
+# --- Категории имущества (docs/TZ.md, раздел 28) ---
+
+
+class AssetCategoryCreate(BaseModel):
+    name: Name
+
+
+class AssetCategoryUpdate(BaseModel):
+    name: Name | None = None
+    is_active: bool | None = None
+
+
+class AssetCategoryOut(_Out):
+    id: int
+    organization_id: int
+    name: str
     is_active: bool
 
 
