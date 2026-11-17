@@ -294,3 +294,52 @@ class AssetWork(Base):
     amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+DISPOSAL_KINDS = {"sale": "Продажа", "writeoff": "Списание", "loss": "Гибель / утрата"}
+DISPOSAL_STATUSES = {"pending": "На согласовании ФД", "done": "Выбыло", "rejected": "Отклонено", "cancelled": "Отменено",
+                     "undone": "Выбытие отменено"}
+
+
+class AssetDisposal(Base):
+    """Выбытие имущества (docs/TZ.md, раздел 28, «Детали 19.6»): продажа, списание, гибель / утрата. Предлагают инженер,
+    АХО, бухгалтер; согласует ФД — тогда единицы выбывают и создаются проводки."""
+
+    __tablename__ = "asset_disposals"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "number"),
+        CheckConstraint("kind IN ('sale', 'writeoff', 'loss')", name="kind"),
+        CheckConstraint("status IN ('pending', 'done', 'rejected', 'cancelled', 'undone')", name="status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"), index=True)
+    number: Mapped[int] = mapped_column(BigInteger)
+    kind: Mapped[str] = mapped_column(String(10))
+    on_date: Mapped[date] = mapped_column(Date)
+    reason: Mapped[str] = mapped_column(String(2000), default="", server_default="")
+    counterparty_id: Mapped[int | None] = mapped_column(ForeignKey("counterparties.id", ondelete="RESTRICT"))  # покупатель
+    contract_id: Mapped[int | None] = mapped_column(ForeignKey("contracts.id", ondelete="RESTRICT"))
+    vat_rate: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id", ondelete="RESTRICT"))  # виновное лицо
+    status: Mapped[str] = mapped_column(String(10), default="pending", server_default="pending")
+    reject_reason: Mapped[str] = mapped_column(String(1000), default="", server_default="")
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    decided_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AssetDisposalItem(Base):
+    """Единица в выбытии: цена продажи, статус до выбытия, операция (продажа не-ОС)."""
+
+    __tablename__ = "asset_disposal_items"
+    __table_args__ = (UniqueConstraint("disposal_id", "item_id"),
+                      CheckConstraint("price IS NULL OR price >= 0", name="price"))
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    disposal_id: Mapped[int] = mapped_column(ForeignKey("asset_disposals.id", ondelete="CASCADE"), index=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("asset_items.id", ondelete="CASCADE"), index=True)
+    price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    prev_status: Mapped[str | None] = mapped_column(String(10))
+    operation_id: Mapped[int | None] = mapped_column(ForeignKey("operations.id", ondelete="SET NULL"))

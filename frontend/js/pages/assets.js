@@ -5,6 +5,7 @@ import { date as ruDate, money, parseNumber } from "../format.js";
 import { el, instruction, makeTable, openForm, toast } from "../ui.js";
 import { assetRequestsTab } from "./assetrequests.js";
 import { assetTransfersTab, transferForm } from "./assettransfers.js";
+import { assetDisposalsTab, disposalForm } from "./assetdisposals.js";
 import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
@@ -14,7 +15,9 @@ const ACTIONS = { created: "завёл(а)", edited: "изменил(а)", bulk_
   file: "приложил(а) файл", file_removed: "убрал(а) файл", received: "принял(а)", accounted: "поставил(а) на учёт",
   unaccounted: "снял(а) с учёта", transfer_created: "отправил(а) в перемещение", transferred: "переместил(а)",
   transfer_rejected: "— получатель отказался", transfer_cancelled: "отменил(а) перемещение", work: "внёс(ла) работу",
-  work_finished: "завершил(а) работу", work_removed: "удалил(а) работу" };
+  work_finished: "завершил(а) работу", work_removed: "удалил(а) работу", disposal_created: "предложил(а) выбытие",
+  disposed: "— выбыла", disposal_rejected: "— выбытие отклонено", disposal_cancelled: "отменил(а) выбытие",
+  disposal_undone: "— выбытие отменено" };
 
 function recall(key) {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -40,14 +43,15 @@ export async function renderAssets(view) {
   const summary = el("p", { class: "muted" });
   // вкладки: реестр единиц и заявки на имущество (шаг 19.2)
   const TAB_KEY = "uchet3_assets_tab";
-  let tab = ["requests", "transfers"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "registry";
+  let tab = ["requests", "transfers", "disposals"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "registry";
   const tabBar = el("div", { class: "tabs", role: "tablist" });
   const registryBox = el("div");
   const requestsBox = el("div");
   const transfersBox = el("div");
+  const disposalsBox = el("div");
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Имущество"), el("label", { class: "inline" }, "Организация ", orgSelect)),
-    tabBar, registryBox, requestsBox, transfersBox,
+    tabBar, registryBox, requestsBox, transfersBox, disposalsBox,
   );
   registryBox.append(
     instruction("Каждая единица имущества — своя карточка с инвентарным номером, местом (ЦФО, склад), МОЛ и историей. "
@@ -77,7 +81,8 @@ export async function renderAssets(view) {
       { title: "МОЛ", field: "employee_name", widthGrow: 2 },
       { title: "Статус", field: "status_title", width: 140,
         formatter: (c) => `<span class="badge asset-${c.getRow().getData().status}">${escape(c.getValue())}</span>`
-          + (c.getRow().getData().in_transfer ? '<div class="muted small">перемещается</div>' : "") },
+          + (c.getRow().getData().in_transfer ? '<div class="muted small">перемещается</div>' : "")
+          + (c.getRow().getData().in_disposal ? '<div class="muted small">на выбытии</div>' : "") },
       { title: "Владение", field: "ownership_title", width: 120 },
       { title: "Учёт", field: "accounting_title", width: 150, formatter: (c) => escape(c.getValue() || "—") },
       { title: "Цена, ₽", field: "purchase_price", width: 120, hozAlign: "right", formatter: (c) => (c.getValue() ? money(c.getValue()) : "") },
@@ -358,6 +363,8 @@ export async function renderAssets(view) {
 
   // ставит на учёт бухгалтер или финансовый директор (право на имущество и на проводки) — шаг 19.4
   const canAccount = () => org.permissions.includes("assets_edit") && org.permissions.includes("post");
+  // предложить выбытие — инженер, АХО, бухгалтер, ФД (шаг 19.6)
+  const canDispose = () => org.permissions.includes("asset_service") || org.permissions.includes("assets_edit");
 
   function renderBulk() {
     const selected = table.getSelectedData();
@@ -369,6 +376,8 @@ export async function renderAssets(view) {
         ? el("button", { type: "button", class: "secondary", onclick: () => accountItems(selected.filter((r) => !r.accounting)) }, "Поставить на учёт") : "",
       canEdit() || selected.every((r) => r.mine)
         ? el("button", { type: "button", class: "secondary", onclick: () => transferForm({ org, ref, items: selected, onDone: async () => { table.deselectRow(); await load(); } }) }, "Переместить / передать") : "",
+      canDispose() && selected.every((r) => r.status !== "disposed")
+        ? el("button", { type: "button", class: "secondary", onclick: () => disposalForm({ org, ref, items: selected, onDone: async () => { table.deselectRow(); await load(); } }) }, "Выбытие…") : "",
       el("button", { type: "button", class: "secondary", onclick: () => printLabels(selected) }, "Этикетки QR"),
     );
   }
@@ -519,8 +528,9 @@ export async function renderAssets(view) {
 
   const requests = assetRequestsTab(requestsBox, { org: () => org, ref: () => ref });
   const transfers = assetTransfersTab(transfersBox, { org: () => org, reload: () => load() });
+  const disposals = assetDisposalsTab(disposalsBox, { org: () => org, reload: () => load() });
   function renderTabs() {
-    tabBar.replaceChildren(...[["registry", "Реестр"], ["requests", "Заявки на имущество"], ["transfers", "Перемещения"]].map(([k, t]) => el("button", {
+    tabBar.replaceChildren(...[["registry", "Реестр"], ["requests", "Заявки на имущество"], ["transfers", "Перемещения"], ["disposals", "Выбытие"]].map(([k, t]) => el("button", {
       type: "button", role: "tab", class: `tab${k === tab ? " active" : ""}`,
       onclick: () => { tab = k; remember(TAB_KEY, k); showTab(); },
     }, t)));
@@ -530,8 +540,10 @@ export async function renderAssets(view) {
     registryBox.hidden = tab !== "registry";
     requestsBox.hidden = tab !== "requests";
     transfersBox.hidden = tab !== "transfers";
+    disposalsBox.hidden = tab !== "disposals";
     if (tab === "requests") await requests.show();
     else if (tab === "transfers") await transfers.show();
+    else if (tab === "disposals") await disposals.show();
     else table.redraw(true);
   }
 

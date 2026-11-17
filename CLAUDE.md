@@ -813,3 +813,10 @@
   Интерфейс: вкладка «Перемещения» (`js/pages/assettransfers.js`), «Переместить / передать» в панели отмеченных и карточке,
   раздел «Работы» в карточке. Стенд: облачная среда пересоздавалась — скрипты стенда восстановлены в scratchpad
   (`docker_up.sh`, `ui_stand.sh`: база uchet3_ui, admin создаётся через `get_sessionmaker`). Тестов 406, ui_smoke дополнен.
+- 2026-11-17 — 19.5 влита (PR 78). Шаг 19.6 (ветка `etap-19-6-asset-disposal`), `docs/TZ.md`, раздел 28 «Детали 19.6».
+  Миграция 0053: `asset_disposals` (номер, sale/writeoff/loss, дата, причина, покупатель, договор, НДС, виновное лицо,
+  pending/done/rejected/cancelled/undone), `asset_disposal_items` (цена, статус до выбытия, операция продажи не-ОС).
+  `app/services/asset_disposal.py`: `create`, `approve` (ОС — `fixed_assets.dispose`, утрата как writeoff; не-ОС продажа —
+  `_sale_operation` Дт 62.01 — Кт 91.01 + НДС), `close`, `undo`, `pending_item_ids`. API `app/api/asset_disposal.py`
+  (предложить — ASSET_SERVICE или ASSETS_EDIT, решение и отмена выбытия — SUPERVISE); `ItemOut.in_disposal`. Интерфейс:
+  вкладка «Выбытие» (`js/pages/assetdisposals.js`), «Выбытие…» в панели отмеченных. Тестов 407, ui_smoke дополнен.

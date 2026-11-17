@@ -406,3 +406,7 @@ table.asset-requests tbody tr { cursor: pointer; }
 .badge.transfer-rejected, .badge.transfer-cancelled { background: #f2f4f7; color: #667085; }
 .asset-works ul { padding-left: 18px; }
 .asset-works li button { margin-left: 10px; }
+/* выбытие (шаг 19.6) */
+.badge.disposal-pending { background: #eff8ff; color: #175cd3; }
+.badge.disposal-done { background: #f2f4f7; color: #344054; }
+.badge.disposal-rejected, .badge.disposal-cancelled, .badge.disposal-undone { background: #fef3f2; color: #b42318; }
