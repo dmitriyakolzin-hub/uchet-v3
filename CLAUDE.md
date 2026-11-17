@@ -820,3 +820,10 @@
   `_sale_operation` Дт 62.01 — Кт 91.01 + НДС), `close`, `undo`, `pending_item_ids`. API `app/api/asset_disposal.py`
   (предложить — ASSET_SERVICE или ASSETS_EDIT, решение и отмена выбытия — SUPERVISE); `ItemOut.in_disposal`. Интерфейс:
   вкладка «Выбытие» (`js/pages/assetdisposals.js`), «Выбытие…» в панели отмеченных. Тестов 407, ui_smoke дополнен.
+- 2026-11-17 — 19.6 влита (PR 79). Шаг 19.7 (ветка `etap-19-7-asset-inventory`), `docs/TZ.md`, раздел 28 «Детали 19.7».
+  Миграция 0054: `asset_inventories` (номер, дата, место / склад / МОЛ, open/closed), `asset_inventory_lines` (единица,
+  expected — числилась, found). `app/services/asset_inventory.py`: `create` (снимок по `expected_query`), `find_item`
+  (ссылка `item=ID`, инв. №, серийный №), `scan` (found/surplus/again), `unscan`, `close` (перенос найденного не на месте,
+  ненайденное → `asset_disposal.create(kind="loss")`). API `app/api/asset_inventory.py`. Интерфейс: вкладка
+  «Инвентаризация» (`js/pages/assetinventory.js`: камера через BarcodeDetector, ввод номера), в карточке единицы —
+  «Отметить в инвентаризации № N» (открытая инвентаризация в localStorage). Тестов 408, ui_smoke дополнен. Этап 19 готов.

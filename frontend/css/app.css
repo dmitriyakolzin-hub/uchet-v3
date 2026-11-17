@@ -410,3 +410,14 @@ table.asset-requests tbody tr { cursor: pointer; }
 .badge.disposal-pending { background: #eff8ff; color: #175cd3; }
 .badge.disposal-done { background: #f2f4f7; color: #344054; }
 .badge.disposal-rejected, .badge.disposal-cancelled, .badge.disposal-undone { background: #fef3f2; color: #b42318; }
+
+/* Инвентаризация (шаг 19.7) */
+.inventory-progress { font-size: 1.1rem; font-weight: 600; }
+.scan-form input { min-width: 14rem; font-size: 1.05rem; }
+.scan-video { width: 100%; max-width: 420px; border-radius: 8px; display: block; margin: 0.5rem 0; }
+.scan-message { font-weight: 600; min-height: 1.4em; }
+.scan-message.scan-found { color: var(--ok, #1a7f37); }
+.scan-message.scan-surplus, .scan-message.scan-again { color: var(--warn, #9a6700); }
+.scan-message.scan-error { color: var(--danger, #c62828); }
+.badge.inventory-open { background: #eff8ff; color: #175cd3; }
+.badge.inventory-closed { background: #f2f4f7; color: #344054; }
