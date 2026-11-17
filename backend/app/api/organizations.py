@@ -107,7 +107,7 @@ def update_organization(
 
 @router.get("/organizations/{organization_id}/legal-entities", response_model=list[LegalEntityOut])
 def list_legal_entities(organization_id: int, user: CurrentUser, db: DbSession) -> list[LegalEntity]:
-    get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST)
+    get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST, Perm.ASSETS)
     return list(
         db.scalars(
             select(LegalEntity)

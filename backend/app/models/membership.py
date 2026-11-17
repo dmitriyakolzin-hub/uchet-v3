@@ -9,8 +9,8 @@ class Membership(Base):
 
     __tablename__ = "memberships"
     __table_args__ = (
-        CheckConstraint("role IN ('finance_director', 'finance_manager', 'ceo', 'cfo_head', 'executor_head')",
-                        name="role"),
+        CheckConstraint("role IN ('finance_director', 'finance_manager', 'ceo', 'cfo_head', 'executor_head', "
+                        "'accountant', 'engineer', 'aho_operator', 'mol')", name="role"),
         CheckConstraint("cfo_id IS NULL OR role = 'cfo_head'", name="cfo_only_for_cfo_head"),
         CheckConstraint("executor_id IS NULL OR role = 'executor_head'", name="executor_only_for_executor_head"),
     )

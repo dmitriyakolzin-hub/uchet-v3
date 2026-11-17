@@ -388,3 +388,10 @@ select.action-menu { min-width: 130px; font-size: 13px; padding: 3px 6px; }
 .tabulator-cell .pct.good { color: #067647; font-weight: 600; }
 .tabulator-cell .pct.bad { color: #b42318; font-weight: 600; }
 .compare-bar { margin: 4px 0 8px; }
+/* имущество (шаг 19.1) */
+.badge.asset-in_use { background: #ecfdf3; color: #067647; }
+.badge.asset-repair { background: #fffaeb; color: #b54708; }
+.badge.asset-disposed { background: #f2f4f7; color: #667085; }
+.asset-history { padding-left: 18px; }
+.asset-files { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.asset-files div { display: flex; gap: 6px; align-items: center; }

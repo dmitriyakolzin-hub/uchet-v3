@@ -52,7 +52,7 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(str(e)))
 
     login(page, "admin", "admin-pass-123")
-    expect(page.locator("#nav a")).to_have_count(18)
+    expect(page.locator("#nav a")).to_have_count(19)
     expect(page.locator("#nav a.active")).to_have_text("Журнал операций")  # открывается первым
     page.click("#nav a[data-page=organizations]")
 
@@ -1015,6 +1015,39 @@ with sync_playwright() as p:
     page.locator("tr", has_text="Ноутбук").first.locator("button", has_text="Отменить выбытие").click()
     expect(page.locator("tr", has_text="Ноутбук").first.locator("button", has_text="Продать / списать")).to_be_visible()
 
+    # имущество (шаг 19.1): карточка ОС уже в реестре; новые единицы, групповое изменение, карточка с историей
+    page.click("#nav a[data-page=assets]")
+    laptop = page.locator(".tabulator-row", has_text="Ноутбук")
+    expect(laptop).to_contain_text("ОС-1")
+    expect(laptop).to_contain_text("В эксплуатации")
+    page.click("button:has-text('+ Единица')")
+    d = dialog_fill(page, {"name": "Стул офисный", "count": "2", "purchase_price": "3 500"})
+    d.locator("[name=category_id]").select_option(label="Мебель")
+    d.locator("button[type=submit]").click()
+    chairs = page.locator(".tabulator-row", has_text="Стул офисный")
+    expect(chairs).to_have_count(2)
+    expect(chairs.first).to_contain_text("ИН-000001")
+    for i in range(2):
+        chairs.nth(i).locator(".tabulator-cell").first.locator("input").check()
+    page.click("button:has-text('Изменить выбранные')")
+    d = page.locator("dialog[open]")
+    d.locator("[name=status]").select_option("in_use")
+    d.locator("button[type=submit]").click()
+    expect(chairs.first).to_contain_text("В эксплуатации")
+    chairs.first.locator(".tabulator-cell[tabulator-field=name]").click()
+    card = page.locator("dialog[open]")
+    expect(card.locator("h2")).to_contain_text("Стул офисный")
+    expect(card.locator(".asset-history")).to_contain_text("изменил(а) группой")
+    page.screenshot(path=f"{OUT}/40_assets.png", full_page=True)
+    card.locator("button:has-text('Закрыть')").click()
+    page.locator("[aria-label='Поиск имущества']").fill("ОС-1")
+    page.locator("[aria-label='Поиск имущества']").press("Enter")
+    expect(page.locator(".tabulator-row")).to_have_count(1)
+    # сотрудник ↔ пользователь (МОЛ)
+    page.click("#nav a[data-page=references]")
+    page.click("button.tab:has-text('Категории имущества')")
+    expect(page.locator(".tabulator-row", has_text="Инструмент")).to_be_visible()
+
     # регламентная операция из операции журнала; закрытие и открытие месяца
     page.click("#nav a[data-page=journal]")
     page.locator(".tabulator-row", has_text="Оплата по счёту 15").locator(".tabulator-cell[tabulator-field=description]").click()
@@ -1245,7 +1278,7 @@ with sync_playwright() as p:
     # вход под CEO
     page.click("#logout")
     login(page, "ceo", "ceo-password-1")
-    expect(page.locator("#nav a")).to_have_count(17)  # нет «Пользователи»
+    expect(page.locator("#nav a")).to_have_count(18)  # нет «Пользователи»
     page.click("#nav a[data-page=organizations]")
     expect(page.locator("text=Добавить организацию")).to_have_count(0)
     expect(page.locator(".tabulator").first.locator(".tabulator-row")).to_have_count(1)  # видит только свою

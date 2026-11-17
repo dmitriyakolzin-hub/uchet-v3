@@ -67,6 +67,9 @@ class Employee(OrgScoped, Base):
             unique=True,
             postgresql_where=text("internal_number <> ''"),
         ),
+        # один сотрудник на пользователя в организации
+        Index("uq_employees_organization_user", "organization_id", "user_id", unique=True,
+              postgresql_where=text("user_id IS NOT NULL")),
     )
 
     full_name: Mapped[str] = mapped_column(String(255))
@@ -80,6 +83,8 @@ class Employee(OrgScoped, Base):
     # Условия оплаты (docs/TZ.md, раздел 14): работодатель и статья затрат ОПиУ для начисленной зарплаты
     legal_entity_id: Mapped[int | None] = mapped_column(ForeignKey("legal_entities.id", ondelete="RESTRICT"))
     pl_item_id: Mapped[int | None] = mapped_column(ForeignKey("articles.id", ondelete="RESTRICT"))
+    # пользователь системы: МОЛ видит своё имущество и подтверждает получение (docs/TZ.md, раздел 28)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
 
 
 class Executor(OrgScoped, Base):
