@@ -3,6 +3,7 @@
 import { api } from "../api.js";
 import { date as ruDate, money, parseNumber } from "../format.js";
 import { el, instruction, makeTable, openForm, toast } from "../ui.js";
+import { assetRequestsTab } from "./assetrequests.js";
 
 const ORG_KEY = "uchet3_org";
 const STATUSES = [["stock", "На складе"], ["in_use", "В эксплуатации"], ["repair", "В ремонте"], ["disposed", "Выбыло"]];
@@ -32,8 +33,17 @@ export async function renderAssets(view) {
   const bulkBar = el("div", { class: "bulk-bar", hidden: true });
   const tableBox = el("div");
   const summary = el("p", { class: "muted" });
+  // вкладки: реестр единиц и заявки на имущество (шаг 19.2)
+  const TAB_KEY = "uchet3_assets_tab";
+  let tab = recall(TAB_KEY) === "requests" ? "requests" : "registry";
+  const tabBar = el("div", { class: "tabs", role: "tablist" });
+  const registryBox = el("div");
+  const requestsBox = el("div");
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Имущество"), el("label", { class: "inline" }, "Организация ", orgSelect)),
+    tabBar, registryBox, requestsBox,
+  );
+  registryBox.append(
     instruction("Каждая единица имущества — своя карточка с инвентарным номером, местом (ЦФО, склад), МОЛ и историей. "
       + "Отслеживается: основные средства, имущество в лизинге и аренде, а также имущество от 500 ₽ со сроком использования "
       + "больше 6 месяцев (инвентарь, инструмент, мелкое оборудование). Имеющееся имущество заведите кнопкой «+ Единица» "
@@ -317,10 +327,26 @@ export async function renderAssets(view) {
     }
   }
 
+  const requests = assetRequestsTab(requestsBox, { org: () => org, ref: () => ref });
+  function renderTabs() {
+    tabBar.replaceChildren(...[["registry", "Реестр"], ["requests", "Заявки на имущество"]].map(([k, t]) => el("button", {
+      type: "button", role: "tab", class: `tab${k === tab ? " active" : ""}`,
+      onclick: () => { tab = k; remember(TAB_KEY, k); showTab(); },
+    }, t)));
+  }
+  async function showTab() {
+    renderTabs();
+    registryBox.hidden = tab !== "registry";
+    requestsBox.hidden = tab !== "requests";
+    if (tab === "requests") await requests.show();
+    else table.redraw(true);
+  }
+
   async function open() {
     await loadRef();
     renderFilters();
     await load();
+    await showTab();
   }
   orgSelect.addEventListener("change", async () => {
     org = orgs.find((o) => String(o.id) === orgSelect.value);

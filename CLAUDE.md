@@ -778,3 +778,12 @@
   `/organizations/{id}/members`. Списки справочников и юрлиц доступны и с правом ASSETS. Интерфейс: страница «Имущество»
   (`js/pages/assets.js`), меню по ролям (`app.js: LIMITED`), вкладка «Категории имущества», «Пользователь системы»
   у сотрудника. Тестов 399, ui_smoke дополнен.
+- 2026-11-17 — 19.1 влита (PR 74). Шаг 19.2 (ветка `etap-19-2-asset-requests`), `docs/TZ.md`, раздел 28 «Детали 19.2».
+  Миграция 0049: `asset_requests` (что нужно, решение ФД, вариант закупки prepay/deferral/leasing, лизинг — платёж и срок,
+  `periodic_id`, поставка), `asset_request_events`, `payment_requests.asset_request_id` и источник `asset`. Право
+  `Perm.ASSET_REQUEST` (ФД, инженер, оператор АХО). `app/services/asset_requests.py`: `validate`, `validate_decision`,
+  `decide` → `create_payments` (разовая заявка на оплату, сразу согласованная ФД, или периодический платёж лизинга +
+  `periodic.ensure`), `remove_payments` (нельзя, если есть оплата), `set_delivery`, `linked_payments`. API
+  `app/api/asset_requests.py` (`Scope`: руководитель ЦФО — ветка и свои, МОЛ — где ответственный). Интерфейс: вкладки
+  «Реестр» / «Заявки на имущество» на странице «Имущество» (`js/pages/assetrequests.js`: список, действия, форма решения
+  ФД с лизингом, карточка с оплатами и историей). Тестов 401, ui_smoke дополнен.

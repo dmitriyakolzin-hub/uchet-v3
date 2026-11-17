@@ -395,3 +395,8 @@ select.action-menu { min-width: 130px; font-size: 13px; padding: 3px 6px; }
 .asset-history { padding-left: 18px; }
 .asset-files { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
 .asset-files div { display: flex; gap: 6px; align-items: center; }
+.badge.areq-pending { background: #eff8ff; color: #175cd3; }
+.badge.areq-approved, .badge.areq-ordered, .badge.areq-shipped { background: #fffaeb; color: #b54708; }
+.badge.areq-delivered, .badge.areq-received { background: #ecfdf3; color: #067647; }
+.badge.areq-rejected, .badge.areq-cancelled { background: #fef3f2; color: #b42318; }
+table.asset-requests tbody tr { cursor: pointer; }

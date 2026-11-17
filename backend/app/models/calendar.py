@@ -35,7 +35,7 @@ class PaymentRequest(Base):
         UniqueConstraint("organization_id", "number", name="uq_payment_requests_organization_number"),
         CheckConstraint("direction IN ('out', 'in')", name="direction"),
         CheckConstraint("status IN ('draft', 'pending', 'revision', 'approved', 'rejected', 'paid')", name="status"),
-        CheckConstraint("source IN ('request', 'periodic', 'supplier')", name="source_kind"),
+        CheckConstraint("source IN ('request', 'periodic', 'supplier', 'asset')", name="source_kind"),
         CheckConstraint("initiator IN ('cfo', 'executor', 'finance')", name="initiator"),
         UniqueConstraint("periodic_id", "period", name="uq_payment_requests_periodic_period"),
         CheckConstraint("amount > 0", name="amount"),
@@ -88,6 +88,9 @@ class PaymentRequest(Base):
     # сумму или дату поправили вручную в календаре (docs/TZ.md, раздел 24, «Детали 14.6»): периодический платёж
     # больше не подстраивает такую заявку под условия договора
     adjusted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # оплата имущества по решению ФД (docs/TZ.md, раздел 28, «Детали 19.2»)
+    asset_request_id: Mapped[int | None] = mapped_column(ForeignKey("asset_requests.id", ondelete="SET NULL"),
+                                                         index=True)
     # операцию оплаты создала сама заявка (Дт 71 — Кт 50): при отмене оплаты она удаляется
     operation_created: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 

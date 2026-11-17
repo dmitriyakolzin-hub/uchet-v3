@@ -32,6 +32,8 @@ class Perm(StrEnum):
     # имущество: смотреть (руководитель ЦФО — своей ветки, МОЛ — только своё) и заводить / править карточки
     ASSETS = "assets"
     ASSETS_EDIT = "assets_edit"
+    # подать заявку на имущество (решение по ней — SUPERVISE, финансовый директор)
+    ASSET_REQUEST = "asset_request"
     MANAGE_USERS = "manage_users"
 
 
@@ -49,7 +51,7 @@ ROLE_TITLES: dict[Role, str] = {
 
 ROLE_PERMS: dict[Role, frozenset[Perm]] = {
     Role.FINANCE_DIRECTOR: frozenset({Perm.VIEW, Perm.EDIT_REFERENCE, Perm.DRAFT, Perm.POST, Perm.SUPERVISE,
-                                      Perm.REQUEST, Perm.ASSETS, Perm.ASSETS_EDIT}),
+                                      Perm.REQUEST, Perm.ASSETS, Perm.ASSETS_EDIT, Perm.ASSET_REQUEST}),
     # деньги, заявки, календарь, реестр; без справочников, бюджета и пользователей (docs/TZ.md, раздел 24)
     Role.FINANCE_MANAGER: frozenset({Perm.VIEW, Perm.DRAFT, Perm.POST, Perm.REQUEST, Perm.ASSETS}),
     Role.CEO: frozenset({Perm.VIEW, Perm.REQUEST, Perm.ASSETS}),
@@ -60,8 +62,8 @@ ROLE_PERMS: dict[Role, frozenset[Perm]] = {
     # бухгалтер — как финансовый менеджер, плюс учёт имущества (docs/TZ.md, раздел 28)
     Role.ACCOUNTANT: frozenset({Perm.VIEW, Perm.DRAFT, Perm.POST, Perm.REQUEST, Perm.ASSETS, Perm.ASSETS_EDIT}),
     # инженер, оператор АХО и МОЛ работают только с имуществом; МОЛ видит только своё
-    Role.ENGINEER: frozenset({Perm.ASSETS}),
-    Role.AHO_OPERATOR: frozenset({Perm.ASSETS, Perm.ASSETS_EDIT}),
+    Role.ENGINEER: frozenset({Perm.ASSETS, Perm.ASSET_REQUEST}),
+    Role.AHO_OPERATOR: frozenset({Perm.ASSETS, Perm.ASSETS_EDIT, Perm.ASSET_REQUEST}),
     Role.MOL: frozenset({Perm.ASSETS}),
 }
 

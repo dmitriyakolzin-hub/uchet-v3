@@ -72,7 +72,8 @@ def test_permissions_in_list(client, headers_for, setup):
         who: client.get("/api/organizations", headers=headers_for(setup[who])).json()[0]["permissions"]
         for who in ("fd", "ceo", "head")
     }
-    assert by_user["fd"] == ["assets", "assets_edit", "draft", "edit_reference", "post", "request", "supervise", "view"]
+    assert by_user["fd"] == ["asset_request", "assets", "assets_edit", "draft", "edit_reference", "post", "request",
+                             "supervise", "view"]
     assert by_user["ceo"] == ["assets", "request", "view"]
     assert by_user["head"] == ["assets", "draft", "request", "view"]
 
