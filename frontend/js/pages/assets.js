@@ -4,6 +4,7 @@ import { api } from "../api.js";
 import { date as ruDate, money, parseNumber } from "../format.js";
 import { el, instruction, makeTable, openForm, toast } from "../ui.js";
 import { assetRequestsTab } from "./assetrequests.js";
+import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
 const STATUSES = [["stock", "На складе"], ["in_use", "В эксплуатации"], ["repair", "В ремонте"], ["disposed", "Выбыло"]];
@@ -72,6 +73,7 @@ export async function renderAssets(view) {
       { title: "Статус", field: "status_title", width: 140,
         formatter: (c) => `<span class="badge asset-${c.getRow().getData().status}">${escape(c.getValue())}</span>` },
       { title: "Владение", field: "ownership_title", width: 120 },
+      { title: "Учёт", field: "accounting_title", width: 150, formatter: (c) => escape(c.getValue() || "—") },
       { title: "Цена, ₽", field: "purchase_price", width: 120, hozAlign: "right", formatter: (c) => (c.getValue() ? money(c.getValue()) : "") },
     ],
   });
@@ -234,7 +236,12 @@ export async function renderAssets(view) {
         field("Склад", item.warehouse_name), field("МОЛ", item.employee_name),
         field("Цена приобретения", item.purchase_price ? `${money(item.purchase_price)} ₽` : ""),
         field("Дата приобретения", item.acquired_on ? ruDate(item.acquired_on) : ""),
-        field("Карточка ОС", item.fixed_asset_id ? "есть (раздел «Основные средства»)" : ""), field("Примечание", item.note))),
+        field("Карточка ОС", item.fixed_asset_id ? "есть (раздел «Основные средства»)" : ""),
+        field("Учёт", item.accounting ? `${item.accounting_title}${item.accounted_on ? ` с ${ruDate(item.accounted_on)}` : ""}`
+          + (item.accounting_operation_number ? `, операция № ${item.accounting_operation_number}` : "") : "не поставлена на учёт"),
+        field("Цена с удорожанием", item.upgraded_price ? `${money(item.upgraded_price)} ₽` : ""),
+        field("Остаток лизинга", item.lease_remaining !== null && item.ownership === "leasing" ? `${money(item.lease_remaining)} ₽` : ""),
+        field("Примечание", item.note))),
       el("h3", {}, "Файлы"),
       el("div", { class: "asset-files" },
         ...(item.files.length ? item.files.map((f) => el("div", {},
@@ -257,7 +264,20 @@ export async function renderAssets(view) {
         e.details ? el("div", { class: "muted small" }, e.details) : ""))),
       el("div", { class: "form-actions" },
         canEdit() && item.status !== "disposed" ? el("button", { type: "button", onclick: () => { close(); editItem(item); } }, "Изменить") : "",
-        canEdit() && !item.fixed_asset_id ? el("button", { type: "button", class: "secondary danger", onclick: async () => {
+        el("button", { type: "button", class: "secondary", onclick: () => printLabels([item]) }, "Этикетка QR"),
+        canAccount() && !item.accounting && item.status !== "disposed"
+          ? el("button", { type: "button", class: "secondary", onclick: () => { close(); accountItems([item]); } }, "Поставить на учёт") : "",
+        canAccount() && item.accounting && item.accounted_on && item.status !== "disposed" ? el("button", { type: "button", class: "secondary danger", onclick: async () => {
+          if (!confirm(`Снять ${item.number} с учёта? Операция поступления и карточка ОС удалятся.`)) return;
+          try {
+            await api.post(`/api/asset-items/${item.id}/unaccount`);
+            close();
+            await load();
+          } catch (err) {
+            toast(err.message, "error");
+          }
+        } }, "Снять с учёта") : "",
+        canEdit() && !item.fixed_asset_id && !item.accounting ? el("button", { type: "button", class: "secondary danger", onclick: async () => {
           if (!confirm(`Удалить ${item.number}? Удаляйте только заведённое по ошибке.`)) return;
           try {
             await api.delete(`/api/asset-items/${item.id}`);
@@ -274,13 +294,119 @@ export async function renderAssets(view) {
     dialog.showModal();
   }
 
+  // ставит на учёт бухгалтер или финансовый директор (право на имущество и на проводки) — шаг 19.4
+  const canAccount = () => org.permissions.includes("assets_edit") && org.permissions.includes("post");
+
   function renderBulk() {
     const selected = table.getSelectedData();
-    bulkBar.hidden = !canEdit() || selected.length === 0;
+    bulkBar.hidden = selected.length === 0;
     bulkBar.replaceChildren(
       el("span", {}, `Отмечено: ${selected.length}`),
-      el("button", { type: "button", onclick: () => bulkEdit(selected) }, "Изменить выбранные"),
+      canEdit() ? el("button", { type: "button", onclick: () => bulkEdit(selected) }, "Изменить выбранные") : "",
+      canAccount() && selected.some((r) => !r.accounting)
+        ? el("button", { type: "button", class: "secondary", onclick: () => accountItems(selected.filter((r) => !r.accounting)) }, "Поставить на учёт") : "",
+      el("button", { type: "button", class: "secondary", onclick: () => printLabels(selected) }, "Этикетки QR"),
     );
+  }
+
+  // постановка на учёт: ОС (карточка, поступление 08/60.01, ввод), малоценка в расход, за балансом, учтено ранее
+  async function accountItems(selected) {
+    let full;
+    try {
+      full = await loadReferences(org.id);
+    } catch (err) {
+      toast(err.message, "error");
+      return;
+    }
+    const first = selected[0];
+    const contracts = (cp) => options(full.contracts.filter((c) => String(c.counterparty_id) === cp), (c) => c.name || `№ ${c.number}`, "— без договора —");
+    const plItems = full.leafArticles.filter((a) => a.is_active && a.is_pl);
+    const dialog = openForm({
+      title: `Поставить на учёт: ${selected.length === 1 ? `${first.number} ${first.name}` : `${selected.length} ед.`}`,
+      fields: [
+        { name: "kind", label: "Как учитываем", type: "select", options: [["fixed_asset", "Основное средство (01, амортизация)"],
+          ["expense", "Малоценка — сразу в расход"], ["off_balance", "За балансом (аренда, лизинг у лизингодателя)"],
+          ["earlier", "Учтено ранее (без проводок)"]] },
+        { name: "on_date", label: "Дата", type: "date", required: true },
+        { name: "counterparty_id", label: "Поставщик (Кт 60.01)", type: "select", options: options(full.counterparties, (c) => c.name, "— без проводки поступления —"),
+          hint: "Для ОС без поставщика — только карточка ОС; поступление проведите в журнале" },
+        { name: "contract_id", label: "Договор", type: "select", options: contracts(String(first.supplier_id ?? "")) },
+        { name: "useful_life_months", label: "Срок полезного использования, месяцев", type: "number" },
+        { name: "depreciation_item_id", label: "Статья амортизации", type: "select",
+          options: options(plItems.filter((a) => a.debit_account_id), (a) => full.articleLabel.get(a.id), "— по умолчанию —") },
+        { name: "commission", label: "Сразу ввести в эксплуатацию (Дт 01 — Кт 08)", type: "checkbox" },
+        { name: "expense_account", label: "Счёт затрат", type: "select", options: [["26", "26 Общехозяйственные расходы"], ["44", "44 Расходы на продажу"]] },
+        { name: "expense_item_id", label: "Статья ОПиУ расхода", type: "select", options: options(plItems, (a) => full.articleLabel.get(a.id)) },
+      ],
+      values: { kind: "fixed_asset", on_date: new Date().toISOString().slice(0, 10), counterparty_id: String(first.supplier_id ?? ""),
+        contract_id: String(first.supplier_contract_id ?? ""), useful_life_months: "60", commission: true, expense_account: "26" },
+      submitText: "Поставить на учёт",
+      onSubmit: async (v) => {
+        const fixed = v.kind === "fixed_asset";
+        await api.post(`/api/organizations/${org.id}/asset-items/account`, {
+          ids: selected.map((r) => r.id), kind: v.kind, on_date: v.on_date,
+          counterparty_id: idOrNull(v.counterparty_id), contract_id: idOrNull(v.contract_id),
+          useful_life_months: fixed ? Number(v.useful_life_months || 0) || null : null,
+          depreciation_item_id: fixed ? idOrNull(v.depreciation_item_id) : null,
+          commission_on: fixed && v.commission ? v.on_date : null,
+          expense_account: v.expense_account, expense_item_id: v.kind === "expense" ? idOrNull(v.expense_item_id) : null,
+        });
+        toast("Поставлено на учёт");
+        table.deselectRow();
+        await load();
+      },
+    });
+    const form = dialog.querySelector("form");
+    const nodes = (name) => {
+      const input = form.elements[name];
+      const label = input.closest("label.check") ?? form.querySelector(`label[for="${input.id}"]`);
+      return [label, input.closest("label.check") ? null : input,
+        input.nextElementSibling?.tagName === "SMALL" ? input.nextElementSibling : null].filter(Boolean);
+    };
+    const toggle = () => {
+      const kind = form.elements.kind.value;
+      const show = { counterparty_id: ["fixed_asset", "expense"], contract_id: ["fixed_asset", "expense"],
+        useful_life_months: ["fixed_asset"], depreciation_item_id: ["fixed_asset"], commission: ["fixed_asset"],
+        expense_account: ["expense"], expense_item_id: ["expense"] };
+      for (const [name, kinds] of Object.entries(show)) nodes(name).forEach((n) => { n.hidden = !kinds.includes(kind); });
+    };
+    form.elements.kind.addEventListener("change", toggle);
+    form.elements.counterparty_id.addEventListener("change", () => {
+      form.elements.contract_id.replaceChildren(...contracts(form.elements.counterparty_id.value).map(([v, t]) => el("option", { value: v }, t)));
+    });
+    toggle();
+  }
+
+  // QR-этикетки: лист A4, 3 × 8 наклеек; в коде — ссылка на карточку (сканируется телефоном)
+  async function printLabels(selected) {
+    let labels;
+    try {
+      const p = new URLSearchParams({ base: location.origin });
+      selected.forEach((r) => p.append("ids", r.id));
+      labels = await api.get(`/api/organizations/${org.id}/asset-labels?${p}`);
+    } catch (err) {
+      toast(err.message, "error");
+      return;
+    }
+    const win = window.open("", "_blank");
+    if (!win) {
+      toast("Браузер не дал открыть окно печати — разрешите всплывающие окна", "error");
+      return;
+    }
+    win.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Этикетки ${escape(org.name)}</title>
+      <style>@page { size: A4; margin: 10mm 5mm; } body { margin: 0; font-family: Arial, sans-serif; }
+      .sheet { display: grid; grid-template-columns: repeat(3, 66mm); grid-auto-rows: 34mm; gap: 2mm 3mm; }
+      .label { border: 1px dashed #bbb; padding: 2mm; display: flex; gap: 2mm; align-items: center; overflow: hidden; break-inside: avoid; }
+      .label svg { width: 28mm; height: 28mm; flex: none; } .num { font-size: 13pt; font-weight: bold; }
+      .name { font-size: 8pt; margin-top: 1mm; } .place { font-size: 7pt; color: #555; margin-top: 1mm; }
+      .org { font-size: 7pt; color: #555; } @media print { .label { border-color: #eee; } .hint { display: none; } }
+      .hint { padding: 8px; font-size: 12px; }</style></head><body>
+      <div class="hint">Печать: Ctrl+P (на телефоне — «Поделиться» → «Печать»). Формат — A4, 24 наклейки 70×37 мм.</div>
+      <div class="sheet">${labels.map((x) => `<div class="label">${x.svg}<div><div class="num">${escape(x.number)}</div>
+        <div class="name">${escape(x.name)}</div><div class="place">${escape(x.place)}</div><div class="org">${escape(org.name)}</div></div></div>`).join("")}</div>
+      </body></html>`);
+    win.document.close();
+    win.focus();
   }
 
   function bulkEdit(selected) {
@@ -348,6 +474,8 @@ export async function renderAssets(view) {
     await load();
     await showTab();
   }
+  // переход по QR-этикетке: #/assets?item=ID — открыть карточку единицы
+  const linked = new URLSearchParams(location.hash.split("?")[1] ?? "").get("item");
   orgSelect.addEventListener("change", async () => {
     org = orgs.find((o) => String(o.id) === orgSelect.value);
     remember(ORG_KEY, org.id);
@@ -356,4 +484,17 @@ export async function renderAssets(view) {
   });
   await table.ready;
   await open();
+  if (linked) {
+    try {
+      const item = await api.get(`/api/asset-items/${Number(linked)}`);
+      if (item.organization_id !== org.id) {
+        org = orgs.find((o) => o.id === item.organization_id) ?? org;
+        orgSelect.value = String(org.id);
+        await open();
+      }
+      await openCard(item);
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
 }

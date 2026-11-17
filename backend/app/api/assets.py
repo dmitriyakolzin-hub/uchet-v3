@@ -17,9 +17,11 @@ from sqlalchemy.orm import Session
 from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions, role_in
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import ROLE_TITLES, Perm, Role
-from app.models import AssetEvent, AssetItem, AssetItemFile, Membership, User
-from app.models.asset import ASSET_STATUSES, OWNERSHIP
+from app.models import AssetEvent, AssetItem, AssetItemFile, Membership, Operation, User
+from app.models.asset import ACCOUNTING, ASSET_STATUSES, OWNERSHIP, AssetRequest
+from app.services import asset_accounting as accounting
 from app.services import assets as service
+from app.services.journal import JournalError
 from app.services.excel_import import XLSX_TYPE, ExcelError
 
 router = APIRouter(prefix="/api", tags=["Имущество"])
@@ -94,6 +96,14 @@ class ItemOut(BaseModel):
     fixed_asset_id: int | None
     files: list[FileOut] = []
     mine: bool = False  # МОЛ — сотрудник, связанный с текущим пользователем
+    # учёт (шаг 19.4)
+    accounting: str | None = None
+    accounting_title: str = ""
+    accounted_on: dt.date | None = None
+    accounting_operation_id: int | None = None
+    accounting_operation_number: int | None = None
+    supplier_id: int | None = None  # поставщик и договор из заявки на имущество — для постановки на учёт
+    supplier_contract_id: int | None = None
 
 
 class EventOut(BaseModel):
@@ -167,6 +177,13 @@ def _out(db: Session, items: list[AssetItem], scope: Scope) -> list[ItemOut]:
                         .order_by(AssetItemFile.id)).all():
         files.setdefault(f.item_id, []).append(FileOut(id=f.id, filename=f.filename, size=f.size,
                                                        uploaded_at=f.uploaded_at))
+    lease = accounting.lease_remaining(db, items)
+    op_numbers = dict(db.execute(select(Operation.id, Operation.number).where(
+        Operation.id.in_({i.accounting_operation_id for i in items if i.accounting_operation_id}))).all())
+    sources: dict[int, AssetRequest | None] = {}
+    for i in items:
+        if i.receipt_id is not None and i.receipt_id not in sources:
+            sources[i.receipt_id] = accounting.source_request(db, i)
     return [ItemOut(
         id=i.id, organization_id=i.organization_id, number=i.number, name=i.name, category_id=i.category_id,
         category_name=labels.categories.get(i.category_id, ""), ownership=i.ownership,
@@ -175,9 +192,15 @@ def _out(db: Session, items: list[AssetItem], scope: Scope) -> list[ItemOut]:
         cfo_name=labels.cfos.get(i.cfo_id, ""), warehouse_id=i.warehouse_id,
         warehouse_name=labels.warehouses.get(i.warehouse_id, ""), employee_id=i.employee_id,
         employee_name=labels.employees.get(i.employee_id, ""), status=i.status, status_title=ASSET_STATUSES[i.status],
-        purchase_price=i.purchase_price, upgraded_price=i.upgraded_price, lease_remaining=i.lease_remaining,
+        purchase_price=i.purchase_price, upgraded_price=i.upgraded_price,
+        lease_remaining=lease.get(i.id, i.lease_remaining),
         acquired_on=i.acquired_on, note=i.note, fixed_asset_id=i.fixed_asset_id, files=files.get(i.id, []),
-        mine=i.employee_id in scope.own,
+        mine=i.employee_id in scope.own, accounting=i.accounting,
+        accounting_title=ACCOUNTING.get(i.accounting or "", ""), accounted_on=i.accounted_on,
+        accounting_operation_id=i.accounting_operation_id,
+        accounting_operation_number=op_numbers.get(i.accounting_operation_id),
+        supplier_id=(src.counterparty_id if (src := sources.get(i.receipt_id)) else None),
+        supplier_contract_id=(src.contract_id if src else None),
     ) for i in items]
 
 
@@ -312,9 +335,9 @@ def update_item(item_id: int, body: ItemIn, user: CurrentUser, db: DbSession):
 def delete_item(item_id: int, user: CurrentUser, db: DbSession) -> Response:
     """Удалить заведённую по ошибке единицу (не связанную с карточкой ОС)."""
     item, _ = _item(db, user, item_id, edit=True)
-    if item.fixed_asset_id is not None:
+    if item.fixed_asset_id is not None or item.accounting is not None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
-                            detail="Единица связана с карточкой основного средства — её не удалить")
+                            detail="Единица поставлена на учёт — сначала снимите с учёта")
     db.delete(item)
     _commit(db)
     return Response(status_code=204)
@@ -452,3 +475,82 @@ def list_members(organization_id: int, user: CurrentUser, db: DbSession):
                       .order_by(User.full_name, User.login)).all()
     return [MemberOut(user_id=u.id, name=u.full_name or u.login, role_title=ROLE_TITLES[Role(role)])
             for u, role in rows]
+
+
+# --- учёт (шаг 19.4): постановка на учёт бухгалтером, снятие, QR-этикетки ---
+
+
+class AccountIn(BaseModel):
+    ids: Annotated[list[int], Field(min_length=1, max_length=service.MAX_COUNT)]
+    kind: Literal["fixed_asset", "expense", "off_balance", "earlier"]
+    on_date: dt.date
+    counterparty_id: int | None = None  # поставщик: Кт 60.01
+    contract_id: int | None = None
+    useful_life_months: Annotated[int, Field(ge=1, le=1200)] | None = None  # ОС
+    depreciation_item_id: int | None = None  # ОС: статья амортизации (по умолчанию — системная)
+    commission_on: dt.date | None = None  # ОС: сразу ввести в эксплуатацию
+    expense_account: Literal["26", "44"] = "26"  # малоценка: счёт затрат
+    expense_item_id: int | None = None  # малоценка: статья ОПиУ
+
+
+def _accountant(db: Session, user: User, organization_id: int) -> Scope:
+    """Ставит на учёт и снимает бухгалтер, финансовый директор, администратор (право на имущество и проводки)."""
+    scope = Scope(db, user, organization_id)
+    perms = org_permissions(db, user, organization_id)
+    if Perm.ASSETS_EDIT not in perms or Perm.POST not in perms:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Ставит на учёт бухгалтер или финансовый директор")
+    return scope
+
+
+def _accounting_run(db: Session, action) -> None:
+    try:
+        action()
+    except (accounting.AccountingError, JournalError) as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+
+
+@router.post("/organizations/{organization_id}/asset-items/account", response_model=list[ItemOut])
+def account_items(organization_id: int, body: AccountIn, user: CurrentUser, db: DbSession):
+    scope = _accountant(db, user, organization_id)
+    items = list(db.scalars(select(AssetItem).where(AssetItem.organization_id == organization_id,
+                                                    AssetItem.id.in_(body.ids)).order_by(AssetItem.number)))
+    if len(items) != len(set(body.ids)) or not all(scope.visible(i) for i in items):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Часть единиц не найдена")
+    data = body.model_dump(exclude={"ids"})
+    _accounting_run(db, lambda: accounting.account(db, items, user, **data))
+    _commit(db)
+    return _out(db, items, scope)
+
+
+@router.post("/asset-items/{item_id}/unaccount", response_model=list[ItemOut])
+def unaccount_item(item_id: int, user: CurrentUser, db: DbSession):
+    """Снять с учёта ошибочно поставленную единицу (у малоценки — вместе с единицами той же операции)."""
+    item, _ = _item(db, user, item_id)
+    scope = _accountant(db, user, item.organization_id)
+    group: list[AssetItem] = []
+    _accounting_run(db, lambda: group.extend(accounting.unaccount(db, item, user)))
+    _commit(db)
+    return _out(db, group, scope)
+
+
+class LabelOut(BaseModel):
+    id: int
+    number: str
+    name: str
+    place: str
+    svg: str
+
+
+@router.get("/organizations/{organization_id}/asset-labels", response_model=list[LabelOut])
+def asset_labels(organization_id: int, user: CurrentUser, db: DbSession,
+                 ids: Annotated[list[int], Query(min_length=1, max_length=service.MAX_COUNT)],
+                 base: Annotated[str, Query(max_length=200, pattern=r"^https?://[A-Za-z0-9.:\-\[\]]+$")]):
+    """QR-этикетки: в коде — ссылка на карточку единицы (base — адрес сайта, откуда открыта страница)."""
+    scope = Scope(db, user, organization_id)
+    items = [i for i in db.scalars(select(AssetItem).where(AssetItem.organization_id == organization_id,
+                                                           AssetItem.id.in_(ids)).order_by(AssetItem.number))
+             if scope.visible(i)]
+    labels = service.Labels.load(db, organization_id)
+    return [LabelOut(id=i.id, number=i.number, name=i.name, place=labels.cfos.get(i.cfo_id, ""),
+                     svg=accounting.qr_svg(f"{base}/#/assets?item={i.id}")) for i in items]

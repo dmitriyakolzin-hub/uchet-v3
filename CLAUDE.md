@@ -795,3 +795,13 @@
   `received_quantity`, `can_receive` (`Scope.can_receive`: ASSETS_EDIT, ASSET_REQUEST или ответственный). Интерфейс:
   «Принять…» в действиях заявки, раздел «Приёмки» в карточке (номера, расхождения, «+ акт / фото», «Отменить приёмку»).
   Тестов 402, ui_smoke дополнен.
+- 2026-11-17 — 19.3 влита (PR 76). Шаг 19.4 (ветка `etap-19-4-asset-accounting`), `docs/TZ.md`, раздел 28 «Детали 19.4».
+  Миграция 0051: `asset_items.accounting` (fixed_asset/expense/off_balance/earlier), `accounted_on`,
+  `accounting_operation_id`; единицы с карточкой ОС — `fixed_asset`. Зависимость `segno` (QR). `app/services/asset_accounting.py`:
+  `account` (ОС: карточка + Дт 08 — Кт 60.01 + `fixed_assets.commission`; малоценка: Дт 26/44 — Кт 60.01 одной операцией
+  на юрлицо), `unaccount`, `lease_remaining`, `source_request`, `qr_svg`. API в `app/api/assets.py`:
+  `POST /organizations/{id}/asset-items/account`, `POST /asset-items/{id}/unaccount` (ASSETS_EDIT + POST),
+  `GET /organizations/{id}/asset-labels?ids=&base=`; `ItemOut.accounting*`, `supplier_*`, `lease_remaining` (расчёт).
+  Интерфейс: колонка «Учёт», «Поставить на учёт» / «Этикетки QR» в панели отмеченных, в карточке — учёт, остаток лизинга,
+  «Снять с учёта», «Этикетка QR»; ссылка `#/assets?item=ID` открывает карточку (`app.js` отрезает `?…` у раздела).
+  Тестов 404, ui_smoke дополнен. ui_smoke не запускать одновременно с тестами — падает на «Начальных остатках».

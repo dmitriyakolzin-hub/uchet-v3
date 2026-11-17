@@ -80,7 +80,7 @@ async function route() {
   if (!me) return;
   const limited = limitedPages();
   const home = limited ? [...limited].find((k) => k !== "password") : DEFAULT_PAGE;
-  let key = location.hash.replace(/^#\//, "") || home;
+  let key = location.hash.replace(/^#\//, "").split("?")[0] || home;  // «#/assets?item=5» — раздел «assets»
   if (!PAGES[key] || !allowed(key, PAGES[key])) key = home;
   for (const link of nav.querySelectorAll("a")) {
     link.classList.toggle("active", link.dataset.page === key);
