@@ -20,6 +20,7 @@ from app.core.permissions import ROLE_TITLES, Perm, Role
 from app.models import AssetEvent, AssetItem, AssetItemFile, Membership, Operation, User
 from app.models.asset import ACCOUNTING, ASSET_STATUSES, OWNERSHIP, AssetRequest
 from app.services import asset_accounting as accounting
+from app.services import asset_operation
 from app.services import assets as service
 from app.services.journal import JournalError
 from app.services.excel_import import XLSX_TYPE, ExcelError
@@ -104,6 +105,7 @@ class ItemOut(BaseModel):
     accounting_operation_number: int | None = None
     supplier_id: int | None = None  # поставщик и договор из заявки на имущество — для постановки на учёт
     supplier_contract_id: int | None = None
+    in_transfer: bool = False  # в неподтверждённом перемещении (шаг 19.5)
 
 
 class EventOut(BaseModel):
@@ -127,6 +129,7 @@ class Scope:
 
     def __init__(self, db: Session, user: User, organization_id: int):
         get_organization_for(db, user, organization_id, Perm.ASSETS)
+        self.user_id = user.id
         self.own = service.own_employee_ids(db, user, organization_id)
         membership = role_in(db, user, organization_id)
         self.only_own = not user.is_admin and membership is not None and membership.role == Role.MOL
@@ -178,6 +181,7 @@ def _out(db: Session, items: list[AssetItem], scope: Scope) -> list[ItemOut]:
         files.setdefault(f.item_id, []).append(FileOut(id=f.id, filename=f.filename, size=f.size,
                                                        uploaded_at=f.uploaded_at))
     lease = accounting.lease_remaining(db, items)
+    moving = asset_operation.pending_item_ids(db, items[0].organization_id)
     op_numbers = dict(db.execute(select(Operation.id, Operation.number).where(
         Operation.id.in_({i.accounting_operation_id for i in items if i.accounting_operation_id}))).all())
     sources: dict[int, AssetRequest | None] = {}
@@ -200,7 +204,7 @@ def _out(db: Session, items: list[AssetItem], scope: Scope) -> list[ItemOut]:
         accounting_operation_id=i.accounting_operation_id,
         accounting_operation_number=op_numbers.get(i.accounting_operation_id),
         supplier_id=(src.counterparty_id if (src := sources.get(i.receipt_id)) else None),
-        supplier_contract_id=(src.contract_id if src else None),
+        supplier_contract_id=(src.contract_id if src else None), in_transfer=i.id in moving,
     ) for i in items]
 
 

@@ -4,13 +4,17 @@ import { api } from "../api.js";
 import { date as ruDate, money, parseNumber } from "../format.js";
 import { el, instruction, makeTable, openForm, toast } from "../ui.js";
 import { assetRequestsTab } from "./assetrequests.js";
+import { assetTransfersTab, transferForm } from "./assettransfers.js";
 import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
 const STATUSES = [["stock", "На складе"], ["in_use", "В эксплуатации"], ["repair", "В ремонте"], ["disposed", "Выбыло"]];
 const OWNERSHIP = [["own", "Собственное"], ["leasing", "Лизинг"], ["rent", "Аренда"]];
 const ACTIONS = { created: "завёл(а)", edited: "изменил(а)", bulk_edited: "изменил(а) группой", imported: "загрузил(а)",
-  file: "приложил(а) файл", file_removed: "убрал(а) файл" };
+  file: "приложил(а) файл", file_removed: "убрал(а) файл", received: "принял(а)", accounted: "поставил(а) на учёт",
+  unaccounted: "снял(а) с учёта", transfer_created: "отправил(а) в перемещение", transferred: "переместил(а)",
+  transfer_rejected: "— получатель отказался", transfer_cancelled: "отменил(а) перемещение", work: "внёс(ла) работу",
+  work_finished: "завершил(а) работу", work_removed: "удалил(а) работу" };
 
 function recall(key) {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -36,13 +40,14 @@ export async function renderAssets(view) {
   const summary = el("p", { class: "muted" });
   // вкладки: реестр единиц и заявки на имущество (шаг 19.2)
   const TAB_KEY = "uchet3_assets_tab";
-  let tab = recall(TAB_KEY) === "requests" ? "requests" : "registry";
+  let tab = ["requests", "transfers"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "registry";
   const tabBar = el("div", { class: "tabs", role: "tablist" });
   const registryBox = el("div");
   const requestsBox = el("div");
+  const transfersBox = el("div");
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Имущество"), el("label", { class: "inline" }, "Организация ", orgSelect)),
-    tabBar, registryBox, requestsBox,
+    tabBar, registryBox, requestsBox, transfersBox,
   );
   registryBox.append(
     instruction("Каждая единица имущества — своя карточка с инвентарным номером, местом (ЦФО, склад), МОЛ и историей. "
@@ -71,7 +76,8 @@ export async function renderAssets(view) {
         + (c.getRow().getData().warehouse_name ? `<div class="muted small">${escape(c.getRow().getData().warehouse_name)}</div>` : "") },
       { title: "МОЛ", field: "employee_name", widthGrow: 2 },
       { title: "Статус", field: "status_title", width: 140,
-        formatter: (c) => `<span class="badge asset-${c.getRow().getData().status}">${escape(c.getValue())}</span>` },
+        formatter: (c) => `<span class="badge asset-${c.getRow().getData().status}">${escape(c.getValue())}</span>`
+          + (c.getRow().getData().in_transfer ? '<div class="muted small">перемещается</div>' : "") },
       { title: "Владение", field: "ownership_title", width: 120 },
       { title: "Учёт", field: "accounting_title", width: 150, formatter: (c) => escape(c.getValue() || "—") },
       { title: "Цена, ₽", field: "purchase_price", width: 120, hozAlign: "right", formatter: (c) => (c.getValue() ? money(c.getValue()) : "") },
@@ -204,16 +210,69 @@ export async function renderAssets(view) {
     });
   }
 
+  // работа по единице: модернизация (увеличивает стоимость), ремонт (пока идёт — «в ремонте»), ТО
+  async function workForm(item, after) {
+    let counterparties = [];
+    try {
+      counterparties = (await api.get(`/api/organizations/${org.id}/counterparties`)).filter((c) => c.is_active);
+    } catch { /* без списка подрядчиков */ }
+    openForm({
+      title: `Работа: ${item.number} ${item.name}`,
+      fields: [
+        { name: "kind", label: "Вид", type: "select", options: [["repair", "Ремонт"], ["maintenance", "ТО"], ["modernization", "Модернизация"]] },
+        { name: "started_on", label: "Начало", type: "date", required: true },
+        { name: "finished_on", label: "Окончание", type: "date", hint: "Ремонт без даты окончания — единица «в ремонте», пока его не завершат" },
+        { name: "counterparty_id", label: "Подрядчик", type: "select", options: options(counterparties, (c) => c.name, "— свои силы —") },
+        { name: "employee_id", label: "Кто делал (сотрудник)", type: "select", options: options(ref.employees, (e) => e.full_name) },
+        { name: "amount", label: "Стоимость, ₽", placeholder: "0,00", hint: "У модернизации обязательна — увеличивает стоимость единицы" },
+        { name: "description", label: "Что сделано", type: "textarea" },
+      ],
+      values: { kind: "repair", started_on: new Date().toISOString().slice(0, 10) },
+      submitText: "Сохранить",
+      onSubmit: async (v) => {
+        await api.post(`/api/asset-items/${item.id}/works`, {
+          kind: v.kind, started_on: v.started_on, finished_on: v.finished_on || null, counterparty_id: idOrNull(v.counterparty_id),
+          employee_id: idOrNull(v.employee_id), amount: v.amount ? parseNumber(v.amount) : null, description: v.description ?? "",
+        });
+        await after();
+      },
+    });
+  }
+
   async function openCard(row) {
     let item;
     let events;
+    let works;
     try {
-      [item, events] = await Promise.all([api.get(`/api/asset-items/${row.id}`), api.get(`/api/asset-items/${row.id}/events`)]);
+      [item, events, works] = await Promise.all([api.get(`/api/asset-items/${row.id}`), api.get(`/api/asset-items/${row.id}/events`),
+        api.get(`/api/asset-items/${row.id}/works`)]);
     } catch (err) {
       toast(err.message, "error");
       return;
     }
     const field = (title, value) => (value ? el("tr", {}, el("th", {}, title), el("td", {}, value)) : "");
+    const canService = org.permissions.includes("asset_service") && item.status !== "disposed";
+    const reopen = async () => { close(); await load(); await openCard(item); };
+    const worksBox = el("div", { class: "asset-works" },
+      el("h3", {}, "Работы: модернизация, ремонт, ТО"),
+      Number(works.modernization_total) ? el("p", {}, `Модернизация: ${money(works.modernization_total)} ₽`
+        + (works.cost_with_modernization ? `; стоимость с модернизацией — ${money(works.cost_with_modernization)} ₽` : "")) : "",
+      works.works.length ? el("ul", {}, ...works.works.map((w) => el("li", {},
+        `${w.kind_title}: ${ruDate(w.started_on)}${w.finished_on ? ` — ${ruDate(w.finished_on)}` : " — идёт"}`
+          + (w.amount ? `, ${money(w.amount)} ₽` : "") + (w.counterparty_name ? `, ${w.counterparty_name}` : "")
+          + (w.employee_name ? `, ${w.employee_name}` : ""),
+        w.description ? el("div", { class: "muted small" }, w.description) : "",
+        canService && !w.finished_on ? el("button", { type: "button", class: "link", onclick: () => openForm({
+          title: `Завершить: ${w.kind_title.toLowerCase()}`,
+          fields: [{ name: "finished_on", label: "Дата окончания", type: "date", required: true },
+            { name: "status", label: "Статус после ремонта", type: "select", options: [["in_use", "В эксплуатации"], ["stock", "На складе"]] }],
+          values: { finished_on: new Date().toISOString().slice(0, 10) }, submitText: "Завершить",
+          onSubmit: async (v) => { await api.post(`/api/asset-works/${w.id}/finish`, v); await reopen(); } }) }, "Завершить") : "",
+        canService ? el("button", { type: "button", class: "link danger", "aria-label": `Удалить работу ${w.kind_title}`, onclick: async () => {
+          if (!confirm("Удалить ошибочно внесённую работу?")) return;
+          try { await api.delete(`/api/asset-works/${w.id}`); await reopen(); } catch (err) { toast(err.message, "error"); }
+        } }, "×") : ""))) : el("p", { class: "muted" }, "Работ не было"),
+      canService ? el("button", { type: "button", class: "link", onclick: () => workForm(item, reopen) }, "+ работа") : "");
     const fileInput = el("input", { type: "file", hidden: true, "aria-label": "Файл к единице имущества" });
     const dialog = el("dialog", { class: "dialog wide" });
     const close = () => { dialog.close(); dialog.remove(); };
@@ -258,6 +317,7 @@ export async function renderAssets(view) {
           } }, "×") : "")) : [el("span", { class: "muted" }, "Нет файлов")]),
         canEdit() && item.status !== "disposed" ? el("button", { type: "button", class: "link", onclick: () => fileInput.click() }, "+ файл") : "",
         fileInput),
+      worksBox,
       el("h3", {}, "История"),
       el("ul", { class: "asset-history" }, ...events.map((e) => el("li", {},
         `${new Date(e.at).toLocaleString("ru-RU")} — ${e.user_name} ${ACTIONS[e.action] ?? e.action}`,
@@ -265,6 +325,8 @@ export async function renderAssets(view) {
       el("div", { class: "form-actions" },
         canEdit() && item.status !== "disposed" ? el("button", { type: "button", onclick: () => { close(); editItem(item); } }, "Изменить") : "",
         el("button", { type: "button", class: "secondary", onclick: () => printLabels([item]) }, "Этикетка QR"),
+        (canEdit() || item.mine) && item.status !== "disposed" && !item.in_transfer
+          ? el("button", { type: "button", class: "secondary", onclick: () => { close(); transferForm({ org, ref, items: [item], onDone: load }); } }, "Переместить") : "",
         canAccount() && !item.accounting && item.status !== "disposed"
           ? el("button", { type: "button", class: "secondary", onclick: () => { close(); accountItems([item]); } }, "Поставить на учёт") : "",
         canAccount() && item.accounting && item.accounted_on && item.status !== "disposed" ? el("button", { type: "button", class: "secondary danger", onclick: async () => {
@@ -305,6 +367,8 @@ export async function renderAssets(view) {
       canEdit() ? el("button", { type: "button", onclick: () => bulkEdit(selected) }, "Изменить выбранные") : "",
       canAccount() && selected.some((r) => !r.accounting)
         ? el("button", { type: "button", class: "secondary", onclick: () => accountItems(selected.filter((r) => !r.accounting)) }, "Поставить на учёт") : "",
+      canEdit() || selected.every((r) => r.mine)
+        ? el("button", { type: "button", class: "secondary", onclick: () => transferForm({ org, ref, items: selected, onDone: async () => { table.deselectRow(); await load(); } }) }, "Переместить / передать") : "",
       el("button", { type: "button", class: "secondary", onclick: () => printLabels(selected) }, "Этикетки QR"),
     );
   }
@@ -454,8 +518,9 @@ export async function renderAssets(view) {
   }
 
   const requests = assetRequestsTab(requestsBox, { org: () => org, ref: () => ref });
+  const transfers = assetTransfersTab(transfersBox, { org: () => org, reload: () => load() });
   function renderTabs() {
-    tabBar.replaceChildren(...[["registry", "Реестр"], ["requests", "Заявки на имущество"]].map(([k, t]) => el("button", {
+    tabBar.replaceChildren(...[["registry", "Реестр"], ["requests", "Заявки на имущество"], ["transfers", "Перемещения"]].map(([k, t]) => el("button", {
       type: "button", role: "tab", class: `tab${k === tab ? " active" : ""}`,
       onclick: () => { tab = k; remember(TAB_KEY, k); showTab(); },
     }, t)));
@@ -464,7 +529,9 @@ export async function renderAssets(view) {
     renderTabs();
     registryBox.hidden = tab !== "registry";
     requestsBox.hidden = tab !== "requests";
+    transfersBox.hidden = tab !== "transfers";
     if (tab === "requests") await requests.show();
+    else if (tab === "transfers") await transfers.show();
     else table.redraw(true);
   }
 

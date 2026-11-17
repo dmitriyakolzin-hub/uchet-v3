@@ -400,3 +400,9 @@ select.action-menu { min-width: 130px; font-size: 13px; padding: 3px 6px; }
 .badge.areq-delivered, .badge.areq-received { background: #ecfdf3; color: #067647; }
 .badge.areq-rejected, .badge.areq-cancelled { background: #fef3f2; color: #b42318; }
 table.asset-requests tbody tr { cursor: pointer; }
+/* перемещения и работы (шаг 19.5) */
+.badge.transfer-pending { background: #eff8ff; color: #175cd3; }
+.badge.transfer-accepted { background: #ecfdf3; color: #067647; }
+.badge.transfer-rejected, .badge.transfer-cancelled { background: #f2f4f7; color: #667085; }
+.asset-works ul { padding-left: 18px; }
+.asset-works li button { margin-left: 10px; }

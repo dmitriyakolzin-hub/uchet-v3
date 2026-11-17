@@ -225,3 +225,72 @@ class AssetReceiptFile(Base):
     data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
     uploaded_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+TRANSFER_STATUSES = {"pending": "Ждёт подтверждения", "accepted": "Принято", "rejected": "Отказ", "cancelled": "Отменено"}
+WORK_KINDS = {"modernization": "Модернизация", "repair": "Ремонт", "maintenance": "ТО"}
+
+
+class AssetTransfer(Base):
+    """Перемещение / передача имущества (docs/TZ.md, раздел 28, «Детали 19.5»): куда (место, склад), кому (МОЛ),
+    в каком статусе. Единицы переходят, когда получатель подтверждает."""
+
+    __tablename__ = "asset_transfers"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "number"),
+        CheckConstraint("status IN ('pending', 'accepted', 'rejected', 'cancelled')", name="status"),
+        CheckConstraint("to_status IS NULL OR to_status IN ('stock', 'in_use', 'repair')", name="to_status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"), index=True)
+    number: Mapped[int] = mapped_column(BigInteger)
+    on_date: Mapped[date] = mapped_column(Date)
+    to_cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"))
+    to_warehouse_id: Mapped[int | None] = mapped_column(ForeignKey("warehouses.id", ondelete="RESTRICT"))
+    to_employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id", ondelete="RESTRICT"), index=True)
+    to_status: Mapped[str | None] = mapped_column(String(10))  # «в эксплуатацию», «на склад», «в ремонт»
+    reason: Mapped[str] = mapped_column(String(1000), default="", server_default="")
+    status: Mapped[str] = mapped_column(String(10), default="pending", server_default="pending")
+    reject_reason: Mapped[str] = mapped_column(String(1000), default="", server_default="")
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    decided_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AssetTransferItem(Base):
+    """Единица в перемещении: откуда (место, склад, МОЛ на момент создания)."""
+
+    __tablename__ = "asset_transfer_items"
+    __table_args__ = (UniqueConstraint("transfer_id", "item_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    transfer_id: Mapped[int] = mapped_column(ForeignKey("asset_transfers.id", ondelete="CASCADE"), index=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("asset_items.id", ondelete="CASCADE"), index=True)
+    from_cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"))
+    from_warehouse_id: Mapped[int | None] = mapped_column(ForeignKey("warehouses.id", ondelete="RESTRICT"))
+    from_employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id", ondelete="RESTRICT"))
+
+
+class AssetWork(Base):
+    """Работа по единице: модернизация (увеличивает стоимость единицы), ремонт, ТО — кто делал, сколько стоило."""
+
+    __tablename__ = "asset_works"
+    __table_args__ = (
+        CheckConstraint("kind IN ('modernization', 'repair', 'maintenance')", name="kind"),
+        CheckConstraint("amount IS NULL OR amount >= 0", name="amount"),
+        CheckConstraint("finished_on IS NULL OR finished_on >= started_on", name="dates"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("asset_items.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(15))
+    started_on: Mapped[date] = mapped_column(Date)
+    finished_on: Mapped[date | None] = mapped_column(Date)  # ремонт: пока не закончен — единица «в ремонте»
+    description: Mapped[str] = mapped_column(String(2000), default="", server_default="")
+    counterparty_id: Mapped[int | None] = mapped_column(ForeignKey("counterparties.id", ondelete="RESTRICT"))
+    employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id", ondelete="RESTRICT"))  # кто делал
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
