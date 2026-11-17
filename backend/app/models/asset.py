@@ -26,6 +26,9 @@ from app.models.organization import Organization
 from app.models.reference import OrgScoped
 
 ASSET_STATUSES = {"stock": "На складе", "in_use": "В эксплуатации", "repair": "В ремонте", "disposed": "Выбыло"}
+# как единица учтена бухгалтером (docs/TZ.md, раздел 28, «Детали 19.4»)
+ACCOUNTING = {"fixed_asset": "Основное средство", "expense": "Малоценка, в расходах", "off_balance": "За балансом",
+              "earlier": "Учтено ранее"}
 OWNERSHIP = {"own": "Собственное", "leasing": "Лизинг", "rent": "Аренда"}
 DEFAULT_CATEGORIES = ["Оборудование", "Мебель", "Компьютерная техника", "Инструмент", "Инвентарь", "Транспорт",
                       "Прочее"]
@@ -49,6 +52,8 @@ class AssetItem(Base):
         CheckConstraint("status IN ('stock', 'in_use', 'repair', 'disposed')", name="status"),
         CheckConstraint("ownership IN ('own', 'leasing', 'rent')", name="ownership"),
         CheckConstraint("purchase_price IS NULL OR purchase_price >= 0", name="purchase_price"),
+        CheckConstraint("accounting IS NULL OR accounting IN ('fixed_asset', 'expense', 'off_balance', 'earlier')",
+                        name="accounting"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -71,6 +76,10 @@ class AssetItem(Base):
     # карточка основного средства (амортизация, ввод, выбытие — шаги 4.4, 5.2)
     fixed_asset_id: Mapped[int | None] = mapped_column(ForeignKey("fixed_assets.id", ondelete="SET NULL"),
                                                        unique=True)
+    # учёт (шаг 19.4): как учтена, когда, операция поступления (Дт 08 / счёт затрат — Кт 60.01)
+    accounting: Mapped[str | None] = mapped_column(String(12))
+    accounted_on: Mapped[date | None] = mapped_column(Date)
+    accounting_operation_id: Mapped[int | None] = mapped_column(ForeignKey("operations.id", ondelete="SET NULL"))
     # приёмка по заявке на имущество (шаг 19.3)
     receipt_id: Mapped[int | None] = mapped_column(ForeignKey("asset_receipts.id", ondelete="SET NULL"), index=True)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

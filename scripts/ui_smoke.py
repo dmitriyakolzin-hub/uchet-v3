@@ -1073,6 +1073,7 @@ with sync_playwright() as p:
     d = page.locator("dialog[open]")
     expect(d.locator("[name=quantity]")).to_have_value("2")
     d.locator("[name=status]").select_option("in_use")
+    d.locator("[name=cfo_id]").select_option(index=1)  # место — на него относится амортизация
     d.locator("[name=discrepancy]").fill("одна коробка мятая")
     d.locator("button[type=submit]").click()
     expect(page.locator(".toast")).to_contain_text("в реестре имущества")
@@ -1085,6 +1086,24 @@ with sync_playwright() as p:
     page.locator("[aria-label='Поиск имущества']").fill("Холодильник")
     page.locator("[aria-label='Поиск имущества']").press("Enter")
     expect(page.locator(".tabulator-row", has_text="Холодильник")).to_have_count(2)
+    # учёт (шаг 19.4): поставить на учёт как ОС с вводом в эксплуатацию; этикетки QR
+    fridges = page.locator(".tabulator-row", has_text="Холодильник")
+    fridges.first.locator(".tabulator-cell").first.locator("input").check()
+    page.click(".bulk-bar button:has-text('Поставить на учёт')")
+    d = page.locator("dialog[open]")
+    expect(d.locator("[name=counterparty_id] option:checked")).to_have_text("Поставщик Плюс")  # из заявки
+    expect(d.locator("[name=expense_item_id]")).to_be_hidden()
+    d.locator("[name=useful_life_months]").fill("36")
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".toast")).to_contain_text("Поставлено на учёт")
+    expect(page.locator(".tabulator-row", has_text="Основное средство")).to_have_count(1)
+    fridges.first.locator(".tabulator-cell").first.locator("input").check()
+    with page.expect_popup() as popup:
+        page.click(".bulk-bar button:has-text('Этикетки QR')")
+    labels = popup.value
+    expect(labels.locator(".label svg")).to_have_count(1)
+    expect(labels.locator(".label .num")).to_contain_text("ИН-")
+    labels.close()
     # сотрудник ↔ пользователь (МОЛ)
     page.click("#nav a[data-page=references]")
     page.click("button.tab:has-text('Категории имущества')")

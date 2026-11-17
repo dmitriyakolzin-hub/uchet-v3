@@ -63,6 +63,8 @@ python-dotenv==1.2.4
     #   uvicorn
 pyyaml==6.0.3
     # via uvicorn
+segno==1.6.6
+    # via uchet-v3 (pyproject.toml)
 sqlalchemy==2.1.5
     # via
     #   uchet-v3 (pyproject.toml)
