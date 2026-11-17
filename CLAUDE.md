@@ -787,3 +787,11 @@
   `app/api/asset_requests.py` (`Scope`: руководитель ЦФО — ветка и свои, МОЛ — где ответственный). Интерфейс: вкладки
   «Реестр» / «Заявки на имущество» на странице «Имущество» (`js/pages/assetrequests.js`: список, действия, форма решения
   ФД с лизингом, карточка с оплатами и историей). Тестов 401, ui_smoke дополнен.
+- 2026-11-17 — 19.2 влита (PR 75). Шаг 19.3 (ветка `etap-19-3-asset-receipt`), `docs/TZ.md`, раздел 28 «Детали 19.3».
+  Миграция 0050: `asset_receipts` (заявка, дата, кто принял, количество, расхождения), `asset_receipt_files`,
+  `asset_items.receipt_id`. `asset_requests.receive` (единицы через `assets.next_numbers`, цена и наименование из решения,
+  лизинг — `upgraded_price`; частичная приёмка, статус delivered/received), `undo_receipt`, `received_quantity`, `RECEIVABLE`.
+  API: `POST /asset-requests/{id}/receive`, `DELETE /asset-receipts/{id}`, файлы приёмки; `RequestOut.receipts`,
+  `received_quantity`, `can_receive` (`Scope.can_receive`: ASSETS_EDIT, ASSET_REQUEST или ответственный). Интерфейс:
+  «Принять…» в действиях заявки, раздел «Приёмки» в карточке (номера, расхождения, «+ акт / фото», «Отменить приёмку»).
+  Тестов 402, ui_smoke дополнен.

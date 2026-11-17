@@ -21,8 +21,16 @@ from app.models import (
     PaymentRequest,
     User,
 )
-from app.models.asset import ASSET_REQUEST_STATUSES, PURCHASE_KINDS, AssetRequest, AssetRequestEvent
+from app.models.asset import (
+    ASSET_REQUEST_STATUSES,
+    PURCHASE_KINDS,
+    AssetItem,
+    AssetReceipt,
+    AssetRequest,
+    AssetRequestEvent,
+)
 from app.services import approval
+from app.services import assets as asset_service
 from app.services import payment_requests as payments
 from app.services import periodic
 from app.services.articles import is_group, system_article
@@ -207,3 +215,76 @@ def set_delivery(db: Session, req: AssetRequest, user: User, status: str, on: dt
     elif req.expected_on:
         details += f", ожидается {req.expected_on:%d.%m.%Y}"
     event(db, req, user, "delivery", details)
+
+
+# --- приёмка (шаг 19.3) ---
+
+RECEIVABLE = ("approved", "ordered", "shipped", "delivered")
+
+
+def received_quantity(db: Session, req: AssetRequest) -> int:
+    return db.scalar(select(func.coalesce(func.sum(AssetReceipt.quantity), 0))
+                     .where(AssetReceipt.request_id == req.id)) or 0
+
+
+def receive(db: Session, req: AssetRequest, user: User, *, received_on: dt.date, quantity: int,
+            employee_id: int | None, cfo_id: int | None, warehouse_id: int | None, mol_id: int | None,
+            status: str, discrepancy: str) -> tuple[AssetReceipt, list[AssetItem]]:
+    """Приёмка: сколько пришло (не больше, чем осталось принять); каждая штука — единица имущества с местом, МОЛ
+    и ценой из заявки. Принято всё — заявка «принята», иначе остаётся для следующей приёмки."""
+    if req.status not in RECEIVABLE:
+        raise AssetRequestError(f"Заявка: {ASSET_REQUEST_STATUSES[req.status].lower()} — принимать можно после "
+                                "решения ФД")
+    left = req.quantity - received_quantity(db, req)
+    if quantity < 1 or quantity > left:
+        raise AssetRequestError(f"Принять можно от 1 до {left} шт.")
+    if status not in ("stock", "in_use"):
+        raise AssetRequestError("После приёмки — «на складе» или «в эксплуатации»")
+    _own(db, req, Employee, employee_id, "Кто принял")
+    receipt = AssetReceipt(request_id=req.id, received_on=received_on, employee_id=employee_id, quantity=quantity,
+                           discrepancy=discrepancy, created_by=user.id)
+    db.add(receipt)
+    db.flush()
+    upgraded = None
+    if req.purchase_kind == "leasing" and req.lease_payment is not None and req.lease_months:
+        upgraded = round_money(req.lease_payment * req.lease_months / req.quantity)  # цена с удорожанием за штуку
+    items = []
+    for number in asset_service.next_numbers(db, req.organization_id, quantity):
+        item = AssetItem(
+            organization_id=req.organization_id, number=number, name=req.model_name or req.name,
+            category_id=req.category_id, ownership="leasing" if req.purchase_kind == "leasing" else "own",
+            legal_entity_id=req.legal_entity_id, cfo_id=cfo_id, warehouse_id=warehouse_id, employee_id=mol_id,
+            status=status, purchase_price=req.price, upgraded_price=upgraded, acquired_on=received_on,
+            note=f"принято по заявке на имущество № {req.number}", receipt_id=receipt.id, created_by=user.id)
+        try:
+            asset_service.validate(db, item)
+        except asset_service.AssetError as exc:
+            raise AssetRequestError(str(exc)) from None
+        db.add(item)
+        db.flush()
+        asset_service.event(db, item, user, "received", f"заявка на имущество № {req.number}")
+        items.append(item)
+    total_received = received_quantity(db, req)
+    if req.delivered_on is None:
+        req.delivered_on = received_on
+    req.status = "received" if total_received >= req.quantity else "delivered"
+    details = f"{quantity} шт. ({items[0].number}" + (f" — {items[-1].number})" if len(items) > 1 else ")")
+    if discrepancy:
+        details += f"; расхождения: {discrepancy}"
+    event(db, req, user, "received", details)
+    return receipt, items
+
+
+def undo_receipt(db: Session, receipt: AssetReceipt, user: User) -> None:
+    """Отменить приёмку: её единицы удаляются, если с ними ещё ничего не делали (не выбыли, нет карточки ОС)."""
+    req = db.get(AssetRequest, receipt.request_id)
+    items = list(db.scalars(select(AssetItem).where(AssetItem.receipt_id == receipt.id)))
+    if any(i.status == "disposed" or i.fixed_asset_id is not None for i in items):
+        raise AssetRequestError("Часть единиц уже выбыла или стала основным средством — приёмку не отменить")
+    for item in items:
+        db.delete(item)
+    db.delete(receipt)
+    db.flush()
+    if req.status == "received":  # принято не всё — снова можно принимать
+        req.status = "delivered"
+    event(db, req, user, "receipt_undone", f"{receipt.quantity} шт. от {receipt.received_on:%d.%m.%Y}")

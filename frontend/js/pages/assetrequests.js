@@ -10,7 +10,8 @@ const STATUS_FILTER = [["", "Все"], ["draft,rejected", "Черновики и
 const KINDS = [["prepay", "Предоплата"], ["deferral", "Отсрочка"], ["leasing", "Лизинг"]];
 const ACTIONS = { created: "создал(а)", edited: "изменил(а)", submitted: "подал(а) на решение ФД", recalled: "отозвал(а)",
   approved: "принял(а) решение", rejected: "отклонил(а)", unapproved: "вернул(а) на решение", cancelled: "отменил(а)",
-  delivery: "отметил(а) поставку" };
+  delivery: "отметил(а) поставку", received: "принял(а)", receipt_undone: "отменил(а) приёмку",
+  file: "приложил(а) файл", file_removed: "убрал(а) файл" };
 const idOrNull = (v) => (v ? Number(v) : null);
 const options = (items, label, empty = "— не указано —") => [["", empty], ...items.map((i) => [String(i.id), label(i)])];
 
@@ -68,7 +69,8 @@ export function assetRequestsTab(box, ctx) {
           el("td", {}, r.counterparty_name),
           el("td", {}, r.purchase_kind_title, r.purchase_kind === "leasing" ? el("div", { class: "muted small" }, `${money(r.lease_payment)} × ${r.lease_months} мес.`) : ""),
           el("td", { class: "num" }, r.total ? money(r.total) : r.estimated_price ? `≈ ${money(r.estimated_price)} за ед.` : ""),
-          el("td", {}, r.delivered_on ? `доставлено ${ruDate(r.delivered_on)}` : r.expected_on ? `ожидается ${ruDate(r.expected_on)}` : ""),
+          el("td", {}, r.delivered_on ? `доставлено ${ruDate(r.delivered_on)}` : r.expected_on ? `ожидается ${ruDate(r.expected_on)}` : "",
+            r.received_quantity ? el("div", { class: "muted small" }, `принято ${r.received_quantity} из ${r.quantity}`) : ""),
           el("td", {}, el("span", { class: `badge areq-${r.status}` }, r.status_title)),
           el("td", { class: "req-actions" }, actions(r)));
         tr.addEventListener("click", (e) => { if (!e.target.closest("select, button")) openCard(r); });
@@ -88,7 +90,10 @@ export function assetRequestsTab(box, ctx) {
       if (r.status !== "shipped") list.push(["shipped", "Отгружено"]);
       list.push(["delivered", "Доставлено…"]);
     }
-    if (["pending", "approved", "ordered", "shipped", "delivered"].includes(r.status) && can("supervise")) list.push(["cancel", "Отменить закупку"]);
+    if (r.can_receive) list.push(["receive", "Принять…"]);
+    if (["pending", "approved", "ordered", "shipped", "delivered"].includes(r.status) && can("supervise") && !r.received_quantity) {
+      list.push(["cancel", "Отменить закупку"]);
+    }
     if (!list.length) return "";
     const menu = el("select", { class: "action-menu", "aria-label": `Действие с заявкой ${r.number}` },
       el("option", { value: "" }, "Действие…"), ...list.map(([v, t]) => el("option", { value: v }, t)));
@@ -116,11 +121,44 @@ export function assetRequestsTab(box, ctx) {
       openForm({ title: `${action === "reject" ? "Отклонить" : "Отменить закупку по"} заявку № ${r.number}`,
         fields: [{ name: "reason", label: "Причина", type: "textarea", required: true }], submitText: action === "reject" ? "Отклонить" : "Отменить закупку",
         onSubmit: async (v) => { await api.post(`/api/asset-requests/${r.id}/${action}`, { reason: v.reason }); await load(); } });
-    } else if (action === "delivered") {
+    } else if (action === "receive") receive(r);
+    else if (action === "delivered") {
       openForm({ title: `Доставлено: заявка № ${r.number}`, fields: [{ name: "on", label: "Дата доставки", type: "date", required: true }],
         values: { on: new Date().toISOString().slice(0, 10) }, submitText: "Отметить",
         onSubmit: async (v) => { await api.post(`/api/asset-requests/${r.id}/delivery`, { status: "delivered", on: v.on }); await load(); } });
     }
+  }
+
+  // приёмка: каждая принятая штука — единица имущества в реестре (шаг 19.3)
+  function receive(r) {
+    const ref = ctx.ref();
+    const left = r.quantity - r.received_quantity;
+    openForm({
+      title: `Приёмка по заявке № ${r.number}: ${r.model_name || r.name}`,
+      fields: [
+        { name: "received_on", label: "Дата приёмки", type: "date", required: true },
+        { name: "quantity", label: `Сколько принято (осталось принять: ${left})`, type: "number", required: true },
+        { name: "employee_id", label: "Кто принял", type: "select", options: options(ref.employees, (e) => e.full_name) },
+        { name: "cfo_id", label: "Место (ЦФО)", type: "select", options: options(ref.cfos, (c) => ref.cfoLabel.get(c.id)) },
+        { name: "warehouse_id", label: "Склад", type: "select", options: options(ref.warehouses, (w) => w.name) },
+        { name: "mol_id", label: "МОЛ", type: "select", options: options(ref.employees, (e) => e.full_name) },
+        { name: "status", label: "Статус", type: "select", options: [["stock", "На складе"], ["in_use", "В эксплуатации"]] },
+        { name: "discrepancy", label: "Расхождения (недостача, брак, пересорт)", type: "textarea" },
+      ],
+      values: { received_on: new Date().toISOString().slice(0, 10), quantity: String(left), employee_id: String(r.employee_id ?? ""),
+        cfo_id: String(r.cfo_id ?? ""), mol_id: String(r.employee_id ?? ""), status: "stock" },
+      submitText: "Принять",
+      onSubmit: async (v) => {
+        const res = await api.post(`/api/asset-requests/${r.id}/receive`, {
+          received_on: v.received_on, quantity: Number(v.quantity), employee_id: idOrNull(v.employee_id),
+          cfo_id: idOrNull(v.cfo_id), warehouse_id: idOrNull(v.warehouse_id), mol_id: idOrNull(v.mol_id),
+          status: v.status, discrepancy: v.discrepancy ?? "",
+        });
+        const numbers = res.receipts.at(-1)?.numbers ?? [];
+        toast(`Принято: ${numbers.length} шт. (${numbers[0]}${numbers.length > 1 ? ` — ${numbers.at(-1)}` : ""}) — в реестре имущества`);
+        await load();
+      },
+    });
   }
 
   function editRequest(r) {
@@ -227,7 +265,8 @@ export function assetRequestsTab(box, ctx) {
       return;
     }
     const field = (title, value) => (value ? el("tr", {}, el("th", {}, title), el("td", {}, value)) : "");
-    const dialog = el("dialog", { class: "dialog wide" },
+    const dialog = el("dialog", { class: "dialog wide" });
+    dialog.append(
       el("h2", {}, `Заявка на имущество № ${item.number}`),
       el("table", { class: "recon request-card" }, el("tbody", {},
         field("Статус", item.status_title + (item.reject_reason ? `: ${item.reject_reason}` : "")),
@@ -243,6 +282,25 @@ export function assetRequestsTab(box, ctx) {
         field("Дата оплаты", item.pay_date ? ruDate(item.pay_date) : ""),
         field("Поставка", item.delivered_on ? `доставлено ${ruDate(item.delivered_on)}` : item.expected_on ? `ожидается ${ruDate(item.expected_on)}` : ""),
         field("Подал(а)", item.created_by_name), field("Решение", item.decided_by_name))),
+      item.receipts.length ? el("h3", {}, `Приёмки (принято ${item.received_quantity} из ${item.quantity})`) : "",
+      item.receipts.length ? el("ul", { class: "asset-receipts" }, ...item.receipts.map((x) => el("li", {},
+        `${ruDate(x.received_on)} — ${x.quantity} шт.${x.employee_name ? `, принял(а) ${x.employee_name}` : ""}: `
+          + `${x.numbers[0] ?? ""}${x.numbers.length > 1 ? ` — ${x.numbers.at(-1)}` : ""}`,
+        x.discrepancy ? el("div", { class: "muted small" }, `Расхождения: ${x.discrepancy}`) : "",
+        el("div", { class: "asset-files" },
+          ...x.files.map((f) => el("button", { type: "button", class: "link", onclick: () => api.download(`/api/asset-receipt-files/${f.id}`, f.filename)
+            .catch((err) => toast(err.message, "error")) }, f.filename)),
+          item.can_receive || can("assets_edit") ? receiptFile(x, dialog, item) : "",
+          can("assets_edit") ? el("button", { type: "button", class: "link danger", onclick: async () => {
+            if (!confirm("Отменить приёмку? Её единицы удалятся из реестра.")) return;
+            try {
+              await api.delete(`/api/asset-receipts/${x.id}`);
+              dialog.close();
+              await load();
+            } catch (err) {
+              toast(err.message, "error");
+            }
+          } }, "Отменить приёмку") : "")))) : "",
       item.payments.length ? el("h3", {}, "Оплаты в платёжном календаре") : "",
       item.payments.length ? el("ul", {}, ...item.payments.map((p) => el("li", {},
         `Заявка на оплату № ${p.number} — ${ruDate(p.pay_date)}, ${money(p.amount)} ₽, ${p.status_title}`))) : "",
@@ -254,6 +312,23 @@ export function assetRequestsTab(box, ctx) {
     document.body.append(dialog);
     dialog.addEventListener("close", () => dialog.remove());
     dialog.showModal();
+  }
+
+  // акт, фото к приёмке
+  function receiptFile(receipt, dialog, item) {
+    const input = el("input", { type: "file", hidden: true, "aria-label": "Акт или фото приёмки" });
+    input.addEventListener("change", async () => {
+      const file = input.files[0];
+      if (!file) return;
+      try {
+        await api.upload(`/api/asset-receipts/${receipt.id}/files?filename=${encodeURIComponent(file.name)}`, file);
+        dialog.close();
+        await openCard(item);
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    });
+    return el("span", {}, input, el("button", { type: "button", class: "link", onclick: () => input.click() }, "+ акт / фото"));
   }
 
   return { show: async () => { render(); await load(); } };
