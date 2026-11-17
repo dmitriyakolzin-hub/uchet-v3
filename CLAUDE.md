@@ -805,3 +805,11 @@
   Интерфейс: колонка «Учёт», «Поставить на учёт» / «Этикетки QR» в панели отмеченных, в карточке — учёт, остаток лизинга,
   «Снять с учёта», «Этикетка QR»; ссылка `#/assets?item=ID` открывает карточку (`app.js` отрезает `?…` у раздела).
   Тестов 404, ui_smoke дополнен. ui_smoke не запускать одновременно с тестами — падает на «Начальных остатках».
+- 2026-11-17 — 19.4 влита (PR 77). Шаг 19.5 (ветка `etap-19-5-asset-operation`), `docs/TZ.md`, раздел 28 «Детали 19.5».
+  Миграция 0052: `asset_transfers` (номер, куда/кому/статус, pending/accepted/rejected/cancelled), `asset_transfer_items`
+  (откуда — снимок), `asset_works` (modernization/repair/maintenance). Право `Perm.ASSET_SERVICE` (ФД, бухгалтер, инженер,
+  АХО). `app/services/asset_operation.py`: `create_transfer`, `accept`, `close`, `pending_item_ids`, `add_work`, `finish_work`,
+  `modernization_total`. API `app/api/asset_operation.py` (перемещения, работы); `assets.Scope.user_id`, `ItemOut.in_transfer`.
+  Интерфейс: вкладка «Перемещения» (`js/pages/assettransfers.js`), «Переместить / передать» в панели отмеченных и карточке,
+  раздел «Работы» в карточке. Стенд: облачная среда пересоздавалась — скрипты стенда восстановлены в scratchpad
+  (`docker_up.sh`, `ui_stand.sh`: база uchet3_ui, admin создаётся через `get_sessionmaker`). Тестов 406, ui_smoke дополнен.
