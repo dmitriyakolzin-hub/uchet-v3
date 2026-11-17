@@ -7,14 +7,17 @@
 
 import datetime as dt
 from decimal import Decimal
+from pathlib import PurePosixPath
+from urllib.parse import quote
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions, role_in
+from app.api import assets as asset_files
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm, Role
 from app.models import (
@@ -25,11 +28,22 @@ from app.models import (
     LegalEntity,
     User,
 )
-from app.models.asset import ASSET_REQUEST_STATUSES, PURCHASE_KINDS, AssetRequest, AssetRequestEvent
+from app.models.asset import (
+    ASSET_REQUEST_STATUSES,
+    PURCHASE_KINDS,
+    AssetItem,
+    AssetReceipt,
+    AssetReceiptFile,
+    AssetRequest,
+    AssetRequestEvent,
+)
 from app.services import asset_requests as service
 from app.services import assets as asset_service
 from app.services.asset_requests import AssetRequestError
 from app.services.payment_requests import STATUS_TITLES as PAYMENT_STATUS_TITLES
+
+FILE_TYPES = asset_files.FILE_TYPES
+MAX_FILE_BYTES = asset_files.MAX_FILE_BYTES
 
 router = APIRouter(prefix="/api", tags=["Имущество"])
 
@@ -122,6 +136,36 @@ class RequestOut(BaseModel):
     decided_at: dt.datetime | None
     payments: list[PaymentOut] = []
     can_edit: bool = False  # правка и подача (автор или ФД)
+    received_quantity: int = 0
+    receipts: list["ReceiptOut"] = []
+    can_receive: bool = False  # приёмка: оператор АХО, бухгалтер, ФД, инженер, ответственный по заявке
+
+
+class ReceiptFileOut(BaseModel):
+    id: int
+    filename: str
+    size: int
+
+
+class ReceiptOut(BaseModel):
+    id: int
+    received_on: dt.date
+    employee_name: str
+    quantity: int
+    discrepancy: str
+    numbers: list[str]
+    files: list[ReceiptFileOut] = []
+
+
+class ReceiveIn(BaseModel):
+    received_on: dt.date
+    quantity: Annotated[int, Field(ge=1, le=asset_service.MAX_COUNT)]
+    employee_id: int | None = None  # кто принял
+    cfo_id: int | None = None  # место
+    warehouse_id: int | None = None
+    mol_id: int | None = None  # МОЛ принятых единиц
+    status: Literal["stock", "in_use"] = "stock"
+    discrepancy: Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)] = ""
 
 
 class EventOut(BaseModel):
@@ -153,6 +197,10 @@ class Scope:
         if self.branch is not None:
             return req.cfo_id in self.branch
         return True
+
+    def can_receive(self, req: AssetRequest) -> bool:
+        return (Perm.ASSETS_EDIT in self.perms or Perm.ASSET_REQUEST in self.perms
+                or (req.employee_id is not None and req.employee_id in self.own))
 
     def can_edit(self, req: AssetRequest) -> bool:
         return Perm.SUPERVISE in self.perms or (Perm.ASSET_REQUEST in self.perms and req.created_by == self.user.id)
@@ -204,6 +252,25 @@ def _out(db: Session, requests: list[AssetRequest], scope: Scope) -> list[Reques
     contracts = _names(db, Contract, ids("contract_id"), lambda c: c.name or f"№ {c.number}")
     employees = _names(db, Employee, ids("employee_id"), lambda e: e.full_name)
     users = _names(db, User, ids("created_by") + ids("decided_by"), lambda u: u.full_name or u.login)
+    receipts: dict[int, list[ReceiptOut]] = {}
+    receipt_rows = list(db.scalars(select(AssetReceipt).where(AssetReceipt.request_id.in_(ids("id")))
+                                   .order_by(AssetReceipt.received_on, AssetReceipt.id)))
+    if receipt_rows:
+        rids = [x.id for x in receipt_rows]
+        numbers: dict[int, list[str]] = {}
+        for rid, number in db.execute(select(AssetItem.receipt_id, AssetItem.number)
+                                      .where(AssetItem.receipt_id.in_(rids)).order_by(AssetItem.number)).all():
+            numbers.setdefault(rid, []).append(number)
+        files: dict[int, list[ReceiptFileOut]] = {}
+        for f in db.execute(select(AssetReceiptFile.id, AssetReceiptFile.receipt_id, AssetReceiptFile.filename,
+                                   AssetReceiptFile.size).where(AssetReceiptFile.receipt_id.in_(rids))).all():
+            files.setdefault(f.receipt_id, []).append(ReceiptFileOut(id=f.id, filename=f.filename, size=f.size))
+        receivers = _names(db, Employee, [x.employee_id for x in receipt_rows], lambda e: e.full_name)
+        for x in receipt_rows:
+            receipts.setdefault(x.request_id, []).append(ReceiptOut(
+                id=x.id, received_on=x.received_on, employee_name=receivers.get(x.employee_id, ""),
+                quantity=x.quantity, discrepancy=x.discrepancy, numbers=numbers.get(x.id, []),
+                files=files.get(x.id, [])))
     rows = []
     for r in requests:
         rows.append(RequestOut(
@@ -225,6 +292,8 @@ def _out(db: Session, requests: list[AssetRequest], scope: Scope) -> list[Reques
                                  status_title=PAYMENT_STATUS_TITLES[p.status])
                       for p in service.linked_payments(db, r)] if r.status not in ("draft", "pending", "rejected") else [],
             can_edit=scope.can_edit(r),
+            received_quantity=sum(x.quantity for x in receipts.get(r.id, [])), receipts=receipts.get(r.id, []),
+            can_receive=r.status in service.RECEIVABLE and scope.can_receive(r),
         ))
     return rows
 
@@ -392,3 +461,81 @@ def request_events(request_id: int, user: CurrentUser, db: DbSession):
     return [EventOut(at=e.at, user_name=(u.full_name or u.login) if u else "система", action=e.action,
                      details=e.details) for e, u in rows]
 
+
+
+# --- приёмка (шаг 19.3) ---
+
+
+@router.post("/asset-requests/{request_id}/receive", response_model=RequestOut)
+def receive(request_id: int, body: ReceiveIn, user: CurrentUser, db: DbSession):
+    """Приёмка: каждая принятая штука становится единицей имущества (место, МОЛ, цена — из заявки и формы)."""
+    req, scope = _request(db, user, request_id)
+    if not scope.can_receive(req):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
+    _run(db, lambda: service.receive(db, req, user, **body.model_dump()))
+    return _save(db, req, scope)
+
+
+def _receipt(db: Session, user: User, receipt_id: int) -> tuple[AssetReceipt, AssetRequest, Scope]:
+    receipt = db.get(AssetReceipt, receipt_id)
+    if receipt is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Приёмка не найдена")
+    req, scope = _request(db, user, receipt.request_id)
+    return receipt, req, scope
+
+
+@router.delete("/asset-receipts/{receipt_id}", response_model=RequestOut)
+def undo_receipt(receipt_id: int, user: CurrentUser, db: DbSession):
+    receipt, req, scope = _receipt(db, user, receipt_id)
+    _need(scope, Perm.ASSETS_EDIT)
+    _run(db, lambda: service.undo_receipt(db, receipt, user))
+    return _save(db, req, scope)
+
+
+@router.post("/asset-receipts/{receipt_id}/files", response_model=ReceiptFileOut, status_code=201)
+async def upload_receipt_file(receipt_id: int, filename: Annotated[str, Query(max_length=255)], request: Request,
+                              user: CurrentUser, db: DbSession):
+    """Акт приёмки, фото: PDF, JPG, PNG, Excel, Word до 10 МБ."""
+    receipt, req, scope = _receipt(db, user, receipt_id)
+    if not scope.can_receive(req) and Perm.ASSETS_EDIT not in scope.perms:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
+    name = PurePosixPath(filename.replace("\\", "/")).name.strip()[:255]
+    content_type = FILE_TYPES.get(PurePosixPath(name).suffix.lower())
+    if not name or content_type is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Можно приложить PDF, JPG, PNG, Excel или Word")
+    raw = await request.body()
+    if not raw:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Файл пуст")
+    if len(raw) > MAX_FILE_BYTES:
+        raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, detail="Файл больше 10 МБ")
+    file = AssetReceiptFile(receipt_id=receipt.id, filename=name, content_type=content_type, size=len(raw), data=raw,
+                            uploaded_by=user.id)
+    db.add(file)
+    service.event(db, req, user, "file", name)
+    db.commit()
+    db.refresh(file)
+    return ReceiptFileOut(id=file.id, filename=file.filename, size=file.size)
+
+
+@router.get("/asset-receipt-files/{file_id}")
+def download_receipt_file(file_id: int, user: CurrentUser, db: DbSession):
+    file = db.get(AssetReceiptFile, file_id)
+    if file is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Файл не найден")
+    _receipt(db, user, file.receipt_id)
+    return Response(file.data, media_type=file.content_type,
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(file.filename)}"})
+
+
+@router.delete("/asset-receipt-files/{file_id}", status_code=204)
+def delete_receipt_file(file_id: int, user: CurrentUser, db: DbSession) -> Response:
+    file = db.get(AssetReceiptFile, file_id)
+    if file is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Файл не найден")
+    _, req, scope = _receipt(db, user, file.receipt_id)
+    if file.uploaded_by != user.id and Perm.ASSETS_EDIT not in scope.perms:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Убрать файл может тот, кто его приложил, или АХО")
+    service.event(db, req, user, "file_removed", file.filename)
+    db.delete(file)
+    db.commit()
+    return Response(status_code=204)
