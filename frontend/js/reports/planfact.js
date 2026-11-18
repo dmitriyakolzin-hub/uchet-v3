@@ -101,6 +101,8 @@ export function planFactReport({ box, ctx }) {
         ...(m.length ? { account_id: m } : {}),
         ...(r.drill.exclude_corr ? { exclude_corr_account_id: m } : {}),
         ...(r.drill.exclude_corr_ids?.length ? { exclude_corr_account_id: r.drill.exclude_corr_ids } : {}),
+        ...(r.drill.side ? { side: r.drill.side } : {}),
+        ...(r.drill.intragroup ? { intragroup: "true" } : {}),
       },
     });
   });

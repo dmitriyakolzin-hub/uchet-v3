@@ -56,6 +56,7 @@ export function columnsReport({ box, ctx, path, hint, fileName, onDetails, first
       ...(r.drill.exclude_corr_ids?.length ? { exclude_corr_account_id: r.drill.exclude_corr_ids } : {}),
       ...(r.drill.account_id ? { account_id: r.drill.account_id } : {}),
       ...(r.drill.side ? { side: r.drill.side } : {}),
+      ...(r.drill.intragroup ? { intragroup: "true" } : {}),
     };
     // колонка-направление: ветка ЦФО или «записано на сам ЦФО» / «без ЦФО»
     if (col.drill?.cfo_id) extra.cfo_id = col.drill.cfo_id;

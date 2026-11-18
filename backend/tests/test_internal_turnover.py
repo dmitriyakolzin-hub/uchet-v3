@@ -104,3 +104,59 @@ def test_internal_turnover(client, env, db):  # noqa: F811
     assert (posting.credit.pl_item, posting.credit.cfo, posting.debit.pl_item) == (revenue.id, prod["id"], None)
     posting = plan._posting(db, "pl", purchase, logistics["id"], Decimal("10"))
     assert (posting.debit.pl_item, posting.debit.cfo, posting.credit.pl_item) == (purchase.id, logistics["id"], None)
+
+
+def test_intragroup_sales(client, env, db):  # noqa: F811
+    """Шаг 20.2: продажа молочного юрлица торговле (юрлицу группы) — в бюджете CEO исключается из выручки
+    и той же суммой из себестоимости; в бюджете ЦФО — как есть (docs/TZ.md, раздел 29, «Детали 20.2»)."""
+    from app.models import LegalEntity
+
+    post, acc, art = env["post"], env["acc"], env["art"]
+    milk_le = LegalEntity(organization_id=env["org"].id, full_name="ООО Молоко", short_name="Молоко", inn="7703333333")
+    db.add(milk_le)
+    db.commit()
+    company = post("cfos", {"name": "Компания", "legal_entity_id": env["le"].id})
+    trade = post("cfos", {"name": "Торговля", "parent_id": company["id"]})
+    milk = post("cfos", {"name": "Молочное", "legal_entity_id": milk_le.id})
+    shop_buyer = post("counterparties", {"name": "ООО А (торговля)", "kind": "legal", "inn": env["le"].inn})
+    client_buyer = post("counterparties", {"name": "Покупатель", "kind": "legal", "inn": "7709999999"})
+
+    def operation(le_id, postings, article):
+        resp = client.post(f"{env['o']}/operations?post=true", headers=env["h"], json={
+            "legal_entity_id": le_id, "op_date": DAY, "article_id": art[article], "description": "x",
+            "postings": postings})
+        assert resp.status_code == 201, resp.text
+
+    def sale(le_id, cfo, buyer, amount):
+        operation(le_id, [{"debit_account_id": acc["62.01"], "credit_account_id": acc["90.01"], "amount": amount,
+                           "debit": {"counterparty": buyer["id"]},
+                           "credit": {"cfo": cfo["id"], "pl_item": art["Выручка от продаж"]}}], "Выручка от продаж")
+
+    sale(milk_le.id, milk, shop_buyer, "300")  # молочка → торговля (внутри группы)
+    sale(env["le"].id, trade, client_buyer, "500")  # торговля → клиент
+    operation(env["le"].id, [{"debit_account_id": acc["90.02"], "credit_account_id": acc["60.01"], "amount": "300",
+                              "debit": {"cfo": trade["id"], "pl_item": art["Себестоимость продаж"]},
+                              "credit": {"counterparty": env["cp"]["id"]}}],
+              "Себестоимость продаж")
+
+    period = {"date_from": DAY, "date_to": dt.date.today().isoformat()}
+
+    def pl(**params):
+        resp = client.get(f"{env['o']}/reports/pl", headers=env["h"], params={**period, **params})
+        assert resp.status_code == 200, resp.text
+        return {r["key"]: {k: Decimal(v) for k, v in r["values"].items()} for r in resp.json()["rows"]}
+
+    cfo_view = pl()
+    assert cfo_view["revenue"]["total"] == 800 and cfo_view["cost"]["total"] == -300
+    assert "intragroup:revenue" not in cfo_view
+    ceo = pl(view="ceo")
+    assert ceo["revenue"]["total"] == 500 and ceo["intragroup:revenue"]["total"] == -300
+    assert ceo["cost"]["total"] == 0 and ceo["intragroup:cost"]["total"] == 300
+    assert ceo["net"]["total"] == cfo_view["net"]["total"] == 500
+    by_cfo = pl(view="ceo", by="cfo")
+    assert by_cfo["intragroup:revenue"][f"cfo:{milk['id']}"] == -300  # исключение — у продавца
+
+    # расшифровка строки исключения — продажа молочки торговле
+    lines = client.get(f"{env['o']}/reports/lines", headers=env["h"], params={
+        **period, "view": "ceo", "intragroup": "true", "side": "credit"}).json()
+    assert lines["count"] == 1 and Decimal(lines["credit"]) == 300
