@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -343,3 +344,47 @@ class AssetDisposalItem(Base):
     price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     prev_status: Mapped[str | None] = mapped_column(String(10))
     operation_id: Mapped[int | None] = mapped_column(ForeignKey("operations.id", ondelete="SET NULL"))
+
+
+INVENTORY_STATUSES = {"open": "Идёт", "closed": "Завершена"}
+
+
+class AssetInventory(Base):
+    """Инвентаризация (docs/TZ.md, раздел 28, «Детали 19.7»): что должно быть (место с подчинёнными ЦФО, склад, МОЛ —
+    снимок при создании) и что найдено сканированием QR или вводом номера."""
+
+    __tablename__ = "asset_inventories"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "number"),
+        CheckConstraint("status IN ('open', 'closed')", name="status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id", ondelete="RESTRICT"), index=True)
+    number: Mapped[int] = mapped_column(BigInteger)
+    on_date: Mapped[date] = mapped_column(Date)
+    cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"))
+    warehouse_id: Mapped[int | None] = mapped_column(ForeignKey("warehouses.id", ondelete="RESTRICT"))
+    employee_id: Mapped[int | None] = mapped_column(ForeignKey("employees.id", ondelete="RESTRICT"))
+    note: Mapped[str] = mapped_column(String(1000), default="", server_default="")
+    status: Mapped[str] = mapped_column(String(10), default="open", server_default="open")
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    closed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AssetInventoryLine(Base):
+    """Строка инвентаризации: expected — числилась в этом месте при создании; found — найдена (отсканирована)."""
+
+    __tablename__ = "asset_inventory_lines"
+    __table_args__ = (UniqueConstraint("inventory_id", "item_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    inventory_id: Mapped[int] = mapped_column(ForeignKey("asset_inventories.id", ondelete="CASCADE"), index=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("asset_items.id", ondelete="CASCADE"), index=True)
+    expected: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    found: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    found_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    found_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    note: Mapped[str] = mapped_column(String(500), default="", server_default="")

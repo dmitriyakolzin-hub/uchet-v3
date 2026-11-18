@@ -6,6 +6,7 @@ import { el, instruction, makeTable, openForm, toast } from "../ui.js";
 import { assetRequestsTab } from "./assetrequests.js";
 import { assetTransfersTab, transferForm } from "./assettransfers.js";
 import { assetDisposalsTab, disposalForm } from "./assetdisposals.js";
+import { activeInventory, assetInventoryTab, markInActive } from "./assetinventory.js";
 import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
@@ -17,7 +18,8 @@ const ACTIONS = { created: "завёл(а)", edited: "изменил(а)", bulk_
   transfer_rejected: "— получатель отказался", transfer_cancelled: "отменил(а) перемещение", work: "внёс(ла) работу",
   work_finished: "завершил(а) работу", work_removed: "удалил(а) работу", disposal_created: "предложил(а) выбытие",
   disposed: "— выбыла", disposal_rejected: "— выбытие отклонено", disposal_cancelled: "отменил(а) выбытие",
-  disposal_undone: "— выбытие отменено" };
+  disposal_undone: "— выбытие отменено", inventory_moved: "перенёс(ла) по инвентаризации",
+  inventory_missing: "— не найдена при инвентаризации" };
 
 function recall(key) {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -43,15 +45,16 @@ export async function renderAssets(view) {
   const summary = el("p", { class: "muted" });
   // вкладки: реестр единиц и заявки на имущество (шаг 19.2)
   const TAB_KEY = "uchet3_assets_tab";
-  let tab = ["requests", "transfers", "disposals"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "registry";
+  let tab = ["requests", "transfers", "disposals", "inventory"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "registry";
   const tabBar = el("div", { class: "tabs", role: "tablist" });
   const registryBox = el("div");
   const requestsBox = el("div");
   const transfersBox = el("div");
   const disposalsBox = el("div");
+  const inventoryBox = el("div");
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Имущество"), el("label", { class: "inline" }, "Организация ", orgSelect)),
-    tabBar, registryBox, requestsBox, transfersBox, disposalsBox,
+    tabBar, registryBox, requestsBox, transfersBox, disposalsBox, inventoryBox,
   );
   registryBox.append(
     instruction("Каждая единица имущества — своя карточка с инвентарным номером, местом (ЦФО, склад), МОЛ и историей. "
@@ -322,6 +325,9 @@ export async function renderAssets(view) {
           } }, "×") : "")) : [el("span", { class: "muted" }, "Нет файлов")]),
         canEdit() && item.status !== "disposed" ? el("button", { type: "button", class: "link", onclick: () => fileInput.click() }, "+ файл") : "",
         fileInput),
+      activeInventory(org.id) && item.status !== "disposed" ? el("div", { class: "form-actions" },
+        el("button", { type: "button", onclick: () => markInActive(org.id, item.id) },
+          `Отметить в инвентаризации № ${activeInventory(org.id).number}`)) : "",
       worksBox,
       el("h3", {}, "История"),
       el("ul", { class: "asset-history" }, ...events.map((e) => el("li", {},
@@ -529,8 +535,9 @@ export async function renderAssets(view) {
   const requests = assetRequestsTab(requestsBox, { org: () => org, ref: () => ref });
   const transfers = assetTransfersTab(transfersBox, { org: () => org, reload: () => load() });
   const disposals = assetDisposalsTab(disposalsBox, { org: () => org, reload: () => load() });
+  const inventory = assetInventoryTab(inventoryBox, { org: () => org, ref: () => ref, reload: () => load() });
   function renderTabs() {
-    tabBar.replaceChildren(...[["registry", "Реестр"], ["requests", "Заявки на имущество"], ["transfers", "Перемещения"], ["disposals", "Выбытие"]].map(([k, t]) => el("button", {
+    tabBar.replaceChildren(...[["registry", "Реестр"], ["requests", "Заявки на имущество"], ["transfers", "Перемещения"], ["disposals", "Выбытие"], ["inventory", "Инвентаризация"]].map(([k, t]) => el("button", {
       type: "button", role: "tab", class: `tab${k === tab ? " active" : ""}`,
       onclick: () => { tab = k; remember(TAB_KEY, k); showTab(); },
     }, t)));
@@ -541,9 +548,12 @@ export async function renderAssets(view) {
     requestsBox.hidden = tab !== "requests";
     transfersBox.hidden = tab !== "transfers";
     disposalsBox.hidden = tab !== "disposals";
+    inventoryBox.hidden = tab !== "inventory";
+    if (tab !== "inventory") inventory.hide();
     if (tab === "requests") await requests.show();
     else if (tab === "transfers") await transfers.show();
     else if (tab === "disposals") await disposals.show();
+    else if (tab === "inventory") await inventory.show();
     else table.redraw(true);
   }
 
