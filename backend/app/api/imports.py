@@ -9,7 +9,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api.access import branch_ids, cfo_scope, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.services import article_import, employee_import
+from app.services import article_import, employee_import, prices
 from app.services import excel_import as xl
 
 router = APIRouter(prefix="/api/organizations/{organization_id}/import", tags=["Загрузка из Excel"])
@@ -136,6 +136,38 @@ async def import_employees(organization_id: int, request: Request, user: Current
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
     db.commit()
     return EmployeesImportOut(rows=result.rows, created=result.created, updated=result.updated,
+                              errors=[e.__dict__ for e in result.errors])
+
+
+# --- внутренние цены по SKU (docs/TZ.md, раздел 29, «Детали 20.3») ---
+
+
+@router.get("/prices.xlsx")
+def prices_template(organization_id: int, user: CurrentUser, db: DbSession):
+    """Вся номенклатура и общие цены на сегодня — в формате загрузки."""
+    get_organization_for(db, user, organization_id, Perm.EDIT_REFERENCE)
+    return _xlsx(prices.prices_xlsx(db, organization_id), "prices.xlsx")
+
+
+class PricesImportOut(BaseModel):
+    rows: int
+    created: int
+    updated: int
+    errors: list[RowErrorOut]
+
+
+@router.post("/prices", response_model=PricesImportOut)
+async def import_prices(organization_id: int, request: Request, user: CurrentUser, db: DbSession):
+    """Тело запроса — файл .xlsx как есть."""
+    get_organization_for(db, user, organization_id, Perm.EDIT_REFERENCE)
+    raw = await _body(request)
+    try:
+        result = await run_in_threadpool(prices.import_prices, db, organization_id, raw, user.id)
+    except xl.ExcelError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    db.commit()
+    return PricesImportOut(rows=result.rows, created=result.created, updated=result.updated,
                               errors=[e.__dict__ for e in result.errors])
 
 

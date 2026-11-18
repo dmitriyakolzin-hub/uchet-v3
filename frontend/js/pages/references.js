@@ -184,6 +184,116 @@ function employeesExcel(org, reload) {
   ];
 }
 
+const CHAIN_LINKS = [["production", "Производство"], ["logistics", "Логистика"], ["trade", "Торговля"], ["discount", "Дисконт"]];
+const PRICE_KINDS = [["production", "Производства"], ["logistics", "Логистики"], ["sale", "Продажи"], ["discount", "Дисконта"]];
+const VAT_OPTIONS = [["0", "без НДС"], ["5", "5 %"], ["7", "7 %"], ["10", "10 %"], ["20", "20 %"], ["22", "22 %"]];
+
+// Внутренние цены товара (docs/TZ.md, раздел 29, «Детали 20.3»): общие и по филиалам / магазинам, с даты
+async function openPrices(item, d, canEdit) {
+  const url = `/api/organizations/${d.org.id}/nomenclature-prices`;
+  const labels = cfoPathLabels(d.cfos);
+  const tableBox = el("div");
+  const addButton = canEdit ? el("button", { type: "button", onclick: () => form(null) }, "Новые цены") : "";
+  const dialog = el("dialog", { class: "dialog wide" },
+    el("div", { class: "page-head" }, el("h2", {}, `Цены: ${item.name}`), addButton),
+    el("p", { class: "muted" }, "На дату для ЦФО берётся самая близкая цена: своя, затем вышестоящего ЦФО, затем общая; "
+      + "на каждом уровне — последняя, начавшая действовать не позже даты. Цена производства — передача логистике (СГП), "
+      + "логистики — передача торговле, продажи — клиенту, дисконта — передача на дисконт."),
+    tableBox,
+    el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => dialog.close() }, "Закрыть")));
+  document.body.append(dialog);
+  dialog.addEventListener("close", () => dialog.remove());
+  dialog.showModal();
+  const priceCell = (c) => (c.getValue() === null ? "" : money(c.getValue()));
+  const table = makeTable(tableBox, {
+    columns: [
+      { title: "С даты", field: "valid_from", width: 110, formatter: (c) => c.getValue().split("-").reverse().join(".") },
+      { title: "ЦФО", field: "cfo_id", widthGrow: 2, formatter: (c) => (c.getValue() ? labels.get(c.getValue()) ?? "" : "вся организация") },
+      ...PRICE_KINDS.map(([k, t]) => ({ title: t, field: k, width: 120, hozAlign: "right", formatter: priceCell })),
+      { title: "НДС", field: "vat_rate", width: 110, formatter: (c) => {
+        const r = c.getRow().getData();
+        return r.vat_included && r.vat_rate ? `с НДС ${r.vat_rate} %` : "без НДС";
+      } },
+      ...(canEdit ? [
+        { title: "", field: "_edit", width: 40, hozAlign: "center", headerSort: false, formatter: () => "✎",
+          cellClick: (_e, c) => form(c.getRow().getData()) },
+        { title: "", field: "_delete", width: 40, hozAlign: "center", headerSort: false, formatter: () => "✕",
+          cellClick: async (_e, c) => {
+            const r = c.getRow().getData();
+            if (!confirm(`Удалить цены с ${r.valid_from.split("-").reverse().join(".")}?`)) return;
+            try { await api.delete(`/api/nomenclature-prices/${r.id}`); await load(); } catch (err) { toast(err.message, "error"); }
+          } }] : []),
+    ],
+  });
+  async function load() {
+    try {
+      await table.setData(await api.get(`${url}?nomenclature_id=${item.id}`));
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+  function form(row) {
+    const cfoOptions = [["", "— вся организация —"], ...d.cfos.filter((c) => c.is_active)
+      .map((c) => [String(c.id), labels.get(c.id)]).sort((a, b) => a[1].localeCompare(b[1]))];
+    openForm({
+      title: row ? "Изменить цены" : "Новые цены",
+      fields: [
+        { name: "valid_from", label: "Действуют с", type: "date", required: true },
+        { name: "cfo_id", label: "Для ЦФО", type: "select", options: cfoOptions, hint: "Филиал или магазин — со всеми подчинёнными" },
+        ...PRICE_KINDS.map(([k, t]) => ({ name: k, label: `Цена ${t.toLowerCase()}, ₽`, placeholder: "пусто — нет такой цены" })),
+        { name: "vat_included", label: "Цены с НДС", type: "checkbox" },
+        { name: "vat_rate", label: "Ставка НДС", type: "select", options: VAT_OPTIONS },
+      ],
+      values: row ? { ...row, cfo_id: row.cfo_id ? String(row.cfo_id) : "", vat_rate: String(row.vat_rate),
+        ...Object.fromEntries(PRICE_KINDS.map(([k]) => [k, row[k] === null ? "" : String(row[k]).replace(".", ",")])) }
+        : { valid_from: new Date().toISOString().slice(0, 10), vat_rate: "0" },
+      onSubmit: async (v) => {
+        const body = { nomenclature_id: item.id, valid_from: v.valid_from, cfo_id: v.cfo_id ? Number(v.cfo_id) : null,
+          vat_included: !!v.vat_included, vat_rate: Number(v.vat_rate),
+          ...Object.fromEntries(PRICE_KINDS.map(([k]) => [k, parseNumber(v[k])])) };
+        if (row) await api.put(`/api/nomenclature-prices/${row.id}`, body);
+        else await api.post(url, body);
+        toast("Цены сохранены");
+        await load();
+      },
+    });
+  }
+  await table.ready;
+  await load();
+}
+
+// Цены в Excel: скачать номенклатуру с ценами и загрузить
+function pricesExcel(org) {
+  const input = el("input", { type: "file", accept: ".xlsx", hidden: true, "aria-label": "Файл цен" });
+  input.addEventListener("change", async () => {
+    const file = input.files[0];
+    if (!file) return;
+    input.value = "";
+    try {
+      const r = await api.upload(`/api/organizations/${org.id}/import/prices`, file);
+      const dialog = el("dialog", { class: "dialog wide" },
+        el("h2", {}, `Цены загружены: ${file.name}`),
+        el("ul", {}, el("li", {}, `Строк в файле: ${r.rows}`), el("li", {}, `Добавлено: ${r.created}`),
+          el("li", {}, `Обновлено: ${r.updated}`)),
+        ...(r.errors.length ? [el("h3", {}, `Не загружено строк: ${r.errors.length}`),
+          el("ul", { class: "error-list" }, ...r.errors.map((e) => el("li", {}, `Строка ${e.row}: ${e.error}`)))] : []),
+        el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => dialog.close() }, "Понятно")));
+      document.body.append(dialog);
+      dialog.addEventListener("close", () => dialog.remove());
+      dialog.showModal();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  });
+  return [
+    el("button", { type: "button", class: "secondary", onclick: () => api.download(
+      `/api/organizations/${org.id}/import/prices.xlsx`, "prices.xlsx").catch((err) => toast(err.message, "error")) },
+    "Цены в Excel"),
+    el("button", { type: "button", class: "secondary", onclick: () => { input.value = ""; input.click(); } }, "Загрузить цены"),
+    input,
+  ];
+}
+
 const PROJECT_STATUSES = [["planned", "План"], ["active", "В работе"], ["done", "Завершён"]];
 const CFO_LEVELS = { 1: "Компания", 2: "Направление", 3: "Филиал", 4: "Магазин", 5: "Подразделение учёта" };
 
@@ -388,6 +498,8 @@ const TABS = [
       treeSearch("Код", "code", { width: 120 }),
       { title: "Уровень", field: "level", width: 190, headerSort: false, formatter: (c) => CFO_LEVELS[c.getValue()] },
       { title: "Юрлицо", field: "legal_entity_id", headerSort: false, formatter: lookup(d.entities, (e) => e.short_name) },
+      { title: "Звено", field: "chain_link", width: 130, headerSort: false,
+        formatter: (c) => CHAIN_LINKS.find(([v]) => v === c.getValue())?.[1] ?? "" },
       ...(tab.canEdit
         ? [{
             title: "", field: "_add", width: 150, headerSort: false,
@@ -412,6 +524,9 @@ const TABS = [
           ? [{ name: "parent_id", label: `Входит в (${CFO_LEVELS[level - 1]})`, type: "select", required: true, numeric: true, options: parentOptions }]
           : [{ name: "legal_entity_id", label: "Юрлицо (необязательно)", type: "select", numeric: true,
                options: optionsOf(d.entities, (e) => e.short_name, { empty: "— не указано —" }) }]),
+        { name: "chain_link", label: "Звено цепочки (бюджет ЦФО)", type: "select", nullable: true,
+          options: [["", "— как у вышестоящего —"], ...CHAIN_LINKS],
+          hint: "Производство → Логистика → Торговля → Дисконт: по звену берётся внутренняя цена при передаче" },
       ];
     },
     prepare: cfoTree,
@@ -502,11 +617,14 @@ const TABS = [
     key: "nomenclature",
     title: "Номенклатура",
     addText: "Добавить номенклатуру",
-    columns: (d) => [
+    extra: (org) => pricesExcel(org),
+    columns: (d, state) => [
       { title: "Наименование", field: "name", widthGrow: 3, headerFilter: "input", headerFilterPlaceholder: "поиск" },
       { title: "Артикул", field: "article", width: 140, headerFilter: "input", headerFilterPlaceholder: "поиск" },
       { title: "Вид", field: "kind", width: 130, formatter: titleOf(NOMENCLATURE_KINDS) },
       { title: "Ед. изм.", field: "unit_id", width: 100, formatter: lookup(d.units, (u) => u.short_name) },
+      { title: "", field: "_prices", width: 80, hozAlign: "center", headerSort: false, formatter: () => "цены",
+        cssClass: "link-like", cellClick: (_e, c) => openPrices(c.getRow().getData(), d, state.canEdit) },
     ],
     fields: (d) => [
       { name: "name", label: "Наименование", required: true },
@@ -603,7 +721,7 @@ export async function renderReferences(view) {
       need(["bank-accounts", "salary-projects", "counterparties"], () => api.get("/api/banks")),
       need(["bank-accounts", "contracts"], () => api.get("/api/currencies")),
       need(["contracts"], () => api.get(`/api/organizations/${org.id}/counterparties`)),
-      need(["cfos", "employees", "warehouses", "investment-projects"], () => api.get(`/api/organizations/${org.id}/cfos`)),
+      need(["cfos", "employees", "warehouses", "investment-projects", "nomenclature"], () => api.get(`/api/organizations/${org.id}/cfos`)),
       need(["nomenclature"], () => api.get("/api/units")),
       need(["employees"], () => api.get(`/api/organizations/${org.id}/articles`)),
       need(["executors"], () => api.get(`/api/organizations/${org.id}/employees`)),

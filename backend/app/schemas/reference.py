@@ -212,11 +212,15 @@ NULLABLE_FIELDS = {"corr_account", "inn", "kpp", "contract_date"}
 # --- ЦФО ---
 
 
+ChainLink = Literal["production", "logistics", "trade", "discount"]
+
+
 class CfoCreate(BaseModel):
     name: Name
     code: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] = ""  # для загрузок из Excel
     parent_id: int | None = None  # без родителя — ЦФО уровня «Компания»
     legal_entity_id: int | None = None
+    chain_link: ChainLink | None = None  # звено цепочки (бюджет ЦФО); пусто — как у родителя
 
 
 class CfoUpdate(BaseModel):
@@ -224,6 +228,7 @@ class CfoUpdate(BaseModel):
     code: Annotated[str, StringConstraints(strip_whitespace=True, max_length=50)] | None = None
     parent_id: int | None = None
     legal_entity_id: int | None = None
+    chain_link: ChainLink | None = None
     is_active: bool | None = None
 
 
@@ -237,6 +242,7 @@ class CfoOut(_Out):
     path: str
     legal_entity_id: int | None
     has_cash: bool = False  # «есть касса» (вкладка «Деньги»)
+    chain_link: str | None = None
     is_active: bool
 
 
