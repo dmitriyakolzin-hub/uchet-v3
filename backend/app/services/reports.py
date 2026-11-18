@@ -21,13 +21,14 @@ from app.models import (
     Executor,
     FixedAsset,
     InvestmentProject,
+    LegalEntity,
     Nomenclature,
     Operation,
     Posting,
     Unit,
     Warehouse,
 )
-from app.models.journal import ANALYTIC_COLUMNS
+from app.models.journal import ANALYTIC_COLUMNS, analytic_column
 from app.services.ledger import select_lines, subtree
 
 ZERO = Decimal("0.00")
@@ -232,16 +233,19 @@ class DrillResult:
 def drill(db: Session, f: ReportFilter, period: str, *, account_ids: list[int] | None = None,
           side: str | None = None, analytics: dict[str, int | None] | None = None,
           exclude_corr_account_ids: list[int] | None = None, opening: bool | None = None,
-          analytics_in: dict[str, list[int]] | None = None) -> DrillResult:
+          analytics_in: dict[str, list[int]] | None = None, intragroup: bool = False) -> DrillResult:
     """period: opening — до начала периода, turnover — за период, closing — по конец периода."""
     bounds = {
         "opening": (None, f.date_from - dt.timedelta(days=1)),
         "turnover": (f.date_from, f.date_to),
         "closing": (None, f.date_to),
     }[period]
-    lines = f.lines(date_from=bounds[0], date_to=bounds[1], account_ids=account_ids or None, side=side,
+    query = f.lines(date_from=bounds[0], date_to=bounds[1], account_ids=account_ids or None, side=side,
                     analytics=analytics, exclude_corr_account_ids=exclude_corr_account_ids,
-                    opening=opening, analytics_in=analytics_in).subquery()
+                    opening=opening, analytics_in=analytics_in)
+    if intragroup:  # строка «Исключение продаж внутри группы»
+        query = query.where(query.selected_columns.posting_id.in_(intragroup_postings(f.organization_id)))
+    lines = query.subquery()
     count, debit, credit = db.execute(select(
         func.count(),
         func.coalesce(func.sum(case((lines.c.side == "debit", lines.c.amount_rub))), 0),
@@ -316,6 +320,20 @@ def cfo_columns(db: Session, f: ReportFilter) -> tuple[list[Column], dict]:
         elif node in ids and ids.index(node) + 1 < len(ids):
             mapping[cfo_id] = f"cfo:{ids[ids.index(node) + 1]}"
     return columns, mapping
+
+
+def intragroup_postings(organization_id: int):
+    """Продажи внутри группы (docs/TZ.md, раздел 29, «Детали 20.2»): проводки выручки (кредит — статья раздела
+    «Выручка»), где покупатель по дебету — другое юрлицо этой организации (по ИНН)."""
+    group_inns = select(LegalEntity.inn).where(LegalEntity.organization_id == organization_id, LegalEntity.inn != "")
+    revenue = select(Article.id).where(Article.organization_id == organization_id, Article.pl_section == "revenue")
+    buyer = getattr(Posting, analytic_column("debit", "counterparty"))
+    return (select(Posting.id).join(Operation, Operation.id == Posting.operation_id)
+            .join(LegalEntity, LegalEntity.id == Operation.legal_entity_id)
+            .join(Counterparty, Counterparty.id == buyer)
+            .where(Operation.organization_id == organization_id,
+                   getattr(Posting, analytic_column("credit", "pl_item")).in_(revenue),
+                   Counterparty.inn.in_(group_inns), Counterparty.inn != LegalEntity.inn))
 
 
 def month_columns(date_from: dt.date, date_to: dt.date) -> list[Column]:
@@ -589,6 +607,21 @@ def pl(db: Session, f: ReportFilter, include_all: bool = False, by_cfo: bool = F
         for article_id in db.scalars(select(Article.id).where(Article.organization_id == f.organization_id,
                                                               Article.is_active, Article.is_pl)):
             by_article.setdefault(article_id, {c.key: ZERO for c in columns})
+    # бюджет CEO: продажи внутри группы исключаются из выручки и, той же суммой, из себестоимости — прибыль та же
+    intragroup = None
+    if f.ceo and f.plan_versions is None:
+        sold = f.lines(date_from=f.date_from, date_to=f.date_to, opening=False, side="credit").subquery()
+        sold_key = sold.c.cfo if by_cfo else func.to_char(sold.c.op_date, "YYYY-MM")
+        found = db.execute(select(sold_key, func.sum(sold.c.amount_rub))
+                           .where(sold.c.posting_id.in_(intragroup_postings(f.organization_id)),
+                                  sold.c.pl_item.is_not(None)).group_by(sold_key)).all()
+        if found:
+            intragroup = empty()
+            for k, amount in found:
+                column = mapping.get(k, "own") if mapping is not None else k
+                if column in intragroup:
+                    intragroup[column] += Decimal(amount) + ZERO
+                intragroup["total"] += Decimal(amount) + ZERO
     articles = {a.id: a for a in db.scalars(select(Article).where(Article.id.in_(list(by_article))))}
     sections = {key: empty() for key, _ in PL_SECTIONS}
     items: dict[str, dict[int, dict[str, Decimal]]] = {key: {} for key, _ in PL_SECTIONS}
@@ -608,9 +641,17 @@ def pl(db: Session, f: ReportFilter, include_all: bool = False, by_cfo: bool = F
         elif key == "internal" and (f.ceo or not items[key]):
             continue  # внутренние обороты: в бюджете CEO не видны, без передач раздел не нужен
         else:
+            if intragroup is not None and key in ("revenue", "cost"):
+                sign = -1 if key == "revenue" else 1
+                for k, v in intragroup.items():
+                    sections[key][k] += sign * v
             rows.append(ReportRow(key, title, 0, "section", sections[key]))
             rows += article_rows(db, f.organization_id, items[key], 1, "pl_item",
                                  {"period": "turnover", "exclude_corr_ids": reformation})
+            if intragroup is not None and key in ("revenue", "cost"):
+                rows.append(ReportRow(f"intragroup:{key}", "Исключение продаж внутри группы", 1, "item",
+                                      {k: sign * v for k, v in intragroup.items()},
+                                      {"period": "turnover", "side": "credit", "intragroup": True}))
     return ColumnsResult(columns=columns, money_account_ids=[], rows=rows)
 
 

@@ -199,6 +199,7 @@ def get_lines(
     plan_version_id: int | None = None,
     project_id: int | None = None,
     project_part: Literal["fact", "paid"] = "fact",
+    intragroup: bool = False,
 ):
     """Расшифровка: проводки, из которых сложилась цифра отчёта (те же условия отбора).
     plan_version_id — плановые операции этой версии бюджета вместо факта."""
@@ -219,7 +220,7 @@ def get_lines(
         analytics_in = {**(analytics_in or {}), kind: subtree_ids(db, article_id)}
     result = reports.drill(db, f, period, account_ids=account_id, side=side, analytics=_analytics_param(a or []),
                            exclude_corr_account_ids=exclude_corr_account_id, opening=opening,
-                           analytics_in=analytics_in)
+                           analytics_in=analytics_in, intragroup=intragroup)
     return DrillOut(rows=result.rows, count=result.count, limit=reports.DRILL_LIMIT,
                     debit=result.debit, credit=result.credit)
 
