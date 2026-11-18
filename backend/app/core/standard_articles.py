@@ -19,6 +19,8 @@ SYSTEM_KEYS: dict[str, str] = {
     "depreciation": "амортизация ОС",
     "asset_sale": "доход от продажи ОС",
     "asset_writeoff": "списание ОС",
+    "internal_revenue": "внутренняя выручка направления (бюджет ЦФО)",
+    "internal_purchase": "внутренняя закупка у другого направления (бюджет ЦФО)",
 }
 
 OP, INV, FIN = "operating", "investing", "financing"
@@ -72,4 +74,6 @@ STANDARD_ARTICLES: list[tuple] = [
     ("Инвестиции: оборудование", (INV, OUT), None, "08", "60.01", None),
     ("Инвестиции: ремонт и строительство", (INV, OUT), None, "08", "60.01", None),
     ("Инвестиции: прочие вложения", (INV, OUT), None, "08", "60.01", None),
+    ("Внутренняя выручка", None, "internal", "90.02", "90.01", "internal_revenue"),
+    ("Внутренняя закупка", None, "internal", "90.02", "90.01", "internal_purchase"),
 ]

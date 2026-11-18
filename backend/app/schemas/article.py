@@ -6,7 +6,7 @@ Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max
 Code = Annotated[str, StringConstraints(strip_whitespace=True, max_length=30)]
 Activity = Literal["operating", "investing", "financing"]
 Direction = Literal["inflow", "outflow"]
-Section = Literal["revenue", "cost", "selling", "admin", "other_income", "other_expense", "income_tax"]
+Section = Literal["revenue", "internal", "cost", "selling", "admin", "other_income", "other_expense", "income_tax"]
 
 
 class ArticleIn(BaseModel):

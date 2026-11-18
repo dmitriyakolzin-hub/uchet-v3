@@ -155,6 +155,8 @@ def _seed_common(conn) -> None:
 
     accounts = dict(conn.execute(sa.text("SELECT code, id FROM accounts")).all())
     for name, flow, section, debit, credit, key in STANDARD_ARTICLES:
+        if section == "internal":  # раздел появился позже (0055)
+            continue
         conn.execute(sa.text(
             "INSERT INTO articles (name, is_cash_flow, cash_flow_activity, cash_flow_direction, is_pl, pl_section,"
             " debit_account_id, credit_account_id, is_transfer) VALUES (:name, :cf, :activity, :direction, :pl,"

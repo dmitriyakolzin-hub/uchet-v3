@@ -101,6 +101,8 @@ def _sign(article: Article) -> int:
     """Множитель к «кредит − дебет», чтобы сумма была в привычном знаке: доходы, расходы, поступления, выплаты — плюсом.
     Статья ОПиУ: доход — кредит, расход — дебет; статья только ДДС: поступление — дебет денег, выплата — кредит."""
     if article.is_pl:
+        if article.pl_section == "internal":  # внутренняя выручка — доход, внутренняя закупка — расход
+            return -1 if article.system_key == "internal_purchase" else 1
         return 1 if article.pl_section in INCOME_SECTIONS else -1
     return -1 if article.cash_flow_direction == "inflow" else 1
 

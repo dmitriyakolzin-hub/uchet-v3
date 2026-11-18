@@ -7,6 +7,7 @@ const ACTIVITIES = [["operating", "Операционная"], ["investing", "И
 const DIRECTIONS = [["inflow", "Поступление"], ["outflow", "Выплата"]];
 const SECTIONS = [
   ["revenue", "Выручка"],
+  ["internal", "Внутренние обороты"],
   ["cost", "Себестоимость"],
   ["selling", "Коммерческие расходы"],
   ["admin", "Управленческие расходы"],

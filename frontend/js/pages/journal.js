@@ -2,11 +2,11 @@
 import { api } from "../api.js";
 import { articleIndex } from "../articles.js";
 import { openBulkEdit } from "../bulkedit.js";
-import { date, isoDate, money, monthBounds, sumMoney } from "../format.js";
+import { date, isoDate, money, monthBounds, parseNumber, sumMoney } from "../format.js";
 import { notesButton, setPendingNote } from "../notes.js";
 import { openOperation } from "../opform.js";
 import { multiSelect } from "../multiselect.js";
-import { el, makeTable, toast } from "../ui.js";
+import { el, makeTable, openForm as openDialogForm, toast } from "../ui.js";
 
 const ORG_KEY = "uchet3_org";
 const LIMIT = 500;
@@ -109,6 +109,33 @@ export async function renderJournal(view) {
   fillFilterLists();
 
   const newButton = el("button", { type: "button", onclick: () => openForm(null) }, "Новая операция");
+  // внутренняя передача между направлениями — бюджет ЦФО (docs/TZ.md, раздел 29, «Детали 20.1»)
+  const internalButton = el("button", { type: "button", class: "secondary", onclick: () => internalForm() }, "Внутренняя передача");
+  const canInternal = () => org.permissions.includes("post") && !org.restricted;
+  function internalForm() {
+    const cfos = [["", "— выберите —"], ...[...ref.cfos].sort((a, b) => ref.cfoLabel.get(a.id).localeCompare(ref.cfoLabel.get(b.id)))
+      .map((c) => [String(c.id), ref.cfoLabel.get(c.id)])];
+    openDialogForm({
+      title: "Внутренняя передача между направлениями",
+      fields: [
+        { name: "on_date", label: "Дата", type: "date", required: true },
+        { name: "from_cfo_id", label: "Кто передаёт (у него — внутренняя выручка)", type: "select", options: cfos, required: true },
+        { name: "to_cfo_id", label: "Кто получает (у него — внутренняя закупка)", type: "select", options: cfos, required: true },
+        { name: "amount", label: "Сумма, ₽", placeholder: "0,00", required: true,
+          hint: "По внутренним ценам. Деньги не движутся; у компании в целом выручка и закупка дают ноль" },
+        { name: "description", label: "Описание", placeholder: "например: продукция на СГП за неделю" },
+      ],
+      values: { on_date: isoDate(new Date()) },
+      submitText: "Провести",
+      onSubmit: async (v) => {
+        const r = await api.post(`/api/organizations/${org.id}/internal-transfers`, {
+          on_date: v.on_date, from_cfo_id: Number(v.from_cfo_id), to_cfo_id: Number(v.to_cfo_id),
+          amount: parseNumber(v.amount), description: v.description ?? "" });
+        toast(`Проведена операция № ${r.number}`);
+        await load();
+      },
+    });
+  }
   const bulkBar = el("div", { class: "bulk-bar", hidden: true });
   const summary = el("p", { class: "muted" });
   const tableBox = el("div");
@@ -130,7 +157,7 @@ export async function renderJournal(view) {
     el("div", { class: "page-head" }, el("h1", {}, "Журнал операций"), el("label", { class: "inline" }, "Организация ", orgSelect),
       notes.button),
     el("div", { class: "filters" }, f.date_from, f.date_to, ...Object.values(ms).map((m) => m.node), f.q),
-    el("div", { class: "page-head" }, summary, newButton),
+    el("div", { class: "page-head" }, summary, el("div", { class: "inline" }, internalButton, newButton)),
     bulkBar,
     tableBox,
   );
@@ -242,6 +269,7 @@ export async function renderJournal(view) {
   }
 
   newButton.hidden = !org.permissions.includes("draft");
+  internalButton.hidden = !canInternal();
   for (const node of Object.values(f)) node.addEventListener("change", load);
   f.q.addEventListener("input", () => { clearTimeout(f.q.timer); f.q.timer = setTimeout(load, 400); });
   orgSelect.addEventListener("change", async () => {
@@ -255,6 +283,7 @@ export async function renderJournal(view) {
     articles = articleName();
     fillFilterLists();
     newButton.hidden = !org.permissions.includes("draft");
+    internalButton.hidden = !canInternal();
     await load();
   });
 

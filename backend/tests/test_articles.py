@@ -35,7 +35,7 @@ def _post(client, env, **over):
 def test_standard_set_per_organization(client, env):
     h = env["h"]
     articles = list(_articles(client, env).values())
-    assert len(articles) == 46 and [a["level"] for a in articles] == [1] * 46
+    assert len(articles) == 48 and [a["level"] for a in articles] == [1] * 48
     accounts = {a["id"]: a for a in client.get("/api/accounts", headers=h).json()}
     for art in articles:
         for acc_id in (art["debit_account_id"], art["credit_account_id"]):
