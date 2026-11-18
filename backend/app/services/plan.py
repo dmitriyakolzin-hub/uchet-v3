@@ -51,8 +51,8 @@ from app.services.excel_import import (
 
 MONTH_TITLES = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь",
                 "Ноябрь", "Декабрь"]
-PL_ORDER = ["revenue", "cost", "selling", "admin", "other_income", "other_expense", "income_tax"]
-PL_GROUPS = {"revenue": "Выручка", "cost": "Себестоимость продаж", "selling": "Коммерческие расходы",
+PL_ORDER = ["revenue", "internal", "cost", "selling", "admin", "other_income", "other_expense", "income_tax"]
+PL_GROUPS = {"revenue": "Выручка", "internal": "Внутренние обороты", "cost": "Себестоимость продаж", "selling": "Коммерческие расходы",
              "admin": "Управленческие расходы", "other_income": "Прочие доходы", "other_expense": "Прочие расходы",
              "income_tax": "Налог на прибыль"}
 CF_GROUPS = {("operating", "inflow"): "Операционная: поступления", ("operating", "outflow"): "Операционная: выплаты",
@@ -134,10 +134,12 @@ def _posting(db: Session, kind: str, article: Article, cfo_id: int | None, amoun
     for side, account_id in (("debit", article.debit_account_id), ("credit", article.credit_account_id)):
         required = {a.kind for a in db.get(Account, account_id).analytics}
         analytics = AnalyticsIn()
-        if "cfo" in required and cfo_id is not None:
+        # внутренние обороты (бюджет ЦФО): план — только на своей стороне, иначе выручка и закупка ЦФО гасятся
+        own_side = side == ("debit" if article.system_key == "internal_purchase" else "credit")
+        if "cfo" in required and cfo_id is not None and (article.pl_section != "internal" or own_side):
             analytics.cfo = cfo_id
             analytics.executor = executor_id  # ЦФУ — там же, где ЦФО
-        if "pl_item" in required and article.is_pl:
+        if "pl_item" in required and article.is_pl and (article.pl_section != "internal" or own_side):
             analytics.pl_item = article.id
         if "cash_flow_item" in required and article.is_cash_flow:
             analytics.cash_flow_item = article.id

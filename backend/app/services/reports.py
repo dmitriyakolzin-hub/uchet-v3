@@ -47,6 +47,8 @@ class ReportFilter:
     # План вместо факта: месяц «ГГГГ-ММ» → версия бюджета, план которой берётся за этот месяц
     plan_versions: tuple[tuple[str, int], ...] | None = None
     executor_ids: tuple[int, ...] | None = None  # ЦФУ (отдел — вместе с исполнителями)
+    # Бюджет CEO: без внутренних оборотов между направлениями (docs/TZ.md, раздел 29, «Детали 20.1»)
+    ceo: bool = False
 
     @property
     def statuses(self) -> tuple[str, ...]:
@@ -63,6 +65,11 @@ class ReportFilter:
             budget_version_ids=None if self.plan_versions is None else sorted({v for _, v in self.plan_versions}),
             **conditions,
         )
+        if self.ceo:
+            c = query.selected_columns
+            internal = select(Article.id).where(Article.organization_id == self.organization_id,
+                                                Article.pl_section == "internal")
+            query = query.where(or_(c.pl_item.is_(None), c.pl_item.not_in(internal)))
         if self.plan_versions is not None:
             c = query.selected_columns
             query = query.where(or_(false(), *(
@@ -278,6 +285,37 @@ class Column:
     title: str
     date_from: dt.date
     date_to: dt.date
+    drill: dict | None = None  # колонка по ЦФО: условия расшифровки (cfo_id — ветка, a — «cfo:ID» / «cfo:none»)
+
+
+def cfo_columns(db: Session, f: ReportFilter) -> tuple[list[Column], dict]:
+    """Колонки «по направлениям» (docs/TZ.md, раздел 29, «Детали 20.1»): подчинённые выбранного ЦФО (без выбора —
+    направления единственной компании или сами компании), «своё» (записано на сам ЦФО), «Без ЦФО» и «Итого».
+    Возвращает колонки и сопоставление «ЦФО строки → ключ колонки»."""
+    cfos = list(db.scalars(select(Cfo).where(Cfo.organization_id == f.organization_id)))
+    paths = {c.id: [int(i) for i in str(c.path).split(".")] for c in cfos}
+    node = f.cfo_id
+    if node is None:
+        roots = [c for c in cfos if c.parent_id is None]
+        node = roots[0].id if len(roots) == 1 else None
+    by_id = {c.id: c for c in cfos}
+    children = sorted((c for c in cfos if c.parent_id == node), key=lambda c: (c.code or "~", c.id))
+    period = (f.date_from, f.date_to)
+    columns = [Column(f"cfo:{c.id}", f"{c.code} {c.name}".strip(), *period, {"cfo_id": c.id}) for c in children]
+    if node is not None:
+        columns.append(Column("own", f"{by_id[node].name} (своё)", *period, {"a": [f"cfo:{node}"]}))
+    if f.cfo_id is None:
+        columns.append(Column("none", "Без ЦФО", *period, {"a": ["cfo:none"]}))
+    columns.append(Column("total", "Итого", *period))
+    mapping: dict = {None: "none"}
+    for cfo_id, ids in paths.items():
+        if node is None:
+            mapping[cfo_id] = f"cfo:{ids[0]}"
+        elif cfo_id == node:
+            mapping[cfo_id] = "own"
+        elif node in ids and ids.index(node) + 1 < len(ids):
+            mapping[cfo_id] = f"cfo:{ids[ids.index(node) + 1]}"
+    return columns, mapping
 
 
 def month_columns(date_from: dt.date, date_to: dt.date) -> list[Column]:
@@ -486,6 +524,7 @@ def dds(db: Session, f: ReportFilter, include_all: bool = False) -> ColumnsResul
 
 PL_SECTIONS = [
     ("revenue", "Выручка"),
+    ("internal", "Внутренние обороты"),
     ("cost", "Себестоимость продаж"),
     ("gross", "Валовая прибыль"),
     ("selling", "Коммерческие расходы"),
@@ -499,38 +538,52 @@ PL_SECTIONS = [
 ]
 # Итоговые строки: сумма разделов, начиная сверху
 PL_TOTALS = {
-    "gross": ["revenue", "cost"],
-    "operating": ["revenue", "cost", "selling", "admin"],
-    "before_tax": ["revenue", "cost", "selling", "admin", "other_income", "other_expense"],
-    "net": ["revenue", "cost", "selling", "admin", "other_income", "other_expense", "income_tax"],
+    "gross": ["revenue", "internal", "cost"],
+    "operating": ["revenue", "internal", "cost", "selling", "admin"],
+    "before_tax": ["revenue", "internal", "cost", "selling", "admin", "other_income", "other_expense"],
+    "net": ["revenue", "internal", "cost", "selling", "admin", "other_income", "other_expense", "income_tax"],
 }
 
 
-def pl(db: Session, f: ReportFilter, include_all: bool = False) -> ColumnsResult:
+def pl(db: Session, f: ReportFilter, include_all: bool = False, by_cfo: bool = False) -> ColumnsResult:
     """ОПиУ по аналитике «Статья ОПиУ»: по кредиту — доход (+), по дебету — расход (−).
     Перенос затрат между счетами с этой аналитикой (20 → 90.02, 90 → 99) взаимно гасится;
-    реформация (99 → 84) в ОПиУ не попадает."""
-    columns = month_columns(f.date_from, f.date_to)
+    реформация (99 → 84) в ОПиУ не попадает. by_cfo — колонки по направлениям (cfo_columns) вместо месяцев;
+    f.ceo — без внутренних оборотов."""
     reformation = list(db.scalars(select(Account.id).where(Account.code == "84")))
     lines = f.lines(date_from=f.date_from, date_to=f.date_to, opening=False,
                     exclude_corr_account_ids=reformation).subquery()
+    if by_cfo:
+        columns, mapping = cfo_columns(db, f)
+        key = lines.c.cfo
+    else:
+        columns, mapping = month_columns(f.date_from, f.date_to), None
+        key = func.to_char(lines.c.op_date, "YYYY-MM")
     marked = select(
-        func.to_char(lines.c.op_date, "YYYY-MM").label("month"), lines.c.pl_item,
+        key.label("k"), lines.c.pl_item,
         case((lines.c.side == "credit", lines.c.amount_rub), else_=-lines.c.amount_rub).label("signed"),
     ).where(lines.c.pl_item.is_not(None)).subquery()
     grouped = db.execute(
-        select(marked.c.month, marked.c.pl_item, func.coalesce(func.sum(marked.c.signed), 0))
-        .group_by(marked.c.month, marked.c.pl_item)
+        select(marked.c.k, marked.c.pl_item, func.coalesce(func.sum(marked.c.signed), 0))
+        .group_by(marked.c.k, marked.c.pl_item)
     ).all()
 
     def empty() -> dict[str, Decimal]:
         return {c.key: ZERO for c in columns}
 
     by_article: dict[int, dict[str, Decimal]] = {}
-    for key, article_id, amount in grouped:
+    for k, article_id, amount in grouped:
+        column = mapping.get(k, "own") if mapping is not None else k
         values = by_article.setdefault(article_id, empty())
-        values[key] += Decimal(amount) + ZERO
+        values[column] += Decimal(amount) + ZERO
         values["total"] += Decimal(amount) + ZERO
+    if by_cfo:  # «своё» и «Без ЦФО» — только если там есть суммы
+        unused = {c.key for c in columns if c.key in ("own", "none")
+                  and not any(v[c.key] for v in by_article.values())}
+        columns = [c for c in columns if c.key not in unused]
+        for values in by_article.values():
+            for k in unused:
+                values.pop(k, None)
 
     if include_all:
         for article_id in db.scalars(select(Article.id).where(Article.organization_id == f.organization_id,
@@ -552,6 +605,8 @@ def pl(db: Session, f: ReportFilter, include_all: bool = False) -> ColumnsResult
         if key in PL_TOTALS:
             values = {c.key: sum((sections[s][c.key] for s in PL_TOTALS[key]), ZERO) for c in columns}
             rows.append(ReportRow(key, title, 0, "total", values))
+        elif key == "internal" and (f.ceo or not items[key]):
+            continue  # внутренние обороты: в бюджете CEO не видны, без передач раздел не нужен
         else:
             rows.append(ReportRow(key, title, 0, "section", sections[key]))
             rows += article_rows(db, f.organization_id, items[key], 1, "pl_item",

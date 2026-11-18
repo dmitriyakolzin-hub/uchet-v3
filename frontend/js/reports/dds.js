@@ -11,13 +11,19 @@ function escape(text) {
 }
 
 /** Отчёт с колонками по месяцам (ДДС, ОПиУ): строки приходят с сервера готовыми. */
-export function columnsReport({ box, ctx, path, hint, fileName, onDetails, firstTitle = "Статья", compare = false }) {
+export function columnsReport({ box, ctx, path, hint, fileName, onDetails, firstTitle = "Статья", compare = false,
+  byCfo = false }) {
   const tableBox = el("div");
   // «Сравнить» и «Косты» — в ДДС и ОПиУ (шаг 17.1)
   const bar = compare ? compareBar(() => load()) : null;
-  box.replaceChildren(el("p", { class: "muted" }, hint), ...(bar ? [bar.node] : []), tableBox);
+  // ОПиУ: колонки по месяцам или по направлениям — подчинённым ЦФО выбранного (шаг 20.1)
+  const by = byCfo ? el("select", { "aria-label": "Колонки" },
+    el("option", { value: "month" }, "По месяцам"), el("option", { value: "cfo" }, "По направлениям (ЦФО)")) : null;
+  by?.addEventListener("change", () => load());
+  box.replaceChildren(el("p", { class: "muted" }, hint),
+    ...(by ? [el("div", { class: "filters" }, el("label", {}, "Колонки ", by))] : []), ...(bar ? [bar.node] : []), tableBox);
   let data = null;
-  const extra = () => (bar ? bar.params() : {});
+  const extra = () => ({ ...(bar ? bar.params() : {}), ...(by && by.value === "cfo" ? { by: "cfo" } : {}) });
 
   const table = makeTable(tableBox, {
     index: "key",
@@ -51,6 +57,9 @@ export function columnsReport({ box, ctx, path, hint, fileName, onDetails, first
       ...(r.drill.account_id ? { account_id: r.drill.account_id } : {}),
       ...(r.drill.side ? { side: r.drill.side } : {}),
     };
+    // колонка-направление: ветка ЦФО или «записано на сам ЦФО» / «без ЦФО»
+    if (col.drill?.cfo_id) extra.cfo_id = col.drill.cfo_id;
+    if (col.drill?.a) extra.a = [...(r.drill.a ?? []), ...col.drill.a];
     openDrill({ org: ctx.org(), ref: ctx.ref(), filters: ctx.filters, extra,
       title: `${r.title}, ${col.title.toLowerCase()}`, onChanged: () => ctx.reload() });
   });

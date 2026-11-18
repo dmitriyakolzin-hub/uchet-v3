@@ -13,6 +13,7 @@ CASH_FLOW_ACTIVITIES = {
 CASH_FLOW_DIRECTIONS = {"inflow": "Поступление", "outflow": "Выплата"}
 PL_SECTIONS = {
     "revenue": "Выручка",
+    "internal": "Внутренние обороты",  # бюджет ЦФО: передачи между направлениями (docs/TZ.md, раздел 29)
     "cost": "Себестоимость",
     "selling": "Коммерческие расходы",
     "admin": "Управленческие расходы",
@@ -40,7 +41,7 @@ class Article(Base):
         ),
         CheckConstraint("cash_flow_direction IN ('inflow', 'outflow')", name="cash_flow_direction"),
         CheckConstraint(
-            "pl_section IN ('revenue', 'cost', 'selling', 'admin', 'other_income', "
+            "pl_section IN ('revenue', 'internal', 'cost', 'selling', 'admin', 'other_income', "
             "'other_expense', 'income_tax')",
             name="pl_section",
         ),

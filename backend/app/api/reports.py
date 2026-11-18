@@ -47,6 +47,7 @@ def report_filter(
     cfo_id: int | None = None,
     drafts: bool = False,
     executor_id: int | None = None,
+    view: Literal["cfo", "ceo"] = "cfo",
 ) -> ReportFilter:
     """Общие фильтры отчётов + проверка права просмотра и принадлежности юрлица и ЦФО организации."""
     get_organization_for(db, user, organization_id, Perm.VIEW)
@@ -71,7 +72,7 @@ def report_filter(
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="ЦФУ не найден в этой организации")
         executor_ids = (executor.id, *db.scalars(select(Executor.id).where(Executor.parent_id == executor.id)))
     return ReportFilter(organization_id, date_from, date_to, legal_entity_id, cfo_id, drafts,
-                        executor_ids=executor_ids)
+                        executor_ids=executor_ids, ceo=view == "ceo")
 
 
 Filter = Annotated[ReportFilter, Depends(report_filter)]
@@ -228,6 +229,7 @@ class ColumnOut(BaseModel):
     title: str
     date_from: dt.date
     date_to: dt.date
+    drill: dict | None = None  # колонка по ЦФО: cfo_id (ветка) или a («cfo:ID» / «cfo:none»)
 
 
 class ReportRowOut(BaseModel):
@@ -262,14 +264,25 @@ def _row_values(result: reports.ColumnsResult) -> dict[str, dict[str, Decimal]]:
 
 
 def _with_extras(db: Session, f: ReportFilter, out: ColumnsReportOut, build, compare: CompareMode,
-                 costs: bool) -> ColumnsReportOut:
-    if compare:
+                 costs: bool, by_cfo: bool = False) -> ColumnsReportOut:
+    if compare and by_cfo:  # колонки по направлениям: тот же отчёт за сдвинутый период, колонки — те же ЦФО
+        if compare == "avg6":
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                detail="Среднее за 6 месяцев — только для отчёта по месяцам")
+        months = -12 if compare == "year" else -1
+        other = replace(f, date_from=report_compare.shift(f.date_from, months),
+                        date_to=report_compare.shift(f.date_to, months))
+        values = _row_values(reports.pl(db, other, by_cfo=True))
+        for row in out.rows:
+            row.compare = {c.key: values.get(row.key, {}).get(c.key, Decimal("0.00")) for c in out.columns}
+        out.compare, out.compare_title = compare, report_compare.MODES[compare]
+    elif compare:
         values = report_compare.compare(f, compare, lambda other: _row_values(build(db, other)))
         for row in out.rows:
             row.compare = {c.key: values.get(row.key, {}).get(c.key, Decimal("0.00")) for c in out.columns}
         out.compare, out.compare_title = compare, report_compare.MODES[compare]
     if costs:
-        revenue = next((r for r in reports.pl(db, f).rows if r.key == "revenue"), None)
+        revenue = next((r for r in reports.pl(db, f, by_cfo=by_cfo).rows if r.key == "revenue"), None)
         out.revenue = {c.key: revenue.values.get(c.key, Decimal("0.00")) if revenue else Decimal("0.00")
                        for c in out.columns}
     return out
@@ -284,15 +297,20 @@ def _dds(db: Session, f: ReportFilter, compare: CompareMode = None, costs: bool 
     return _with_extras(db, f, out, reports.dds, compare, costs)
 
 
-def _pl(db: Session, f: ReportFilter, compare: CompareMode = None, costs: bool = False) -> ColumnsReportOut:
-    result = reports.pl(db, f)
+PlColumns = Literal["month", "cfo"]
+
+
+def _pl(db: Session, f: ReportFilter, compare: CompareMode = None, costs: bool = False,
+        by: PlColumns = "month") -> ColumnsReportOut:
+    result = reports.pl(db, f, by_cfo=by == "cfo")
     out = ColumnsReportOut(columns=[c.__dict__ for c in result.columns], rows=[r.__dict__ for r in result.rows])
-    return _with_extras(db, f, out, reports.pl, compare, costs)
+    return _with_extras(db, f, out, reports.pl, compare, costs, by_cfo=by == "cfo")
 
 
 @router.get("/pl", response_model=ColumnsReportOut)
-def get_pl(f: Filter, db: DbSession, compare: CompareMode = None, costs: bool = False):
-    return _pl(db, f, compare, costs)
+def get_pl(f: Filter, db: DbSession, compare: CompareMode = None, costs: bool = False, by: PlColumns = "month"):
+    """ОПиУ; by=cfo — колонки по направлениям; view=ceo — без внутренних оборотов (docs/TZ.md, раздел 29)."""
+    return _pl(db, f, compare, costs, by)
 
 
 def _balance(db: Session, f: ReportFilter) -> ColumnsReportOut:
@@ -519,8 +537,9 @@ def get_dds_xlsx(f: Filter, db: DbSession, compare: CompareMode = None, costs: b
 
 
 @router.get("/pl.xlsx")
-def get_pl_xlsx(f: Filter, db: DbSession, compare: CompareMode = None, costs: bool = False):
-    content = _columns_xlsx("Отчёт о прибылях и убытках", _pl(db, f, compare, costs), _subtitle(db, f))
+def get_pl_xlsx(f: Filter, db: DbSession, compare: CompareMode = None, costs: bool = False, by: PlColumns = "month"):
+    title = "Отчёт о прибылях и убытках" + (" (бюджет CEO)" if f.ceo else "")
+    content = _columns_xlsx(title, _pl(db, f, compare, costs, by), _subtitle(db, f))
     return _xlsx(content, f"pl_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
 
 

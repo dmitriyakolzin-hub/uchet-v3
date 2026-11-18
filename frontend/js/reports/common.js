@@ -27,6 +27,19 @@ export function reportFilters({ ref, scope = null, onChange, onExcel }) {
   const cfo = el("select", { "aria-label": "ЦФО" });
   const executor = el("select", { "aria-label": "ЦФУ" });
   const drafts = el("input", { type: "checkbox", "aria-label": "С черновиками" });
+  // бюджет ЦФО — с внутренними оборотами направлений, бюджет CEO — без них (docs/TZ.md, раздел 29)
+  const VIEW_KEY = "reports.view";
+  const view = el("select", { "aria-label": "Бюджет ЦФО / CEO",
+    title: "ЦФО — с внутренней выручкой и закупками направлений; CEO — только продажи клиентам" },
+  el("option", { value: "cfo" }, "Бюджет ЦФО"), el("option", { value: "ceo" }, "Бюджет CEO"));
+  try {
+    if (localStorage.getItem(VIEW_KEY) === "ceo") view.value = "ceo";
+  } catch { /* без памяти браузера */ }
+  view.addEventListener("change", () => {
+    try {
+      localStorage.setItem(VIEW_KEY, view.value);
+    } catch { /* без памяти браузера */ }
+  });
 
   function fillLists(r, branchRoot = scope) {
     scope = branchRoot;
@@ -43,10 +56,10 @@ export function reportFilters({ ref, scope = null, onChange, onExcel }) {
     executor.hidden = !executors.length;
   }
   fillLists(ref);
-  for (const input of [dateFrom, dateTo, entity, cfo, executor, drafts]) input.addEventListener("change", () => onChange());
+  for (const input of [dateFrom, dateTo, entity, cfo, executor, drafts, view]) input.addEventListener("change", () => onChange());
 
   const box = el("div", { class: "filters" },
-    dateFrom, dateTo, entity, cfo, executor,
+    dateFrom, dateTo, entity, cfo, executor, view,
     el("label", { class: "inline check-inline" }, drafts, "с черновиками"),
     onExcel ? el("button", { type: "button", class: "secondary push-right", onclick: () => onExcel() }, "Скачать в Excel") : null,
   );
@@ -76,6 +89,7 @@ export function reportFilters({ ref, scope = null, onChange, onExcel }) {
       if (cfo.value) p.set("cfo_id", cfo.value);
       if (executor.value) p.set("executor_id", executor.value);
       if (drafts.checked) p.set("drafts", "true");
+      if (view.value === "ceo") p.set("view", "ceo");
       for (const [k, v] of Object.entries(extra)) {
         if (Array.isArray(v)) v.forEach((x) => p.append(k, x));
         else if (v !== null && v !== undefined) p.set(k, v);
