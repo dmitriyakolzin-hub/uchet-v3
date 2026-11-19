@@ -842,4 +842,12 @@
   другого юрлица организации); `pl()` при `f.ceo` (не план) — строки `intragroup:revenue` (−) и `intragroup:cost` (+),
   в колонке продавца при `by_cfo`; `drill(intragroup=True)`, `/reports/lines?intragroup=true`; drill передаётся в ОПиУ
   и план/факте. Тестов 410.
+- 2026-11-18 — 20.2 влита (PR 82). Шаг 20.3 (ветка `etap-20-3-sku-prices`), `docs/TZ.md`, раздел 29 «Детали 20.3».
+  Миграция 0056: `nomenclature_prices` (организация, номенклатура, ЦФО или NULL — общая, `valid_from`, цены production /
+  logistics / sale / discount, `vat_included`, `vat_rate`; уникальны номенклатура + ЦФО + дата, NULLS NOT DISTINCT),
+  `cfos.chain_link` (production/logistics/trade/discount; `models/cfo.CHAIN_LINKS`). `app/services/prices.py`: `chain_link`
+  (своё или родителя), `price_on` (ЦФО → родители → общая, последняя ≤ даты, по виду цены), `without_vat`,
+  `TRANSFER_PRICE`, Excel (`prices_xlsx`, `import_prices`). API `app/api/prices.py` (`/nomenclature-prices` — список
+  VIEW, создание / правка / удаление EDIT_REFERENCE, `/lookup`), `/import/prices.xlsx` и `/import/prices`. Интерфейс:
+  «Звено» у ЦФО, «цены» у номенклатуры (`openPrices`), «Цены в Excel» / «Загрузить цены». Тестов 411, ui_smoke дополнен.
 

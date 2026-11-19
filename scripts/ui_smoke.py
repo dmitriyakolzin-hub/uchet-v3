@@ -229,7 +229,10 @@ with sync_playwright() as p:
     page.locator(".tabulator-row", has_text="АВМВ").locator(".tabulator-cell[tabulator-field=_add]").click()
     d = dialog_fill(page, {"name": "Торговля"})
     expect(d.locator("[name=parent_id] option:checked")).to_have_text("АВМВ")  # родитель подставлен
+    d.locator("[name=chain_link]").select_option("trade")  # звено цепочки (шаг 20.3)
     d.locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="Торговля").locator(
+        ".tabulator-cell[tabulator-field=chain_link]")).to_have_text("Торговля")
     page.locator(".tabulator-row", has_text="Торговля").locator(".tabulator-cell[tabulator-field=_add]").click()
     d = dialog_fill(page, {"name": "Филиал Юг"})
     d.locator("button[type=submit]").click()
@@ -257,6 +260,25 @@ with sync_playwright() as p:
     d.locator("[name=unit_id]").select_option(label="кг — Килограмм")
     d.locator("button[type=submit]").click()
     expect(page.locator(".tabulator-row", has_text="Кофе зерновой")).to_contain_text("кг")
+    # внутренние цены (шаг 20.3): общая цена и своя цена филиала с НДС
+    page.locator(".tabulator-row", has_text="Кофе зерновой").locator(".tabulator-cell[tabulator-field=_prices]").click()
+    prices = page.locator("dialog[open]", has_text="Цены: Кофе зерновой")
+    prices.locator("button", has_text="Новые цены").click()
+    d = page.locator("dialog[open]").last
+    d.locator("[name=production]").fill("500")
+    d.locator("[name=sale]").fill("1 200,50")
+    d.locator("button[type=submit]").click()
+    expect(prices.locator(".tabulator-row", has_text="вся организация")).to_contain_text("1 200,50")
+    prices.locator("button", has_text="Новые цены").click()
+    d = page.locator("dialog[open]").last
+    d.locator("[name=cfo_id]").select_option(label="АВМВ / Торговля / Филиал Юг")
+    d.locator("[name=sale]").fill("1 500")
+    d.locator("[name=vat_included]").check()
+    d.locator("[name=vat_rate]").select_option("20")
+    d.locator("button[type=submit]").click()
+    expect(prices.locator(".tabulator-row", has_text="Филиал Юг")).to_contain_text("с НДС 20 %")
+    page.screenshot(path=f"{OUT}/46_prices.png", full_page=True)
+    prices.locator("button", has_text="Закрыть").click()
 
     page.click("button.tab:has-text('Сотрудники')")
     page.click("text=Добавить сотрудника")

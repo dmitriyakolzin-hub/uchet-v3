@@ -9,6 +9,15 @@ from app.db.base import Base
 from app.db.types import Ltree
 from app.models.reference import OrgScoped
 
+# Звено цепочки «производство → логистика → торговля → дисконт» (docs/TZ.md, раздел 29, «Детали 20.3»):
+# по нему при внутренней передаче берётся цена; подчинённые ЦФО наследуют звено родителя.
+CHAIN_LINKS = {
+    "production": "Производство",
+    "logistics": "Логистика",
+    "trade": "Торговля",
+    "discount": "Дисконт",
+}
+
 CFO_LEVELS = {
     1: "Компания",
     2: "Направление",
@@ -26,6 +35,7 @@ class Cfo(OrgScoped, Base):
         CheckConstraint("level BETWEEN 1 AND 5", name="level"),
         CheckConstraint("(level = 1) = (parent_id IS NULL)", name="root_has_no_parent"),
         CheckConstraint("level = 1 OR legal_entity_id IS NULL", name="legal_entity_only_for_company"),
+        CheckConstraint("chain_link IN ('production', 'logistics', 'trade', 'discount')", name="chain_link"),
         CheckConstraint("nlevel(path) = level", name="path_depth"),
         Index("ix_cfos_path", "path", postgresql_using="gist"),
         Index("uq_cfos_organization_code", "organization_id", "code", unique=True, postgresql_where=text("code <> ''")),
@@ -44,6 +54,7 @@ class Cfo(OrgScoped, Base):
     )
     # в ЦФО есть касса (счёт 50): строка кассы на «Деньгах» видна и без операций
     has_cash: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    chain_link: Mapped[str | None] = mapped_column(String(20))  # CHAIN_LINKS; None — как у родителя
 
 
 class Employee(OrgScoped, Base):
