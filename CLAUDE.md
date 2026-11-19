@@ -850,4 +850,14 @@
   `TRANSFER_PRICE`, Excel (`prices_xlsx`, `import_prices`). API `app/api/prices.py` (`/nomenclature-prices` — список
   VIEW, создание / правка / удаление EDIT_REFERENCE, `/lookup`), `/import/prices.xlsx` и `/import/prices`. Интерфейс:
   «Звено» у ЦФО, «цены» у номенклатуры (`openPrices`), «Цены в Excel» / «Загрузить цены». Тестов 411, ui_smoke дополнен.
+- 2026-11-19 — 20.3 влита (PR 83). Шаг 20.4 (ветка `etap-20-4-transfers`), `docs/TZ.md`, раздел 29 «Детали 20.4».
+  Миграция 0057: `internal_transfers` (номер, дата, откуда/куда ЦФО, итог, источник manual/excel/journal,
+  `source_operation_id` — уникален с парой ЦФО у проведённых, `operation_id`, posted/cancelled), `internal_transfer_lines`
+  (товар или текст, количество, вид цены, цена без НДС, сумма). `internal_turnover`: `price_kind` (по звену передающего),
+  `price_lines` (цена для ЦФО получателя через `prices.price_on`, сумма вручную), `create_document` (операция через
+  `create_transfer`), `cancel_document`, `journal_proposals` (Дт/Кт 10/41/43 со складами разных звеньев).
+  `app/services/transfer_import.py` (Excel, группировка дата + откуда + куда). API: `POST /internal-transfers` (строки или
+  сумма), `/preview`, список, карточка, `/cancel`, `/journal`, `/from-journal`; `/import/templates/internal-transfers.xlsx`,
+  `/import/internal-transfers`. Интерфейс: `js/transfers.js: openTransfers` (кнопка «Внутренние передачи» в журнале).
+  Тестов 412, ui_smoke дополнен.
 

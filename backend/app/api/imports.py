@@ -9,7 +9,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api.access import branch_ids, cfo_scope, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.services import article_import, employee_import, prices
+from app.services import article_import, employee_import, prices, transfer_import
 from app.services import excel_import as xl
 
 router = APIRouter(prefix="/api/organizations/{organization_id}/import", tags=["Загрузка из Excel"])
@@ -169,6 +169,37 @@ async def import_prices(organization_id: int, request: Request, user: CurrentUse
     db.commit()
     return PricesImportOut(rows=result.rows, created=result.created, updated=result.updated,
                               errors=[e.__dict__ for e in result.errors])
+
+
+# --- внутренние передачи по количеству (docs/TZ.md, раздел 29, «Детали 20.4») ---
+
+
+@router.get("/templates/internal-transfers.xlsx")
+def transfers_template(organization_id: int, user: CurrentUser, db: DbSession):
+    get_organization_for(db, user, organization_id, Perm.POST)
+    return _xlsx(transfer_import.template(), "internal_transfers_template.xlsx")
+
+
+class TransfersImportOut(BaseModel):
+    rows: int
+    created: list[int]
+    errors: list[RowErrorOut]
+
+
+@router.post("/internal-transfers", response_model=TransfersImportOut)
+async def import_transfers(organization_id: int, request: Request, user: CurrentUser, db: DbSession):
+    """Тело запроса — файл .xlsx как есть. Создаёт и проводит документы передачи."""
+    get_organization_for(db, user, organization_id, Perm.POST)
+    if cfo_scope(db, user, organization_id) is not None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Раздел недоступен руководителю ЦФО")
+    raw = await _body(request)
+    try:
+        result = await run_in_threadpool(transfer_import.import_transfers, db, organization_id, user, raw)
+    except xl.ExcelError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    db.commit()
+    return TransfersImportOut(rows=result.rows, created=result.created, errors=[e.__dict__ for e in result.errors])
 
 
 # --- справочник статей (docs/TZ.md, раздел 19, «Детали 9.2») ---

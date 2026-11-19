@@ -19,7 +19,7 @@ from app.models.journal import Operation, OperationEvent, Posting
 from app.models.membership import Membership
 from app.models.note import Note, NoteLabel
 from app.models.organization import LegalEntity, Organization
-from app.models.price import NomenclaturePrice
+from app.models.price import InternalTransfer, InternalTransferLine, NomenclaturePrice
 from app.models.payroll import EmployeeSalary, PayoutLine, PayoutSheet, PayrollLine, PayrollRun
 from app.models.reference import (
     Bank,
@@ -79,6 +79,8 @@ __all__ = [
     "NoteLabel",
     "Nomenclature",
     "NomenclaturePrice",
+    "InternalTransfer",
+    "InternalTransferLine",
     "Operation",
     "OperationEvent",
     "Organization",
