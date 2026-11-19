@@ -12,6 +12,7 @@ from app.api import (
     asset_inventory,
     internal_turnover,
     prices,
+    volumes,
     asset_operation,
     asset_requests,
     assets,
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(asset_inventory.router)
     app.include_router(internal_turnover.router)
     app.include_router(prices.router)
+    app.include_router(volumes.router)
 
     # Запрет изменений в закрытом периоде срабатывает при записи в базу (app/services/period.py) —
     # из любого раздела; ответ — понятная ошибка, а не «внутренняя ошибка сервера»

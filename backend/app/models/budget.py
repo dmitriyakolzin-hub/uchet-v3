@@ -164,3 +164,30 @@ class PlanChange(Base):
     new_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+VOLUME_KINDS = {"sale": "Продажа", "discount": "На дисконт", "waste": "Утиль"}
+
+
+class PlanVolume(Base):
+    """План объёмов (docs/TZ.md, раздел 29, «Детали 20.6»): точка (ЦФО торговли или дисконта) + товар + вид
+    (продажа / на дисконт / утиль; у «на дисконт» — какой дисконт) + месяц → количество."""
+
+    __tablename__ = "plan_volumes"
+    __table_args__ = (
+        Index("uq_plan_volumes_cell", "budget_version_id", "cfo_id", "nomenclature_id", "kind", "discount_cfo_id",
+              "month", unique=True, postgresql_nulls_not_distinct=True),
+        CheckConstraint("kind IN ('sale', 'discount', 'waste')", name="kind"),
+        CheckConstraint("(kind = 'discount') = (discount_cfo_id IS NOT NULL)", name="discount_target"),
+        CheckConstraint("month BETWEEN 1 AND 12", name="month"),
+        CheckConstraint("quantity > 0", name="quantity"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    budget_version_id: Mapped[int] = mapped_column(ForeignKey("budget_versions.id", ondelete="CASCADE"), index=True)
+    cfo_id: Mapped[int] = mapped_column(ForeignKey("cfos.id", ondelete="CASCADE"))
+    nomenclature_id: Mapped[int] = mapped_column(ForeignKey("nomenclature.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(10))
+    discount_cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="CASCADE"))
+    month: Mapped[int] = mapped_column(SmallInteger)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 3))

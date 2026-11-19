@@ -400,7 +400,7 @@ def get_cells(version_id: int, user: CurrentUser, db: DbSession, kind: PlanKind,
     editable = kind != "inv" and version.status != "archived" and (
         guard.supervisor or (guard.can_draft and version.status == "draft"))
     for c in cells:
-        c["editable"] = editable and not c["project_id"] and guard.can_edit(c["cfo_id"])
+        c["editable"] = editable and not c["project_id"] and not c["auto"] and guard.can_edit(c["cfo_id"])
     return PlanCellsOut(version=_version_out(version), budget_title=budget.title, year=budget.year, months=months,
                         editable=editable, articles=[{"id": a.id, "label": a.display_name} for a in articles],
                         cells=cells, total=sum((c["amount"] for c in cells), Decimal("0.00")),

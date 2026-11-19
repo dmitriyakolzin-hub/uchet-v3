@@ -869,4 +869,14 @@
   API `GET/PUT /nomenclature/{id}/components`, `/import/routes.xlsx`, `/import/routes`. У ЦФО `chain_link` в
   `nullable_fields` (можно очистить). Интерфейс: «Маршрут», «Производство», «состав» (`openComponents`), «Маршруты
   в Excel» / «Загрузить маршруты». Тестов 413, ui_smoke дополнен.
+- 2026-11-19 — 20.5 влита (PR 85). Шаг 20.6 (ветка `etap-20-6-volumes`), `docs/TZ.md`, раздел 29 «Детали 20.6».
+  Миграция 0059: `plan_volumes` (версия, точка, товар, kind sale/discount/waste, `discount_cfo_id`, месяц, количество;
+  уникальны NULLS NOT DISTINCT), `operations.plan_auto` (входит в `uq_operations_plan_cell`; при откате такие ячейки
+  удаляются). `plan`: `_cell_op`/`set_cells(auto=)`, `grid` — строка `auto` «(из объёмов)», `cell_list` — `auto`
+  (не `editable`), `copy_plan` копирует `plan_auto` и объёмы, `plan_xlsx` пропускает auto. `app/services/volumes.py`:
+  `validate`, `set_volumes`, `grid`, `calculate` (цепочка по маршрутам, цены через `prices.price_on`, недостающее —
+  `missing`, запись через `plan.set_cells(auto=True, guard)`), Excel. API `app/api/volumes.py`
+  (`/budget-versions/{id}/volumes` GET/PUT/POST-файл, `/volumes.xlsx`, `/volumes/calculate`). Интерфейс: вкладка
+  «План объёмов» (`js/volumes.js: renderVolumes`), в сетке ОПиУ строки «из объёмов» не редактируются. Тестов 414,
+  ui_smoke дополнен.
 

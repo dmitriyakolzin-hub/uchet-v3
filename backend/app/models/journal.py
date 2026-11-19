@@ -59,8 +59,9 @@ class Operation(Base):
         CheckConstraint("(status = 'plan') = (budget_version_id IS NOT NULL)", name="plan_has_version"),
         CheckConstraint("plan_kind IS NULL OR plan_kind IN ('pl', 'cf', 'inv')", name="plan_kind"),
         # ячейка бюджета: версия + вид плана (ОПиУ / ДДС) + ЦФО + статья + месяц — одна плановая операция
+        # plan_auto — ячейка посчитана из плана объёмов (docs/TZ.md, раздел 29, «Детали 20.6»), рядом с ручной
         Index("uq_operations_plan_cell", "budget_version_id", "plan_kind", "plan_cfo_id", "plan_executor_id",
-              "plan_project_id", "article_id", "op_date",
+              "plan_project_id", "article_id", "op_date", "plan_auto",
               unique=True, postgresql_nulls_not_distinct=True,
               postgresql_where=text("budget_version_id IS NOT NULL")),
         Index("ix_operations_organization_date", "organization_id", "op_date"),
@@ -94,6 +95,8 @@ class Operation(Base):
     plan_executor_id: Mapped[int | None] = mapped_column(ForeignKey("executors.id", ondelete="RESTRICT"))  # ЦФУ
     # инвестпроект: план вложений (inv) и созданная по нему плановая оплата (cf)
     plan_project_id: Mapped[int | None] = mapped_column(ForeignKey("investment_projects.id", ondelete="CASCADE"))
+    # плановая ячейка посчитана из плана объёмов × цены (руками не правится, пересчитывается кнопкой)
+    plan_auto: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     # Выплата по ведомости (docs/TZ.md, раздел 21): при проведении суммы по сотрудникам сверяются с ведомостью,
     # ведомость отмечается оплаченной; возврат в черновик или аннулирование снимает отметку
     payout_sheet_id: Mapped[int | None] = mapped_column(ForeignKey("payout_sheets.id", ondelete="SET NULL"), index=True)
