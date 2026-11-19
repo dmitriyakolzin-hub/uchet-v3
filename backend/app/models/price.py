@@ -20,6 +20,7 @@ PRICE_KINDS = {
     "logistics": "Цена логистики",  # логистика → торговля
     "sale": "Цена продажи",  # торговля → клиент (план выручки)
     "discount": "Цена дисконта",  # торговля → дисконт
+    "purchase": "Цена закупки",  # плановая закупка материалов и покупных товаров (себестоимость в плане)
 }
 VAT_RATES = (0, 5, 7, 10, 20, 22)
 
@@ -31,7 +32,7 @@ class NomenclaturePrice(Base):
               postgresql_nulls_not_distinct=True),
         CheckConstraint("vat_rate IN (0, 5, 7, 10, 20, 22)", name="vat_rate"),
         CheckConstraint("coalesce(production, 0) >= 0 AND coalesce(logistics, 0) >= 0 AND coalesce(sale, 0) >= 0"
-                        " AND coalesce(discount, 0) >= 0", name="not_negative"),
+                        " AND coalesce(discount, 0) >= 0 AND coalesce(purchase, 0) >= 0", name="not_negative"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -43,6 +44,7 @@ class NomenclaturePrice(Base):
     logistics: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     sale: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     discount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    purchase: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     vat_included: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # цены с НДС
     vat_rate: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

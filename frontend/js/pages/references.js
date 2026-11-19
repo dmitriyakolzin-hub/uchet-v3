@@ -194,8 +194,10 @@ function productionCfos(cfos) {
 }
 
 // Состав доготавливаемого товара (docs/TZ.md, раздел 29, «Детали 20.5»): составляющие и норма на 1 единицу
+// у продукции производства то же окно — «Техкарта» (docs/TZ.md, раздел 29, «Детали 20.7»): материалы и норма на 1 ед.
 async function openComponents(item, d, canEdit) {
-  const url = `/api/nomenclature/${item.id}/components`;
+  const recipe = item.route === "product";
+  const url = `/api/nomenclature/${item.id}/${recipe ? "recipe" : "components"}`;
   let parts;
   let goods;
   try {
@@ -204,12 +206,12 @@ async function openComponents(item, d, canEdit) {
     toast(err.message, "error");
     return;
   }
-  const options = goods.filter((g) => g.is_active && ["purchased", "product"].includes(g.route) && g.id !== item.id)
+  const options = goods.filter((g) => g.is_active && g.id !== item.id && (recipe || ["purchased", "product"].includes(g.route)))
     .sort((a, b) => a.name.localeCompare(b.name));
   const lines = el("tbody");
   const addLine = (part = null) => {
     const select = el("select", { "aria-label": "Составляющая", disabled: !canEdit },
-      el("option", { value: "" }, "— составляющая —"),
+      el("option", { value: "" }, recipe ? "— материал —" : "— составляющая —"),
       ...options.map((g) => el("option", { value: g.id, selected: part?.component_id === g.id }, g.article ? `${g.article} ${g.name}` : g.name)));
     const qty = el("input", { type: "text", inputmode: "decimal", value: part ? String(Number(part.quantity)).replace(".", ",") : "",
       "aria-label": "Норма на 1 шт.", size: 10, disabled: !canEdit });
@@ -222,17 +224,20 @@ async function openComponents(item, d, canEdit) {
   if (!parts.length && canEdit) addLine();
   const error = el("p", { class: "error", role: "alert" });
   const dialog = el("dialog", { class: "dialog" },
-    el("h2", {}, `Состав: ${item.name}`),
-    el("p", { class: "muted" }, "Из чего доготавливается товар на точке и сколько составляющей идёт на 1 единицу. "
+    el("h2", {}, `${recipe ? "Техкарта" : "Состав"}: ${item.name}`),
+    el("p", { class: "muted" }, recipe
+      ? "Какие материалы и сколько уходит на 1 единицу продукции. Себестоимость признаётся при передаче на СГП: материалы "
+        + "списываются со склада сырья по средней цене (не хватает — по цене закупки); в плане — по цене закупки."
+      : "Из чего доготавливается товар на точке и сколько составляющей идёт на 1 единицу. "
       + "Составляющая — полуфабрикат производства или покупной товар; по плану продаж она пойдёт по своей цепочке."),
     el("table", { class: "recon" }, el("thead", {}, el("tr", {}, el("th", {}, "Составляющая"), el("th", {}, "Норма на 1 шт."), el("th", {}, ""))), lines),
-    canEdit ? el("button", { type: "button", class: "link", onclick: () => addLine() }, "+ составляющая") : "",
+    canEdit ? el("button", { type: "button", class: "link", onclick: () => addLine() }, recipe ? "+ материал" : "+ составляющая") : "",
     error,
     el("div", { class: "form-actions" },
       canEdit ? el("button", { type: "button", onclick: async () => {
         try {
           await api.put(url, [...lines.children].map((tr) => tr.read()).filter((p) => p.component_id));
-          toast("Состав сохранён");
+          toast(recipe ? "Техкарта сохранена" : "Состав сохранён");
           dialog.close();
         } catch (err) {
           error.textContent = err.message;
@@ -276,7 +281,8 @@ function routesExcel(org) {
 }
 
 const CHAIN_LINKS = [["production", "Производство"], ["logistics", "Логистика"], ["trade", "Торговля"], ["discount", "Дисконт"]];
-const PRICE_KINDS = [["production", "Производства"], ["logistics", "Логистики"], ["sale", "Продажи"], ["discount", "Дисконта"]];
+const PRICE_KINDS = [["production", "Производства"], ["logistics", "Логистики"], ["sale", "Продажи"], ["discount", "Дисконта"],
+  ["purchase", "Закупки"]];
 const VAT_OPTIONS = [["0", "без НДС"], ["5", "5 %"], ["7", "7 %"], ["10", "10 %"], ["20", "20 %"], ["22", "22 %"]];
 
 // Внутренние цены товара (docs/TZ.md, раздел 29, «Детали 20.3»): общие и по филиалам / магазинам, с даты
@@ -716,11 +722,11 @@ const TABS = [
       { title: "Ед. изм.", field: "unit_id", width: 100, formatter: lookup(d.units, (u) => u.short_name) },
       { title: "Маршрут", field: "route", width: 170, formatter: titleOf(ROUTES) },
       { title: "Производство", field: "producer_cfo_id", width: 150, formatter: lookup(d.cfos, (c) => c.name) },
-      { title: "", field: "_parts", width: 80, hozAlign: "center", headerSort: false,
-        formatter: (c) => (c.getRow().getData().route === "assembled" ? "состав" : ""),
+      { title: "", field: "_parts", width: 90, hozAlign: "center", headerSort: false,
+        formatter: (c) => ({ assembled: "состав", product: "техкарта" })[c.getRow().getData().route] ?? "",
         cssClass: "link-like", cellClick: (_e, c) => {
           const row = c.getRow().getData();
-          if (row.route === "assembled") openComponents(row, d, state.canEdit);
+          if (row.route === "assembled" || row.route === "product") openComponents(row, d, state.canEdit);
         } },
       { title: "", field: "_prices", width: 80, hozAlign: "center", headerSort: false, formatter: () => "цены",
         cssClass: "link-like", cellClick: (_e, c) => openPrices(c.getRow().getData(), d, state.canEdit) },
@@ -748,6 +754,7 @@ const TABS = [
       return [
         { title: "Наименование", field: "name", widthGrow: 2 },
         { title: "ЦФО", field: "cfo_id", widthGrow: 3, formatter: (c) => labels.get(c.getValue()) ?? "" },
+        { title: "Склад сырья", field: "is_raw", width: 120, hozAlign: "center", formatter: (c) => (c.getValue() ? "да" : "") },
       ];
     },
     fields: (d) => {
@@ -756,6 +763,8 @@ const TABS = [
         { name: "name", label: "Наименование", required: true, placeholder: "Склад магазина на Ленина" },
         { name: "cfo_id", label: "ЦФО", type: "select", numeric: true,
           options: [["", "— не указан —"], ...d.cfos.map((c) => [String(c.id), labels.get(c.id) + (c.is_active ? "" : " (архив)")])] },
+        { name: "is_raw", label: "Склад сырья производства", type: "checkbox",
+          hint: "С него по техкарте списываются материалы при передаче продукции на СГП; склад сырья — один" },
       ];
     },
   },

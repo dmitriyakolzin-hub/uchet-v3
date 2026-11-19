@@ -15,7 +15,8 @@ from sqlalchemy.orm import Session
 from app.api.access import forbid_scoped, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import Cfo, Operation, User
+from app.models import Account, Cfo, Nomenclature, Operation, Posting, User
+from app.models.journal import analytic_column
 from app.models.price import PRICE_KINDS, TRANSFER_SOURCES, InternalTransfer, InternalTransferLine
 from app.services import internal_turnover as service
 
@@ -80,6 +81,7 @@ class TransferOut(BaseModel):
     source_operation_number: int | None
     status: str
     lines: list[LineOut] = []
+    materials: list[dict] = []  # списание по техкарте при передаче производства на СГП (docs/TZ.md, «Детали 20.7»)
 
 
 class ProposalOut(BaseModel):
@@ -136,8 +138,20 @@ def _out(db: Session, docs: list[InternalTransfer], with_lines: bool = False) ->
         if with_lines:
             out.lines = [_line_out(line) for line in db.scalars(select(InternalTransferLine).where(
                 InternalTransferLine.transfer_id == d.id).order_by(InternalTransferLine.id))]
+            if d.operation_id:
+                out.materials = _materials(db, d.operation_id)
         result.append(out)
     return result
+
+
+def _materials(db: Session, operation_id: int) -> list[dict]:
+    material = getattr(Posting, analytic_column("credit", "nomenclature"))
+    rows = db.execute(select(Nomenclature.name, Posting.quantity, Posting.amount)
+                      .join(Account, Account.id == Posting.credit_account_id)
+                      .join(Nomenclature, Nomenclature.id == material)
+                      .where(Posting.operation_id == operation_id, Account.code == "10")
+                      .order_by(Posting.line_no)).all()
+    return [{"title": n, "quantity": q, "amount": a} for n, q, a in rows]
 
 
 def _can_post(db: Session, user: User, organization_id: int) -> None:

@@ -879,4 +879,13 @@
   (`/budget-versions/{id}/volumes` GET/PUT/POST-файл, `/volumes.xlsx`, `/volumes/calculate`). Интерфейс: вкладка
   «План объёмов» (`js/volumes.js: renderVolumes`), в сетке ОПиУ строки «из объёмов» не редактируются. Тестов 414,
   ui_smoke дополнен.
+- 2026-11-19 — 20.6 влита (PR 86). Шаг 20.7 (ветка `etap-20-7-recipes`), `docs/TZ.md`, раздел 29 «Детали 20.7».
+  Миграция 0060: `nomenclature_recipes` (продукция, материал RESTRICT, норма), `nomenclature_prices.purchase`,
+  `warehouses.is_raw` (уникален в организации; хук `_check_warehouse` снимает отметку с прежнего), системная статья
+  `cost_of_sales` «Себестоимость по техкарте» (Дт 90.02 — Кт 10; в 0030 при откате пропускается). `routes.set_recipe` /
+  `recipe_of` (Excel маршрутов: составляющие продукции = техкарта); `internal_turnover.recipe_writeoff` (средняя по
+  складу сырья через `select_lines`, иначе цена закупки) и `writeoff_postings` — в операцию передачи производства
+  (`create_transfer(extra_postings=)`); `TransferOut.materials`. `volumes.calculate`: себестоимость производства по
+  техкарте и логистики по покупным (цена закупки). API `GET/PUT /nomenclature/{id}/recipe`. Интерфейс: «техкарта»
+  у продукции, «Цена закупки», «Склад сырья производства». Тестов 415, ui_smoke дополнен.
 

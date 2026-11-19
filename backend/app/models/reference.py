@@ -203,9 +203,30 @@ class Warehouse(OrgScoped, Base):
     """Склад организации."""
 
     __tablename__ = "warehouses"
+    __table_args__ = (
+        Index("uq_warehouses_raw", "organization_id", unique=True, postgresql_where=text("is_raw")),
+    )
 
     name: Mapped[str] = mapped_column(String(255))
     cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"))
+    # склад сырья производства (один в организации): с него по техкарте списываются материалы (docs/TZ.md, раздел 29)
+    is_raw: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+
+class NomenclatureRecipe(Base):
+    """Техкарта продукции производства (docs/TZ.md, раздел 29, «Детали 20.7»): материал и норма на 1 единицу."""
+
+    __tablename__ = "nomenclature_recipes"
+    __table_args__ = (
+        Index("uq_nomenclature_recipes_pair", "nomenclature_id", "material_id", unique=True),
+        CheckConstraint("quantity > 0", name="quantity"),
+        CheckConstraint("nomenclature_id <> material_id", name="not_self"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    nomenclature_id: Mapped[int] = mapped_column(ForeignKey("nomenclature.id", ondelete="CASCADE"), index=True)
+    material_id: Mapped[int] = mapped_column(ForeignKey("nomenclature.id", ondelete="RESTRICT"))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4))
 
 
 class ContractPayment(Base):

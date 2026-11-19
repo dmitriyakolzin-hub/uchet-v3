@@ -382,11 +382,13 @@ class NomenclatureOut(_Out):
 class WarehouseCreate(BaseModel):
     name: Name
     cfo_id: int | None = None
+    is_raw: bool = False  # склад сырья производства (материалы по техкарте)
 
 
 class WarehouseUpdate(BaseModel):
     name: Name | None = None
     cfo_id: int | None = None
+    is_raw: bool | None = None
     is_active: bool | None = None
 
 
@@ -395,6 +397,7 @@ class WarehouseOut(_Out):
     organization_id: int
     name: str
     cfo_id: int | None
+    is_raw: bool = False
     is_active: bool
 
 
