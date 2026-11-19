@@ -113,6 +113,18 @@ def _check_counterparty(_db, obj: Counterparty, _creating: bool) -> None:
     s.check_inn_for_kind(obj.kind, obj.inn)
 
 
+def _check_nomenclature(db: Session, item: Nomenclature, _creating: bool) -> None:
+    """Маршрут до точки продаж (docs/TZ.md, раздел 29, «Детали 20.5»)."""
+    from app.services import routes
+
+    try:
+        routes.check_item(db, item)
+    except routes.RouteError as exc:
+        raise ValueError(str(exc)) from None
+    if item.id and item.route != "assembled":
+        routes.set_components(db, item, [])  # состав — только у доготавливаемого
+
+
 def _check_cfo(db: Session, cfo: Cfo, creating: bool) -> None:
     """Уровни строго по порядку: Компания → Направление → Филиал → Магазин → Подразделение учёта."""
     parent = db.get(Cfo, cfo.parent_id) if cfo.parent_id else None
@@ -259,7 +271,7 @@ for resource in (
         conflict_message="ЦФО с таким кодом уже есть",
         order_by=lambda m: [m.path],
         refs={"parent_id": Ref(Cfo, "Вышестоящий ЦФО"), "legal_entity_id": LEGAL_ENTITY},
-        nullable_fields={"parent_id", "legal_entity_id"}, check=_check_cfo,
+        nullable_fields={"parent_id", "legal_entity_id", "chain_link"}, check=_check_cfo,
     ),
     OrgResource(
         path="employees", model=Employee, title="Сотрудник",
@@ -282,7 +294,9 @@ for resource in (
         create_schema=s.NomenclatureCreate, update_schema=s.NomenclatureUpdate,
         out_schema=s.NomenclatureOut, conflict_message="Номенклатура с таким артикулом уже есть",
         order_by=lambda m: [m.name],
-        refs={"unit_id": Ref(Unit, "Единица измерения", org_scoped=False)},
+        refs={"unit_id": Ref(Unit, "Единица измерения", org_scoped=False), "producer_cfo_id": Ref(Cfo, "Производство")},
+        nullable_fields={"route", "producer_cfo_id"},
+        check=_check_nomenclature,
     ),
     OrgResource(
         path="note-labels", model=NoteLabel, title="Метка",

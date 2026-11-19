@@ -9,7 +9,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api.access import branch_ids, cfo_scope, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.services import article_import, employee_import, prices, transfer_import
+from app.services import article_import, employee_import, prices, routes, transfer_import
 from app.services import excel_import as xl
 
 router = APIRouter(prefix="/api/organizations/{organization_id}/import", tags=["Загрузка из Excel"])
@@ -169,6 +169,34 @@ async def import_prices(organization_id: int, request: Request, user: CurrentUse
     db.commit()
     return PricesImportOut(rows=result.rows, created=result.created, updated=result.updated,
                               errors=[e.__dict__ for e in result.errors])
+
+
+# --- маршруты товаров до точки продаж (docs/TZ.md, раздел 29, «Детали 20.5») ---
+
+
+@router.get("/routes.xlsx")
+def routes_list(organization_id: int, user: CurrentUser, db: DbSession):
+    get_organization_for(db, user, organization_id, Perm.EDIT_REFERENCE)
+    return _xlsx(routes.routes_xlsx(db, organization_id), "routes.xlsx")
+
+
+class RoutesImportOut(BaseModel):
+    rows: int
+    updated: int
+    errors: list[RowErrorOut]
+
+
+@router.post("/routes", response_model=RoutesImportOut)
+async def import_routes(organization_id: int, request: Request, user: CurrentUser, db: DbSession):
+    get_organization_for(db, user, organization_id, Perm.EDIT_REFERENCE)
+    raw = await _body(request)
+    try:
+        result = await run_in_threadpool(routes.import_routes, db, organization_id, raw)
+    except xl.ExcelError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    db.commit()
+    return RoutesImportOut(rows=result.rows, updated=result.updated, errors=[e.__dict__ for e in result.errors])
 
 
 # --- внутренние передачи по количеству (docs/TZ.md, раздел 29, «Детали 20.4») ---

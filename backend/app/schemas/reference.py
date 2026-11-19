@@ -345,11 +345,16 @@ NomenclatureKind = Literal["goods", "material", "product", "service"]
 Article = Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]
 
 
+Route = Literal["purchased", "product", "assembled"]
+
+
 class NomenclatureCreate(BaseModel):
     name: Name
     article: Article = ""
     unit_id: int
     kind: NomenclatureKind
+    route: Route | None = None  # маршрут до точки продаж (бюджет ЦФО); пусто — не участвует в плане объёмов
+    producer_cfo_id: int | None = None  # производство (только у продукции)
 
 
 class NomenclatureUpdate(BaseModel):
@@ -357,6 +362,8 @@ class NomenclatureUpdate(BaseModel):
     article: Article | None = None
     unit_id: int | None = None
     kind: NomenclatureKind | None = None
+    route: Route | None = None
+    producer_cfo_id: int | None = None
     is_active: bool | None = None
 
 
@@ -367,6 +374,8 @@ class NomenclatureOut(_Out):
     article: str
     unit_id: int
     kind: NomenclatureKind
+    route: str | None = None
+    producer_cfo_id: int | None = None
     is_active: bool
 
 

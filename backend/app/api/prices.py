@@ -16,6 +16,7 @@ from app.core.permissions import Perm
 from app.models import Cfo, Nomenclature, User
 from app.models.price import NomenclaturePrice
 from app.services import prices as service
+from app.services import routes
 
 router = APIRouter(prefix="/api", tags=["Справочники"])
 
@@ -144,3 +145,57 @@ def lookup(organization_id: int, nomenclature_id: int, kind: Kind, on_date: dt.d
         return LookupOut(price=None, net=None)
     return LookupOut(price=found.price, net=found.net, vat_included=found.vat_included, vat_rate=found.vat_rate,
                      valid_from=found.valid_from, cfo_id=found.cfo_id)
+
+
+# --- Состав доготавливаемого товара (docs/TZ.md, раздел 29, «Детали 20.5») ---
+
+Norm = Annotated[Decimal, Field(gt=0, max_digits=18, decimal_places=4)]
+
+
+class ComponentIn(BaseModel):
+    component_id: int
+    quantity: Norm
+
+
+class ComponentOut(BaseModel):
+    component_id: int
+    name: str
+    article: str
+    route: str | None
+    quantity: Decimal
+
+
+def _item(db: Session, user: User, item_id: int, perm: Perm) -> Nomenclature:
+    item = db.get(Nomenclature, item_id)
+    if item is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Номенклатура не найдена")
+    get_organization_for(db, user, item.organization_id, perm)
+    return item
+
+
+def _components_out(db: Session, item: Nomenclature) -> list[ComponentOut]:
+    rows = routes.components_of(db, item.id)
+    parts = {n.id: n for n in db.scalars(select(Nomenclature).where(
+        Nomenclature.id.in_([r.component_id for r in rows])))} if rows else {}
+    return [ComponentOut(component_id=r.component_id, name=parts[r.component_id].name,
+                         article=parts[r.component_id].article, route=parts[r.component_id].route,
+                         quantity=r.quantity) for r in rows]
+
+
+@router.get("/nomenclature/{item_id}/components", response_model=list[ComponentOut])
+def list_components(item_id: int, user: CurrentUser, db: DbSession):
+    return _components_out(db, _item(db, user, item_id, Perm.VIEW))
+
+
+@router.put("/nomenclature/{item_id}/components", response_model=list[ComponentOut])
+def put_components(item_id: int, body: Annotated[list[ComponentIn], Field(max_length=100)], user: CurrentUser,
+                   db: DbSession):
+    """Заменить состав: что и сколько на 1 единицу товара (только у маршрута «Доготовка на точке»)."""
+    item = _item(db, user, item_id, Perm.EDIT_REFERENCE)
+    try:
+        routes.set_components(db, item, [routes.ComponentIn(c.component_id, c.quantity) for c in body])
+    except routes.RouteError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    db.commit()
+    return _components_out(db, item)
