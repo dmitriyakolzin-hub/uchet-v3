@@ -1,7 +1,15 @@
 from app.models.account import Account, AccountAnalytic
 from app.models.article import Article
 from app.models.asset import AssetCategory, AssetEvent, AssetItem, AssetItemFile, AssetDisposal, AssetDisposalItem, AssetInventory, AssetInventoryLine, AssetReceipt, AssetReceiptFile, AssetRequest, AssetRequestEvent, AssetTransfer, AssetTransferItem, AssetWork
-from app.models.budget import Budget, BudgetCfoStatus, BudgetVersion, InvestmentProject, PlanChange, PlanTarget
+from app.models.budget import (
+    Budget,
+    BudgetCfoStatus,
+    BudgetVersion,
+    InvestmentProject,
+    PlanChange,
+    PlanTarget,
+    PlanVolume,
+)
 from app.models.calendar import (
     CalendarBalance,
     CalendarTransfer,
@@ -96,6 +104,7 @@ __all__ = [
     "PayrollRun",
     "PlanChange",
     "PlanTarget",
+    "PlanVolume",
     "Posting",
     "ReportFormRow",
     "ResultClosing",

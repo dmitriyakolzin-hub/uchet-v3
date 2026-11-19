@@ -21,6 +21,7 @@ from app.models import (
     Account,
     Article,
     Budget,
+    PlanVolume,
     BudgetVersion,
     Cfo,
     Executor,
@@ -165,15 +166,17 @@ def cell_list(db: Session, version: BudgetVersion, kind: str, article_ids: list[
         query = query.where(Operation.legal_entity_id == legal_entity_id)
     return [{"operation_id": op.id, "cfo_id": op.plan_cfo_id, "executor_id": op.plan_executor_id,
              "project_id": op.plan_project_id, "article_id": op.article_id, "month": op.op_date.month,
+             "auto": op.plan_auto,
              "amount": sum((p.amount or Decimal(0) for p in op.postings), Decimal("0.00"))}
             for op in db.scalars(query.order_by(Operation.op_date, Operation.plan_cfo_id, Operation.id))]
 
 
 def _cell_op(db: Session, version_id: int, kind: str, cfo_id: int | None, article_id: int, op_date: dt.date,
-             executor_id: int | None = None, project_id: int | None = None):
+             executor_id: int | None = None, project_id: int | None = None, auto: bool = False):
+    """Ячейка: ручная (auto=False) или посчитанная из плана объёмов (auto=True) — они хранятся рядом."""
     query = select(Operation).where(Operation.budget_version_id == version_id, Operation.plan_kind == kind,
                                     Operation.article_id == article_id, Operation.op_date == op_date,
-                                    _project_is(project_id))
+                                    _project_is(project_id), Operation.plan_auto.is_(auto))
     query = query.where(Operation.plan_cfo_id.is_(None) if cfo_id is None else Operation.plan_cfo_id == cfo_id)
     query = query.where(Operation.plan_executor_id.is_(None) if executor_id is None
                         else Operation.plan_executor_id == executor_id)
@@ -229,7 +232,7 @@ def refresh_project(db: Session, project: InvestmentProject) -> None:
 
 
 def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None, cells: list[Cell], user: User,
-              executor_id: int | None = None, project_id: int | None = None, guard=None) -> int:
+              executor_id: int | None = None, project_id: int | None = None, guard=None, auto: bool = False) -> int:
     """Записать ячейки сетки (строка: статья + ЦФУ, если указан); возвращает число изменённых ячеек.
     guard(cfo_id) — проверка прав пользователя (plan_access.Guard): бросает PlanError, если менять нельзя,
     и возвращает True, если правка идёт после утверждения — тогда каждая ячейка пишется в историю.
@@ -272,7 +275,7 @@ def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None
         if amount is not None and amount < 0:
             raise PlanError(f"«{article.name}»: сумма плана не может быть отрицательной")
         op_date = dt.date(budget.year, cell.month, 1)
-        op = _cell_op(db, version.id, kind, cfo_id, article.id, op_date, executor_id, project_id)
+        op = _cell_op(db, version.id, kind, cfo_id, article.id, op_date, executor_id, project_id, auto)
         if audit:
             old_amount = sum((p.amount or Decimal(0) for p in op.postings), Decimal("0.00")) if op is not None else None
             if (old_amount or None) != (amount or None):
@@ -289,9 +292,10 @@ def set_cells(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None
         if op is None:
             op = Operation(organization_id=budget.organization_id, number=0, status="plan", created_by=user.id,
                            budget_version_id=version.id, plan_kind=kind, plan_cfo_id=cfo_id,
-                           plan_executor_id=executor_id, plan_project_id=project_id)
+                           plan_executor_id=executor_id, plan_project_id=project_id, plan_auto=auto)
         body = OperationIn(legal_entity_id=entity_id, op_date=op_date, article_id=article.id,
-                           description=f"План: {article.name}" + (f" — {project.name}" if project else ""),
+                           description=f"План: {article.name}" + (f" — {project.name}" if project else "")
+                           + (" (из плана объёмов)" if auto else ""),
                            postings=[_posting(db, kind, article, cfo_id, amount, executor_id)])
         journal.save_draft(db, op, body, user)
         db.add(op)
@@ -320,14 +324,22 @@ def grid(db: Session, version: BudgetVersion, kind: str, cfo_id: int | None) -> 
     query = query.where(Operation.plan_cfo_id.is_(None) if cfo_id is None else Operation.plan_cfo_id == cfo_id,
                         Operation.plan_project_id.is_(None))  # оплаты инвестпроектов — в плане инвестиций
     values: dict[tuple[int, int | None], dict[str, Decimal]] = {}
+    auto: dict[int, dict[str, Decimal]] = {}  # посчитано из плана объёмов — отдельной строкой, только просмотр
     for op in db.scalars(query):
         amount = sum((p.amount or Decimal(0) for p in op.postings), Decimal("0.00"))
-        values.setdefault((op.article_id, op.plan_executor_id), {})[month_key(op.op_date.year, op.op_date.month)] = amount
+        key = month_key(op.op_date.year, op.op_date.month)
+        if op.plan_auto:
+            auto.setdefault(op.article_id, {})[key] = amount
+            continue
+        values.setdefault((op.article_id, op.plan_executor_id), {})[key] = amount
     labels = executor_labels(db, budget.organization_id) if any(e for _, e in values) else {}
     rows = []
     for a, group in plan_articles(db, budget.organization_id, kind):
         rows.append({"article_id": a.id, "executor_id": None, "executor_name": "", "name": a.display_name, "group": group,
                      "values": values.get((a.id, None), {})})
+        if a.id in auto:
+            rows.append({"article_id": a.id, "executor_id": None, "executor_name": "", "auto": True,
+                         "name": f"{a.display_name} (из объёмов)", "group": group, "values": auto[a.id]})
         for (article_id, executor_id), v in sorted(values.items(), key=lambda kv: labels.get(kv[0][1] or 0, "").lower()):
             if article_id == a.id and executor_id is not None:
                 rows.append({"article_id": a.id, "executor_id": executor_id, "executor_name": labels[executor_id],
@@ -434,7 +446,7 @@ def copy_plan(db: Session, source: BudgetVersion, target: BudgetVersion, user: U
             organization_id=op.organization_id, legal_entity_id=op.legal_entity_id, number=0, op_date=op.op_date,
             article_id=op.article_id, description=op.description, status="plan", created_by=user.id,
             budget_version_id=target.id, plan_kind=op.plan_kind, plan_cfo_id=op.plan_cfo_id,
-            plan_executor_id=op.plan_executor_id, plan_project_id=op.plan_project_id,
+            plan_executor_id=op.plan_executor_id, plan_project_id=op.plan_project_id, plan_auto=op.plan_auto,
         )
         columns = ["line_no", "debit_account_id", "credit_account_id", "amount", "currency_id", "amount_rub",
                    "amount_rub_manual", "quantity"]
@@ -442,6 +454,9 @@ def copy_plan(db: Session, source: BudgetVersion, target: BudgetVersion, user: U
         clone.postings = [Posting(**{c: getattr(p, c) for c in columns}) for p in op.postings]
         db.add(clone)
         count += 1
+    for v in db.scalars(select(PlanVolume).where(PlanVolume.budget_version_id == source.id)):  # план объёмов
+        db.add(PlanVolume(budget_version_id=target.id, cfo_id=v.cfo_id, nomenclature_id=v.nomenclature_id, kind=v.kind,
+                          discount_cfo_id=v.discount_cfo_id, month=v.month, quantity=v.quantity))
     db.flush()
     return count
 
@@ -473,6 +488,8 @@ def plan_xlsx(db: Session, version: BudgetVersion, kind: str, cfo_ids: list[int 
     for cfo_id in cfo_ids:
         data = grid(db, version, kind, cfo_id)
         for row in data["rows"]:
+            if row.get("auto"):
+                continue  # из плана объёмов — не загружается обратно
             ws.append([labels.get(cfo_id, "") if cfo_id else "", row["name"], row.get("executor_name", ""),
                        *(row["values"].get(m["key"]) for m in data["months"])])
             for i in range(4, len(header) + 1):

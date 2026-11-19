@@ -3,8 +3,9 @@ import { api } from "./api.js";
 import { money, parseNumber, sumMoney } from "./format.js";
 import { tableNotes } from "./notes.js";
 import { el, makeTable, openForm, toast } from "./ui.js";
+import { renderVolumes } from "./volumes.js";
 
-const KINDS = { pl: "План ОПиУ (по ЦФО)", cf: "План ДДС", inv: "План инвестиций" };
+const KINDS = { pl: "План ОПиУ (по ЦФО)", cf: "План ДДС", inv: "План инвестиций", vol: "План объёмов" };
 
 // Ввод «1 500,5» → «1500.5» до того, как значение попадёт в ячейку и итоги; неверный ввод — прежнее значение
 function normalizeInput(value, _data, _type, _params, cell) {
@@ -291,7 +292,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   }
 
   function renderTabs() {
-    const tabs = Object.entries(KINDS).filter(([k]) => k === "pl" || !org.restricted);
+    const tabs = Object.entries(KINDS).filter(([k]) => k === "pl" || k === "vol" || !org.restricted);
     kindTabs.replaceChildren(...tabs.map(([k, title]) =>
       el("button", { type: "button", class: `tab${k === kind ? " active" : ""}`, onclick: () => { kind = k; renderTabs(); load(); } }, title)));
     cfoLabel.hidden = kind !== "pl" || mode === "executor";
@@ -310,6 +311,24 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   const sumCalc = (values) => sumMoney(values);
 
   async function load() {
+    // план объёмов — своя вкладка (docs/TZ.md, раздел 29, «Детали 20.6»)
+    const volumes = kind === "vol";
+    for (const node of [cfoLabel, executorLabel, modeTabs, downloadButton, uploadButton, statusesButton, topDownButton,
+      retroButton, historyButton, submitBox, status]) if (volumes) node.hidden = true;
+    if (volumes) {
+      table?.destroy();
+      table = null;
+      try {
+        await renderVolumes(tableBox, { org, budget, version });
+      } catch (err) {
+        tableBox.replaceChildren(el("p", { class: "error" }, err.message));
+      }
+      return;
+    }
+    statusesButton.hidden = false;
+    status.hidden = false;
+    submitBox.hidden = false;
+    renderTabs();
     if (kind === "pl" && !cfoId) {
       status.textContent = "В организации нет ЦФО — сначала заведите дерево ЦФО в «Справочниках».";
       tableBox.replaceChildren();
@@ -350,21 +369,23 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
         tooltip: (_e, c) => { const r = c.getRow().getData(); return r.executor_id ? `${r.name}: ${r.executor_name}` : r.name; },
         formatter: (c) => {
           const r = c.getRow().getData();
+          if (r.auto) return `<span class="muted" title="Посчитано из плана объёмов — меняйте объёмы">${escapeHtml(c.getValue())}</span>`;
           return r.executor_id ? `<span class="muted">↳ ${escapeHtml(r.executor_name)}</span>` : escapeHtml(c.getValue());
         } },
       ...(addExecutor ? [{ title: "", field: "_executor", width: 80, headerSort: false, frozen: true,
-        formatter: (c) => (c.getRow().getData().executor_id ? "" : '<span class="link-like">+ ЦФУ</span>'),
-        cellClick: (_e, c) => { if (!c.getRow().getData().executor_id) addExecutorRow(c.getRow()); } }] : []),
+        formatter: (c) => (c.getRow().getData().executor_id || c.getRow().getData().auto ? "" : '<span class="link-like">+ ЦФУ</span>'),
+        cellClick: (_e, c) => { const r = c.getRow().getData(); if (!r.executor_id && !r.auto) addExecutorRow(c.getRow()); } }] : []),
       ...data.months.map((m) => ({
         title: m.title, field: m.key, hozAlign: "right", minWidth: 105, headerSort: false,
-        editor: data.editable ? "input" : false, editorParams: { selectContents: true }, mutatorEdit: normalizeInput, formatter: moneyOrEmpty,
+        editor: data.editable ? "input" : false, editable: (c) => !c.getRow().getData().auto,
+        editorParams: { selectContents: true }, mutatorEdit: normalizeInput, formatter: moneyOrEmpty,
         bottomCalc: sumCalc, bottomCalcFormatter: moneyOrEmpty,
       })),
       { title: "Итого", field: "total", hozAlign: "right", minWidth: 120, headerSort: false, cssClass: "strong",
         formatter: moneyOrEmpty, bottomCalc: sumCalc, bottomCalcFormatter: moneyOrEmpty },
     ]);
     const rows = data.rows.map((r) => ({
-      key: `${r.project_id ?? 0}:${r.article_id}:${r.executor_id ?? 0}`, article_id: r.article_id,
+      key: `${r.project_id ?? 0}:${r.article_id}:${r.executor_id ?? 0}${r.auto ? ":auto" : ""}`, article_id: r.article_id, auto: !!r.auto,
       executor_id: r.executor_id ?? null, project_id: r.project_id ?? null,
       executor_name: r.executor_name ?? "", name: r.name, group: r.group, ...r.values,
       total: sumMoney(Object.values(r.values)),

@@ -887,6 +887,22 @@ with sync_playwright() as p:
     expect(equipment.locator(".tabulator-cell[tabulator-field=total]")).to_have_text("100 000,00")
     expect(page.locator(".tabulator-group", has_text="Новый магазин")).to_be_visible()
     page.screenshot(path=f"{OUT}/28c_plan_investments.png", full_page=True)
+    # план объёмов (шаг 20.6): строка «Филиал Юг — Стакан — продажа», количество, «Рассчитать план»
+    page.click("button.tab:has-text('План объёмов')")
+    page.click("button:has-text('+ строка')")
+    d = page.locator("dialog[open]")
+    d.locator("[name=cfo_id]").select_option(label="АВМВ / Торговля / Филиал Юг")
+    d.locator("[name=nomenclature_id]").select_option(label="CUP Стакан")
+    d.locator("button[type=submit]").click()
+    cup = page.locator(".tabulator-row", has_text="Стакан").first
+    cup.locator(".tabulator-cell[tabulator-field='2027-01']").click()
+    page.keyboard.type("100")
+    with page.expect_response(lambda r: "/volumes" in r.url and r.request.method == "PUT") as saved:
+        page.keyboard.press("Enter")
+    assert saved.value.ok
+    page.click("button:has-text('Рассчитать план')")
+    expect(page.locator(".toast").last).to_contain_text("Логистика")  # в стенде нет ЦФО логистики
+    page.screenshot(path=f"{OUT}/48_plan_volumes.png", full_page=True)
     page.click("button.tab:has-text('План ОПиУ')")
     page.click("button.tab:has-text('По ЦФУ')")
     page.locator("select[aria-label='ЦФУ плана']").select_option(label="Инженерный отдел")
