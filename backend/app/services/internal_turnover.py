@@ -9,7 +9,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.money import round_money
@@ -17,8 +17,8 @@ from app.models import Account, Cfo, Nomenclature, Operation, Posting, User, War
 from app.models.journal import analytic_column
 from app.models.price import PRICE_KINDS, InternalTransfer, InternalTransferLine
 from app.schemas.journal import AnalyticsIn, OperationIn, PostingIn
-from app.services import journal, prices
-from app.services.ledger import subtree
+from app.services import journal, prices, routes
+from app.services.ledger import select_lines, subtree
 from app.services.articles import system_article
 from app.services.plan import _legal_entity
 
@@ -36,7 +36,8 @@ def articles(db: Session, organization_id: int):
 
 
 def create_transfer(db: Session, organization_id: int, user: User, *, on_date: dt.date, from_cfo_id: int,
-                    to_cfo_id: int, amount: Decimal, description: str) -> Operation:
+                    to_cfo_id: int, amount: Decimal, description: str,
+                    extra_postings: list[PostingIn] | None = None) -> Operation:
     """Проведённая операция внутренней передачи."""
     cfos = {}
     for cfo_id, title in ((from_cfo_id, "Продавец (ЦФО)"), (to_cfo_id, "Покупатель (ЦФО)")):
@@ -59,7 +60,8 @@ def create_transfer(db: Session, organization_id: int, user: User, *, on_date: d
             legal_entity_id=entity, op_date=on_date, article_id=revenue.id, description=text,
             postings=[PostingIn(debit_account_id=codes["90.02"], credit_account_id=codes["90.01"], amount=amount,
                                 debit=AnalyticsIn(cfo=to_cfo_id, pl_item=purchase.id),
-                                credit=AnalyticsIn(cfo=from_cfo_id, pl_item=revenue.id))]), user)
+                                credit=AnalyticsIn(cfo=from_cfo_id, pl_item=revenue.id)),
+                      *(extra_postings or [])]), user)
     except journal.JournalError as exc:
         raise InternalError(f"Проводка не прошла проверку журнала: {exc}") from None
 
@@ -130,6 +132,72 @@ def price_lines(db: Session, organization_id: int, on_date: dt.date, from_cfo: C
     return result
 
 
+@dataclass
+class Writeoff:
+    material_id: int
+    title: str
+    quantity: Decimal
+    price: Decimal
+    amount: Decimal
+    by_stock: bool  # по средней цене склада сырья (иначе — по цене закупки)
+
+
+def recipe_writeoff(db: Session, organization_id: int, on_date: dt.date, producer: Cfo,
+                    priced: list[PricedLine]) -> list[Writeoff]:
+    """Материалы по техкарте для передачи производства на СГП (docs/TZ.md, раздел 29, «Детали 20.7»): количество =
+    передано × норма; цена — средняя по складу сырья на дату, если материала хватает, иначе цена закупки."""
+    need: dict[int, Decimal] = {}
+    for line in priced:
+        if line.nomenclature_id is None or line.quantity is None:
+            continue
+        for r in routes.recipe_of(db, line.nomenclature_id):
+            need[r.material_id] = need.get(r.material_id, Decimal(0)) + line.quantity * r.quantity
+    if not need:
+        return []
+    raw = db.scalar(select(Warehouse).where(Warehouse.organization_id == organization_id, Warehouse.is_raw))
+    if raw is None:
+        raise InternalError("Не указан склад сырья производства: отметьте его в «Справочниках» → «Склады»")
+    account_10 = list(db.scalars(select(Account.id).where(Account.code == "10")))
+    result, problems = [], []
+    for material_id, quantity in need.items():
+        material = db.get(Nomenclature, material_id)
+        quantity = quantity.quantize(Decimal("0.001"))
+        lines = select_lines(organization_id, date_to=on_date, account_ids=account_10,
+                             analytics={"nomenclature": material_id, "warehouse": raw.id}).subquery()
+        sign = case((lines.c.side == "debit", 1), else_=-1)
+        have_qty, have_amount = db.execute(select(
+            func.coalesce(func.sum(sign * func.coalesce(lines.c.quantity, 0)), 0),
+            func.coalesce(func.sum(sign * lines.c.amount_rub), 0))).one()
+        have_qty, have_amount = Decimal(have_qty), Decimal(have_amount)
+        if have_qty > 0 and have_qty >= quantity:
+            price = round_money(have_amount / have_qty)
+            amount = have_amount if quantity == have_qty else round_money(quantity * have_amount / have_qty)
+            result.append(Writeoff(material_id, material.name, quantity, price, amount, True))
+            continue
+        found = prices.price_on(db, organization_id, material_id, producer.id, on_date, "purchase")
+        if found is None:
+            problems.append(f"«{material.name}» — на складе сырья не хватает, а цены закупки на {on_date:%d.%m.%Y} нет")
+            continue
+        result.append(Writeoff(material_id, material.name, quantity, found.net, round_money(quantity * found.net), False))
+    if problems:
+        raise InternalError("Не списать материалы по техкарте: " + "; ".join(problems))
+    return [w for w in result if w.amount > 0]
+
+
+def writeoff_postings(db: Session, organization_id: int, producer: Cfo, writeoffs: list[Writeoff]) -> list[PostingIn]:
+    """Дт 90.02 [производство, «Себестоимость по техкарте»] — Кт 10 [материал, склад сырья, количество]."""
+    if not writeoffs:
+        return []
+    cost = system_article(db, organization_id, "cost_of_sales")
+    if cost is None:
+        raise InternalError("Нет системной статьи «Себестоимость по техкарте»")
+    raw = db.scalar(select(Warehouse).where(Warehouse.organization_id == organization_id, Warehouse.is_raw))
+    codes = dict(db.execute(select(Account.code, Account.id).where(Account.code.in_(("10", "90.02")))).all())
+    return [PostingIn(debit_account_id=codes["90.02"], credit_account_id=codes["10"], amount=w.amount,
+                      quantity=w.quantity, debit=AnalyticsIn(cfo=producer.id, pl_item=cost.id),
+                      credit=AnalyticsIn(nomenclature=w.material_id, warehouse=raw.id)) for w in writeoffs]
+
+
 def _cfos(db: Session, organization_id: int, from_cfo_id: int, to_cfo_id: int) -> tuple[Cfo, Cfo]:
     found = []
     for cfo_id, title in ((from_cfo_id, "Кто передаёт (ЦФО)"), (to_cfo_id, "Кто получает (ЦФО)")):
@@ -157,8 +225,13 @@ def create_document(db: Session, organization_id: int, user: User, *, on_date: d
     names = ", ".join(f"{p.title}{f' × {p.quantity.normalize():f}' if p.quantity is not None else ''}" for p in priced[:5])
     text_ = description.strip() or (f"Внутренняя передача № {number}: {from_cfo.name} → {to_cfo.name}"
                                      + (f" ({names}{'…' if len(priced) > 5 else ''})" if names else ""))
+    # производство передаёт на СГП — списываются материалы по техкарте (себестоимость)
+    extra = []
+    if prices.chain_link(db, from_cfo) == "production":
+        extra = writeoff_postings(db, organization_id, from_cfo,
+                                  recipe_writeoff(db, organization_id, on_date, from_cfo, priced))
     op = create_transfer(db, organization_id, user, on_date=on_date, from_cfo_id=from_cfo_id, to_cfo_id=to_cfo_id,
-                         amount=total, description=text_[:500])
+                         amount=total, description=text_[:500], extra_postings=extra)
     doc = InternalTransfer(organization_id=organization_id, number=number, on_date=on_date, from_cfo_id=from_cfo_id,
                            to_cfo_id=to_cfo_id, description=description.strip()[:500], total=total, source=source,
                            source_operation_id=source_operation_id, operation_id=op.id, created_by=user.id)

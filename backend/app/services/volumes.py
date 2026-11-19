@@ -166,6 +166,9 @@ def calculate(db: Session, version: BudgetVersion, user: User, revenue_article_i
     internal_buy = system_article(db, org, "internal_purchase")
     if internal_rev is None or internal_buy is None:
         raise PlanError("Нет системных статей внутренних оборотов")
+    cost = system_article(db, org, "cost_of_sales")  # себестоимость по техкарте и закупка (шаг 20.7)
+    if cost is None or cost.id not in allowed:
+        raise PlanError("Нет системной статьи «Себестоимость по техкарте» с шаблоном проводки")
     links = _links(db, org)
     own_logistics = [c.id for c in db.scalars(select(Cfo).where(Cfo.organization_id == org, Cfo.is_active,
                                                                 Cfo.chain_link == "logistics"))]
@@ -204,6 +207,10 @@ def calculate(db: Session, version: BudgetVersion, user: User, revenue_article_i
         p = price(item, "logistics", point, month)
         if p is not None:
             transfer(logistics, point, month, round_money(quantity * p))
+        if item.route == "purchased":  # логистика закупает у поставщика — себестоимость по цене закупки
+            p = price(item, "purchase", logistics, month)
+            if p is not None:
+                add(logistics, cost.id, month, round_money(quantity * p))
         if item.route == "product":
             if item.producer_cfo_id is None:
                 missing.add(f"«{item.name}» — не указано производство")
@@ -211,6 +218,11 @@ def calculate(db: Session, version: BudgetVersion, user: User, revenue_article_i
             p = price(item, "production", logistics, month)
             if p is not None:
                 transfer(item.producer_cfo_id, logistics, month, round_money(quantity * p))
+            # себестоимость производства — материалы по техкарте × цена закупки (признаётся при передаче на СГП)
+            for r in routes.recipe_of(db, item.id):
+                p = price(items[r.material_id], "purchase", item.producer_cfo_id, month)
+                if p is not None:
+                    add(item.producer_cfo_id, cost.id, month, round_money(quantity * r.quantity * p))
 
     needs_logistics = any(links.get(v.cfo_id) == "trade" for v in volumes)
     if needs_logistics and len(own_logistics) != 1:

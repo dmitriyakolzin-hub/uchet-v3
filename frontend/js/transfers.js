@@ -97,6 +97,8 @@ export function openTransfers({ org, ref, canPost, onChanged }) {
     const d = await api.get(`/api/internal-transfers/${id}`);
     const box = dialogBox(`Передача № ${d.transfer_number} от ${ruDate(d.on_date)}: ${d.from_name} → ${d.to_name}`);
     box.append(linesTable(d.lines), el("p", { class: "strong" }, `Итого: ${money(d.total)} ₽`),
+      ...(d.materials?.length ? [el("h3", {}, "Списано по техкарте (себестоимость производства)"),
+        el("ul", {}, ...d.materials.map((m) => el("li", {}, `${m.title} × ${Number(m.quantity).toLocaleString("ru-RU")} — ${money(m.amount)} ₽`)))] : []),
       el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => box.close() }, "Закрыть")));
   }
 

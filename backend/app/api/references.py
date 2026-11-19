@@ -1,7 +1,7 @@
 """Справочники части 1.3б: банки (общие) и справочники организации."""
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import inspect, select, text
+from sqlalchemy import inspect, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -113,6 +113,14 @@ def _check_counterparty(_db, obj: Counterparty, _creating: bool) -> None:
     s.check_inn_for_kind(obj.kind, obj.inn)
 
 
+def _check_warehouse(db: Session, warehouse: Warehouse, _creating: bool) -> None:
+    """Склад сырья производства — один в организации: отметка снимается с прежнего (docs/TZ.md, раздел 29)."""
+    if warehouse.is_raw:
+        db.execute(update(Warehouse).where(Warehouse.organization_id == warehouse.organization_id,
+                                           Warehouse.id != (warehouse.id or 0), Warehouse.is_raw)
+                   .values(is_raw=False))
+
+
 def _check_nomenclature(db: Session, item: Nomenclature, _creating: bool) -> None:
     """Маршрут до точки продаж (docs/TZ.md, раздел 29, «Детали 20.5»)."""
     from app.services import routes
@@ -123,6 +131,8 @@ def _check_nomenclature(db: Session, item: Nomenclature, _creating: bool) -> Non
         raise ValueError(str(exc)) from None
     if item.id and item.route != "assembled":
         routes.set_components(db, item, [])  # состав — только у доготавливаемого
+    if item.id and item.route != "product":
+        routes.set_recipe(db, item, [])  # техкарта — только у продукции производства
 
 
 def _check_cfo(db: Session, cfo: Cfo, creating: bool) -> None:
@@ -311,6 +321,7 @@ for resource in (
         order_by=lambda m: [m.name],
         refs={"cfo_id": Ref(Cfo, "ЦФО")},
         nullable_fields={"cfo_id"},
+        check=_check_warehouse,
     ),
     OrgResource(
         path="executors", model=Executor, title="ЦФУ",

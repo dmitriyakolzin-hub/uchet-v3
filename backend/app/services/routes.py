@@ -12,7 +12,7 @@ from openpyxl import Workbook
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models import Cfo, Nomenclature, NomenclatureComponent
+from app.models import Cfo, Nomenclature, NomenclatureComponent, NomenclatureRecipe
 from app.services import prices
 from app.services.excel_import import (
     Column,
@@ -81,6 +81,33 @@ def set_components(db: Session, item: Nomenclature, components: list[ComponentIn
     db.flush()
 
 
+def set_recipe(db: Session, item: Nomenclature, materials: list[ComponentIn]) -> None:
+    """Заменить техкарту продукции производства: материал и норма на 1 единицу (docs/TZ.md, раздел 29, «Детали 20.7»)."""
+    if materials and item.route != "product":
+        raise RouteError("Техкарта указывается только у товара с маршрутом «Продукция производства»")
+    seen = set()
+    for m in materials:
+        part = db.get(Nomenclature, m.component_id)
+        if part is None or part.organization_id != item.organization_id:
+            raise RouteError("Материал не найден в этой организации")
+        if part.id == item.id:
+            raise RouteError("Товар не может входить в свою техкарту")
+        if part.id in seen:
+            raise RouteError(f"«{part.name}» указан дважды")
+        if m.quantity <= 0:
+            raise RouteError(f"«{part.name}»: норма должна быть больше нуля")
+        seen.add(part.id)
+    db.execute(delete(NomenclatureRecipe).where(NomenclatureRecipe.nomenclature_id == item.id))
+    for m in materials:
+        db.add(NomenclatureRecipe(nomenclature_id=item.id, material_id=m.component_id, quantity=m.quantity))
+    db.flush()
+
+
+def recipe_of(db: Session, item_id: int) -> list[NomenclatureRecipe]:
+    return list(db.scalars(select(NomenclatureRecipe).where(NomenclatureRecipe.nomenclature_id == item_id)
+                           .order_by(NomenclatureRecipe.id)))
+
+
 def components_of(db: Session, item_id: int) -> list[NomenclatureComponent]:
     return list(db.scalars(select(NomenclatureComponent).where(NomenclatureComponent.nomenclature_id == item_id)
                            .order_by(NomenclatureComponent.id)))
@@ -88,13 +115,19 @@ def components_of(db: Session, item_id: int) -> list[NomenclatureComponent]:
 
 # --- Excel ---
 
+
+@dataclass
+class _RecipeRow:
+    component_id: int
+    quantity: Decimal
+
 ROUTE_COLUMNS = [
     Column("Артикул", "article", False, 14, True),
     Column("Наименование", "name", False, 36, hint="Товар ищется по артикулу, без него — по наименованию"),
     Column("Маршрут", "route", False, 22, hint="покупной / продукция / доготовка; пусто — не менять"),
     Column("Производство (ЦФО)", "producer", False, 26, True, "Для продукции: код, путь или название ЦФО производства"),
     Column("Составляющая (артикул или наименование)", "component", False, 30, True,
-           "Для доготовки: полуфабрикат или покупной товар; на каждую составляющую — своя строка с тем же товаром"),
+           "Доготовка — полуфабрикат или покупной товар; продукция — материал техкарты; на каждую — своя строка"),
     Column("Норма на 1 шт.", "norm", False, 12, hint="Сколько составляющей идёт на 1 единицу товара"),
 ]
 
@@ -113,7 +146,8 @@ def routes_xlsx(db: Session, organization_id: int) -> bytes:
     by_id = {i.id: i for i in items}
     r = 2
     for item in items:
-        parts = components_of(db, item.id) if item.route == "assembled" else []
+        parts = components_of(db, item.id) if item.route == "assembled" else \
+            [_RecipeRow(r.material_id, r.quantity) for r in recipe_of(db, item.id)] if item.route == "product" else []
         for part in parts or [None]:
             component = by_id.get(part.component_id) if part else None
             values = [item.article or None, item.name, ROUTES.get(item.route or "", None),
@@ -125,7 +159,7 @@ def routes_xlsx(db: Session, organization_id: int) -> bytes:
     _help_sheet(wb, ROUTE_COLUMNS, [
         "Маршрут товара до точки продаж: покупной (со склада через логистику), продукция производства (в т. ч.",
         "полуфабрикат) или доготовка на точке из составляющих по норме на 1 единицу.",
-        "Состав доготавливаемого товара заменяется составляющими из файла.",
+        "Состав доготавливаемого товара и техкарта продукции заменяются строками из файла.",
     ])
     return _to_bytes(wb)
 
@@ -193,7 +227,10 @@ def import_routes(db: Session, organization_id: int, raw: bytes) -> RoutesResult
                     item.producer_cfo_id = entry["producer"]
                 check_item(db, item)
                 if entry["components"]:
-                    set_components(db, item, entry["components"])
+                    if item.route == "product":
+                        set_recipe(db, item, entry["components"])
+                    else:
+                        set_components(db, item, entry["components"])
                 db.flush()
                 result.updated += 1
         except RouteError as exc:

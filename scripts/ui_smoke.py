@@ -245,8 +245,10 @@ with sync_playwright() as p:
     page.click("text=Добавить склад")
     d = dialog_fill(page, {"name": "Склад Юг"})
     d.locator("[name=cfo_id]").select_option(label="АВМВ / Торговля / Филиал Юг")
+    d.locator("[name=is_raw]").check()  # склад сырья производства (шаг 20.7)
     d.locator("button[type=submit]").click()
     expect(page.locator(".tabulator-row", has_text="Склад Юг")).to_contain_text("Филиал Юг")
+    expect(page.locator(".tabulator-row", has_text="Склад Юг").locator(".tabulator-cell[tabulator-field=is_raw]")).to_have_text("да")
     # метки примечаний (шаг 13.1)
     page.click("button.tab:has-text('Метки примечаний')")
     page.click("text=Добавить метку")
@@ -267,8 +269,10 @@ with sync_playwright() as p:
     d = page.locator("dialog[open]").last
     d.locator("[name=production]").fill("500")
     d.locator("[name=sale]").fill("1 200,50")
+    d.locator("[name=purchase]").fill("300")
     d.locator("button[type=submit]").click()
     expect(prices.locator(".tabulator-row", has_text="вся организация")).to_contain_text("1 200,50")
+    expect(prices.locator(".tabulator-row", has_text="вся организация")).to_contain_text("300,00")
     prices.locator("button", has_text="Новые цены").click()
     d = page.locator("dialog[open]").last
     d.locator("[name=cfo_id]").select_option(label="АВМВ / Торговля / Филиал Юг")

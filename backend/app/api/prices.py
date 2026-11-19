@@ -21,7 +21,7 @@ from app.services import routes
 router = APIRouter(prefix="/api", tags=["Справочники"])
 
 Price = Annotated[Decimal, Field(ge=0, max_digits=18, decimal_places=2)]
-Kind = Literal["production", "logistics", "sale", "discount"]
+Kind = Literal["production", "logistics", "sale", "discount", "purchase"]
 
 
 class PriceIn(BaseModel):
@@ -32,6 +32,7 @@ class PriceIn(BaseModel):
     logistics: Price | None = None
     sale: Price | None = None
     discount: Price | None = None
+    purchase: Price | None = None  # плановая цена закупки (материалы, покупные товары)
     vat_included: bool = False
     vat_rate: int = 0
 
@@ -47,6 +48,7 @@ class PriceOut(BaseModel):
     logistics: Decimal | None
     sale: Decimal | None
     discount: Decimal | None
+    purchase: Decimal | None
     vat_included: bool
     vat_rate: int
 
@@ -68,6 +70,7 @@ def _out(db: Session, rows: list[NomenclaturePrice]) -> list[PriceOut]:
     return [PriceOut(id=r.id, nomenclature_id=r.nomenclature_id, nomenclature_name=names.get(r.nomenclature_id, ""),
                      cfo_id=r.cfo_id, cfo_name=cfos.get(r.cfo_id, ""), valid_from=r.valid_from,
                      production=r.production, logistics=r.logistics, sale=r.sale, discount=r.discount,
+                     purchase=r.purchase,
                      vat_included=r.vat_included, vat_rate=r.vat_rate) for r in rows]
 
 
@@ -76,7 +79,7 @@ def _save(db: Session, organization_id: int, record: NomenclaturePrice, body: Pr
     try:
         service.validate(db, organization_id, nomenclature_id=body.nomenclature_id, cfo_id=body.cfo_id,
                          vat_rate=body.vat_rate, prices={k: data[k] for k in ("production", "logistics", "sale",
-                                                                              "discount")})
+                                                                              "discount", "purchase")})
     except service.PriceError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
     clash = db.scalar(select(NomenclaturePrice.id).where(
@@ -199,3 +202,40 @@ def put_components(item_id: int, body: Annotated[list[ComponentIn], Field(max_le
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
     db.commit()
     return _components_out(db, item)
+
+
+# --- Техкарта продукции производства (docs/TZ.md, раздел 29, «Детали 20.7») ---
+
+
+class MaterialOut(BaseModel):
+    component_id: int
+    name: str
+    article: str
+    quantity: Decimal
+
+
+def _recipe_out(db: Session, item: Nomenclature) -> list[MaterialOut]:
+    rows = routes.recipe_of(db, item.id)
+    parts = {n.id: n for n in db.scalars(select(Nomenclature).where(
+        Nomenclature.id.in_([r.material_id for r in rows])))} if rows else {}
+    return [MaterialOut(component_id=r.material_id, name=parts[r.material_id].name,
+                        article=parts[r.material_id].article, quantity=r.quantity) for r in rows]
+
+
+@router.get("/nomenclature/{item_id}/recipe", response_model=list[MaterialOut])
+def get_recipe(item_id: int, user: CurrentUser, db: DbSession):
+    return _recipe_out(db, _item(db, user, item_id, Perm.VIEW))
+
+
+@router.put("/nomenclature/{item_id}/recipe", response_model=list[MaterialOut])
+def put_recipe(item_id: int, body: Annotated[list[ComponentIn], Field(max_length=200)], user: CurrentUser,
+               db: DbSession):
+    """Заменить техкарту: материал и норма на 1 единицу (только у маршрута «Продукция производства»)."""
+    item = _item(db, user, item_id, Perm.EDIT_REFERENCE)
+    try:
+        routes.set_recipe(db, item, [routes.ComponentIn(c.component_id, c.quantity) for c in body])
+    except routes.RouteError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    db.commit()
+    return _recipe_out(db, item)

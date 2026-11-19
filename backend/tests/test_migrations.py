@@ -69,8 +69,8 @@ def test_articles_split_between_organizations():
             assert rows[1][3]["article_id"] == second and rows[1][3]["postings"][0]["debit"]["pl_item"] == second
             assert rows[0][3]["article_id"] == rent
             counts = conn.execute(text("SELECT organization_id, count(*) FROM articles GROUP BY 1 ORDER BY 1")).all()
-            assert [c for _, c in counts] == [48, 48]  # + две статьи внутренних оборотов (0055)
-            assert conn.execute(text("SELECT count(*) FROM articles WHERE system_key IS NOT NULL")).scalar() == 32
+            assert [c for _, c in counts] == [49, 49]  # + внутренние обороты (0055), себестоимость по техкарте (0060)
+            assert conn.execute(text("SELECT count(*) FROM articles WHERE system_key IS NOT NULL")).scalar() == 34
     finally:
         with get_engine().begin() as conn:
             conn.execute(text("TRUNCATE organizations RESTART IDENTITY CASCADE"))

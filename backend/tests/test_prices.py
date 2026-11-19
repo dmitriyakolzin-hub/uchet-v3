@@ -76,7 +76,7 @@ def test_prices(client, env, db):  # noqa: F811
     ws.cell(2, 4).value = dt.date(2026, 3, 1)
     ws.cell(2, 7).value = 110  # цена продажи на ту же дату — обновление
     # строки — по номеру: шаблон размечает текстовые колонки на 1000 строк, append ушёл бы ниже
-    for r, values in enumerate([["M-1", None, "Филиал Юг", dt.date(2026, 4, 1), None, None, 125, None, "да", 20],
+    for r, values in enumerate([["M-1", None, "Филиал Юг", dt.date(2026, 4, 1), None, None, 125, None, None, "да", 20],
                                 ["NOPE", None, None, dt.date(2026, 4, 1), 1],
                                 [None, "Молоко 1 л", None, None, 1]], start=3):
         for c, value in enumerate(values, start=1):

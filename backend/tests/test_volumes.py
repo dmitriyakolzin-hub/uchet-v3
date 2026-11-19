@@ -33,7 +33,7 @@ def test_volumes_chain(client, env, db):  # noqa: F811
     tea = item("Чай", "purchased")
     client.put(f"/api/nomenclature/{croissant['id']}/components", headers=h,
                json=[{"component_id": dough["id"], "quantity": "0.5"}])
-    for it, values in ((cup, {"logistics": "10", "sale": "30"}),
+    for it, values in ((cup, {"logistics": "10", "sale": "30", "purchase": "8"}),
                        (cake, {"production": "100", "logistics": "150", "sale": "300", "discount": "200"}),
                        (dough, {"production": "20", "logistics": "30"}), (croissant, {"sale": "120"})):
         resp = client.post(f"{o}/nomenclature-prices", headers=h, json={"nomenclature_id": it["id"],
@@ -76,7 +76,8 @@ def test_volumes_chain(client, env, db):  # noqa: F811
 
     assert auto(shop) == {"Выручка от продаж": 3630, "Внутренняя выручка": 400, "Внутренняя закупка": 2060}
     assert auto(disc) == {"Выручка от продаж": 600, "Внутренняя закупка": 400}
-    assert auto(logistics) == {"Внутренняя выручка": 2060, "Внутренняя закупка": 1340}  # торт 1300 + тесто 40
+    # торт 1300 + тесто 40; себестоимость закупки стакана 5 × 8 (шаг 20.7)
+    assert auto(logistics) == {"Внутренняя выручка": 2060, "Внутренняя закупка": 1340, "Себестоимость по техкарте": 40}
     assert auto(bakery) == {"Внутренняя выручка": 1340}
 
     # ручная ячейка рядом с посчитанной; посчитанную руками не поправить через окно плановых операций
@@ -94,7 +95,7 @@ def test_volumes_chain(client, env, db):  # noqa: F811
     # нет цены — ничего не меняется, список недостающих
     client.put(url, headers=h, json={"cells": [cell(shop, tea, "sale", "1")]})
     result = client.post(calc, headers=h, json={"revenue_article_id": revenue}).json()
-    assert len(result["missing"]) == 2 and all("Чай" in m for m in result["missing"])
+    assert len(result["missing"]) == 3 and all("Чай" in m for m in result["missing"])
     assert auto(shop)["Выручка от продаж"] == 3630
     # объём убрали — посчитанные ячейки пересчитываются, лишние очищаются
     client.put(url, headers=h, json={"cells": [cell(shop, tea, "sale", None), cell(shop, croissant, "sale", "0"),
@@ -121,3 +122,85 @@ def test_volumes_chain(client, env, db):  # noqa: F811
     copy = client.post(f"/api/budgets/{budget['id']}/versions", headers=h, json={"copy_from_id": version["id"]})
     assert copy.status_code == 201, copy.text
     assert len(client.get(f"/api/budget-versions/{copy.json()['id']}/volumes", headers=h).json()["rows"]) == 3
+
+
+def test_recipe_cost(client, env, db):  # noqa: F811
+    """Шаг 20.7: техкарта — себестоимость производства при передаче на СГП (факт: списание со склада сырья по средней,
+    при нехватке — по цене закупки) и в плане (количество × техкарта × цена закупки)."""
+    import datetime as dt
+
+    from app.models import Operation
+
+    post, h, o, acc = env["post"], env["h"], env["o"], env["acc"]
+    unit = client.get("/api/units", headers=h).json()[0]["id"]
+    company = post("cfos", {"name": "Компания", "legal_entity_id": env["le"].id})
+    bakery = post("cfos", {"name": "Пекарня", "parent_id": company["id"], "chain_link": "production"})
+    logistics = post("cfos", {"name": "Логистика", "parent_id": company["id"], "chain_link": "logistics"})
+    trade = post("cfos", {"name": "Торговля", "parent_id": company["id"], "chain_link": "trade"})
+    raw = post("warehouses", {"name": "Сырьё", "is_raw": True})
+    other = post("warehouses", {"name": "Сырьё-2", "is_raw": True})  # склад сырья один: отметка переходит
+    assert {w["name"]: w["is_raw"] for w in client.get(f"{o}/warehouses", headers=h).json()} == {"Сырьё": False,
+                                                                                                "Сырьё-2": True}
+    client.patch(f"/api/warehouses/{raw['id']}", headers=h, json={"is_raw": True})
+    flour = post("nomenclature", {"name": "Мука", "unit_id": unit, "kind": "material"})
+    sugar = post("nomenclature", {"name": "Сахар", "unit_id": unit, "kind": "material"})
+    cake = post("nomenclature", {"name": "Торт", "unit_id": unit, "kind": "product", "route": "product",
+                                 "producer_cfo_id": bakery["id"]})
+    url = f"/api/nomenclature/{cake['id']}/recipe"
+    assert client.put(url, headers=env["ceo"], json=[]).status_code == 403
+    resp = client.put(url, headers=h, json=[{"component_id": flour["id"], "quantity": "0.3"},
+                                            {"component_id": sugar["id"], "quantity": "0.2"}])
+    assert resp.status_code == 200, resp.text
+    assert [(m["name"], m["quantity"]) for m in client.get(url, headers=env["ceo"]).json()] == [
+        ("Мука", "0.3000"), ("Сахар", "0.2000")]
+    for it, values in ((cake, {"production": "100", "logistics": "150", "sale": "300"}),
+                       (flour, {"purchase": "40"}), (sugar, {"purchase": "60"})):
+        client.post(f"{o}/nomenclature-prices", headers=h, json={"nomenclature_id": it["id"], "valid_from": "2020-01-01",
+                                                                  **values})
+    # на складе сырья: 10 кг муки на 450 (средняя 45); сахара нет
+    day = dt.date.today().replace(day=1).isoformat()
+    resp = client.post(f"{o}/operations?post=true", headers=h, json={
+        "legal_entity_id": env["le"].id, "op_date": day, "description": "Мука", "postings": [{
+            "debit_account_id": acc["10"], "credit_account_id": acc["60.01"], "amount": "450", "quantity": "10",
+            "debit": {"nomenclature": flour["id"], "warehouse": raw["id"]},
+            "credit": {"counterparty": env["cp"]["id"], "contract": env["contract"]["id"]}}]})
+    assert resp.status_code == 201, resp.text
+    resp = client.post(f"{o}/internal-transfers", headers=h, json={
+        "on_date": day, "from_cfo_id": bakery["id"], "to_cfo_id": logistics["id"],
+        "lines": [{"nomenclature_id": cake["id"], "quantity": "10"}]})
+    assert resp.status_code == 201, resp.text
+    doc = resp.json()
+    # мука 3 кг × 45 = 135 со склада; сахара нет — 2 кг × 60 = 120 по цене закупки
+    assert [(m["title"], Decimal(m["quantity"]), Decimal(m["amount"])) for m in doc["materials"]] == [
+        ("Мука", 3, 135), ("Сахар", 2, 120)]
+    op = db.get(Operation, doc["operation_id"])
+    assert op.status == "posted" and len(op.postings) == 3
+    period = {"date_from": day, "date_to": dt.date.today().isoformat(), "cfo_id": bakery["id"]}
+    rows = {r["key"]: r["values"] for r in client.get(f"{o}/reports/pl", headers=h, params=period).json()["rows"]}
+    assert Decimal(rows["internal"]["total"]) == 1000 and Decimal(rows["cost"]["total"]) == -255
+    # отмена передачи — списание отменяется вместе с ней
+    client.post(f"/api/internal-transfers/{doc['id']}/cancel", headers=h)
+    rows = {r["key"]: r["values"] for r in client.get(f"{o}/reports/pl", headers=h, params=period).json()["rows"]}
+    assert Decimal(rows["cost"]["total"]) == 0
+    # без склада сырья передача с техкартой не проводится
+    client.patch(f"/api/warehouses/{raw['id']}", headers=h, json={"is_raw": False})
+    resp = client.post(f"{o}/internal-transfers", headers=h, json={
+        "on_date": day, "from_cfo_id": bakery["id"], "to_cfo_id": logistics["id"],
+        "lines": [{"nomenclature_id": cake["id"], "quantity": "1"}]})
+    assert resp.status_code == 422 and "склад сырья" in resp.json()["detail"]
+
+    # план: себестоимость производства = 10 × (0,3 × 40 + 0,2 × 60) = 240
+    budget = post("budgets", {"kind": "year", "year": 2027})
+    version = budget["versions"][0]
+    shop = post("cfos", {"name": "Магазин", "parent_id": trade["id"]})
+    client.put(f"/api/budget-versions/{version['id']}/volumes", headers=h, json={"cells": [
+        {"cfo_id": shop["id"], "nomenclature_id": cake["id"], "kind": "sale", "month": 1, "quantity": "10"}]})
+    art = {a["name"]: a["id"] for a in client.get(f"{o}/articles", headers=h).json()}
+    result = client.post(f"/api/budget-versions/{version['id']}/volumes/calculate", headers=h,
+                         json={"revenue_article_id": art["Выручка от продаж"]}).json()
+    assert result["missing"] == []
+    rows = client.get(f"/api/budget-versions/{version['id']}/grid", headers=h,
+                      params={"kind": "pl", "cfo_id": bakery["id"]}).json()["rows"]
+    auto = {r["name"].split(" (")[0]: Decimal(r["values"]["2027-01"]) for r in rows if r.get("auto")}
+    assert auto == {"Внутренняя выручка": 1000, "Себестоимость по техкарте": 240}
+    del other
