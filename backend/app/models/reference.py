@@ -162,6 +162,7 @@ class Nomenclature(OrgScoped, Base):
     __tablename__ = "nomenclature"
     __table_args__ = (
         CheckConstraint("kind IN ('goods', 'material', 'product', 'service')", name="kind"),
+        CheckConstraint("route IN ('purchased', 'product', 'assembled')", name="route"),
         Index(
             "uq_nomenclature_organization_article",
             "organization_id",
@@ -175,6 +176,27 @@ class Nomenclature(OrgScoped, Base):
     article: Mapped[str] = mapped_column(String(100), default="", server_default="")
     unit_id: Mapped[int] = mapped_column(ForeignKey("units.id", ondelete="RESTRICT"))
     kind: Mapped[str] = mapped_column(String(20))
+    # Маршрут до точки продаж — бюджет ЦФО (docs/TZ.md, раздел 29, «Детали 20.5»): purchased — покупной, со склада
+    # через логистику; product — выпускает производство (producer_cfo_id), в т. ч. полуфабрикат; assembled —
+    # доготавливается на точке из составляющих (NomenclatureComponent). Пусто — не участвует в плане объёмов.
+    route: Mapped[str | None] = mapped_column(String(20))
+    producer_cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="SET NULL"))
+
+
+class NomenclatureComponent(Base):
+    """Состав доготавливаемого товара: сколько составляющей (полуфабриката, покупного) идёт на 1 единицу."""
+
+    __tablename__ = "nomenclature_components"
+    __table_args__ = (
+        Index("uq_nomenclature_components_pair", "nomenclature_id", "component_id", unique=True),
+        CheckConstraint("quantity > 0", name="quantity"),
+        CheckConstraint("nomenclature_id <> component_id", name="not_self"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    nomenclature_id: Mapped[int] = mapped_column(ForeignKey("nomenclature.id", ondelete="CASCADE"), index=True)
+    component_id: Mapped[int] = mapped_column(ForeignKey("nomenclature.id", ondelete="RESTRICT"))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4))
 
 
 class Warehouse(OrgScoped, Base):

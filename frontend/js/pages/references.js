@@ -184,6 +184,97 @@ function employeesExcel(org, reload) {
   ];
 }
 
+const ROUTES = [["purchased", "Покупной (со склада)"], ["product", "Продукция производства"], ["assembled", "Доготовка на точке"]];
+
+// ЦФО со звеном «Производство» (своим или вышестоящего)
+function productionCfos(cfos) {
+  const byId = new Map(cfos.map((c) => [String(c.id), c]));
+  const link = (c) => c.path.split(".").reverse().map((id) => byId.get(id)?.chain_link).find(Boolean);
+  return cfos.filter((c) => c.is_active && link(c) === "production");
+}
+
+// Состав доготавливаемого товара (docs/TZ.md, раздел 29, «Детали 20.5»): составляющие и норма на 1 единицу
+async function openComponents(item, d, canEdit) {
+  const url = `/api/nomenclature/${item.id}/components`;
+  let parts;
+  let goods;
+  try {
+    [parts, goods] = await Promise.all([api.get(url), api.get(`/api/organizations/${d.org.id}/nomenclature`)]);
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  const options = goods.filter((g) => g.is_active && ["purchased", "product"].includes(g.route) && g.id !== item.id)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const lines = el("tbody");
+  const addLine = (part = null) => {
+    const select = el("select", { "aria-label": "Составляющая", disabled: !canEdit },
+      el("option", { value: "" }, "— составляющая —"),
+      ...options.map((g) => el("option", { value: g.id, selected: part?.component_id === g.id }, g.article ? `${g.article} ${g.name}` : g.name)));
+    const qty = el("input", { type: "text", inputmode: "decimal", value: part ? String(Number(part.quantity)).replace(".", ",") : "",
+      "aria-label": "Норма на 1 шт.", size: 10, disabled: !canEdit });
+    const tr = el("tr", {}, el("td", {}, select), el("td", {}, qty),
+      el("td", {}, canEdit ? el("button", { type: "button", class: "link danger", onclick: () => tr.remove() }, "✕") : ""));
+    tr.read = () => ({ component_id: Number(select.value), quantity: parseNumber(qty.value) });
+    lines.append(tr);
+  };
+  parts.forEach(addLine);
+  if (!parts.length && canEdit) addLine();
+  const error = el("p", { class: "error", role: "alert" });
+  const dialog = el("dialog", { class: "dialog" },
+    el("h2", {}, `Состав: ${item.name}`),
+    el("p", { class: "muted" }, "Из чего доготавливается товар на точке и сколько составляющей идёт на 1 единицу. "
+      + "Составляющая — полуфабрикат производства или покупной товар; по плану продаж она пойдёт по своей цепочке."),
+    el("table", { class: "recon" }, el("thead", {}, el("tr", {}, el("th", {}, "Составляющая"), el("th", {}, "Норма на 1 шт."), el("th", {}, ""))), lines),
+    canEdit ? el("button", { type: "button", class: "link", onclick: () => addLine() }, "+ составляющая") : "",
+    error,
+    el("div", { class: "form-actions" },
+      canEdit ? el("button", { type: "button", onclick: async () => {
+        try {
+          await api.put(url, [...lines.children].map((tr) => tr.read()).filter((p) => p.component_id));
+          toast("Состав сохранён");
+          dialog.close();
+        } catch (err) {
+          error.textContent = err.message;
+        }
+      } }, "Сохранить") : "",
+      el("button", { type: "button", class: "secondary", onclick: () => dialog.close() }, "Закрыть")));
+  document.body.append(dialog);
+  dialog.addEventListener("close", () => dialog.remove());
+  dialog.showModal();
+}
+
+// Маршруты в Excel: выгрузить номенклатуру с маршрутами и составом, загрузить исправленное
+function routesExcel(org) {
+  const input = el("input", { type: "file", accept: ".xlsx", hidden: true, "aria-label": "Файл маршрутов" });
+  input.addEventListener("change", async () => {
+    const file = input.files[0];
+    if (!file) return;
+    input.value = "";
+    try {
+      const r = await api.upload(`/api/organizations/${org.id}/import/routes`, file);
+      const dialog = el("dialog", { class: "dialog wide" },
+        el("h2", {}, `Маршруты загружены: ${file.name}`),
+        el("ul", {}, el("li", {}, `Строк в файле: ${r.rows}`), el("li", {}, `Обновлено товаров: ${r.updated}`)),
+        ...(r.errors.length ? [el("h3", {}, `Не загружено строк: ${r.errors.length}`),
+          el("ul", { class: "error-list" }, ...r.errors.map((e) => el("li", {}, `Строка ${e.row}: ${e.error}`)))] : []),
+        el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => { dialog.close(); location.reload(); } }, "Понятно")));
+      document.body.append(dialog);
+      dialog.addEventListener("close", () => dialog.remove());
+      dialog.showModal();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  });
+  return [
+    el("button", { type: "button", class: "secondary", onclick: () => api.download(
+      `/api/organizations/${org.id}/import/routes.xlsx`, "routes.xlsx").catch((err) => toast(err.message, "error")) },
+    "Маршруты в Excel"),
+    el("button", { type: "button", class: "secondary", onclick: () => { input.value = ""; input.click(); } }, "Загрузить маршруты"),
+    input,
+  ];
+}
+
 const CHAIN_LINKS = [["production", "Производство"], ["logistics", "Логистика"], ["trade", "Торговля"], ["discount", "Дисконт"]];
 const PRICE_KINDS = [["production", "Производства"], ["logistics", "Логистики"], ["sale", "Продажи"], ["discount", "Дисконта"]];
 const VAT_OPTIONS = [["0", "без НДС"], ["5", "5 %"], ["7", "7 %"], ["10", "10 %"], ["20", "20 %"], ["22", "22 %"]];
@@ -617,12 +708,20 @@ const TABS = [
     key: "nomenclature",
     title: "Номенклатура",
     addText: "Добавить номенклатуру",
-    extra: (org) => pricesExcel(org),
+    extra: (org) => [...pricesExcel(org), ...routesExcel(org)],
     columns: (d, state) => [
       { title: "Наименование", field: "name", widthGrow: 3, headerFilter: "input", headerFilterPlaceholder: "поиск" },
       { title: "Артикул", field: "article", width: 140, headerFilter: "input", headerFilterPlaceholder: "поиск" },
       { title: "Вид", field: "kind", width: 130, formatter: titleOf(NOMENCLATURE_KINDS) },
       { title: "Ед. изм.", field: "unit_id", width: 100, formatter: lookup(d.units, (u) => u.short_name) },
+      { title: "Маршрут", field: "route", width: 170, formatter: titleOf(ROUTES) },
+      { title: "Производство", field: "producer_cfo_id", width: 150, formatter: lookup(d.cfos, (c) => c.name) },
+      { title: "", field: "_parts", width: 80, hozAlign: "center", headerSort: false,
+        formatter: (c) => (c.getRow().getData().route === "assembled" ? "состав" : ""),
+        cssClass: "link-like", cellClick: (_e, c) => {
+          const row = c.getRow().getData();
+          if (row.route === "assembled") openComponents(row, d, state.canEdit);
+        } },
       { title: "", field: "_prices", width: 80, hozAlign: "center", headerSort: false, formatter: () => "цены",
         cssClass: "link-like", cellClick: (_e, c) => openPrices(c.getRow().getData(), d, state.canEdit) },
     ],
@@ -633,6 +732,11 @@ const TABS = [
       { name: "unit_id", label: "Единица измерения", type: "select", required: true, numeric: true,
         options: optionsOf(d.units, (u) => `${u.short_name} — ${u.name}`),
         default: String(d.units.find((u) => u.okei === "796")?.id ?? "") },
+      { name: "route", label: "Маршрут до точки продаж (бюджет ЦФО)", type: "select", nullable: true,
+        options: [["", "— не участвует —"], ...ROUTES],
+        hint: "Покупной — со склада через логистику; продукция (и полуфабрикат) — от производства; доготовка — на точке из составляющих" },
+      { name: "producer_cfo_id", label: "Производство (для продукции)", type: "select", numeric: true, nullable: true,
+        options: [["", "— нет —"], ...productionCfos(d.cfos).map((c) => [String(c.id), cfoPathLabels(d.cfos).get(c.id)])] },
     ],
   },
   {

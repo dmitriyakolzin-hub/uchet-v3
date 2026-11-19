@@ -860,4 +860,13 @@
   сумма), `/preview`, список, карточка, `/cancel`, `/journal`, `/from-journal`; `/import/templates/internal-transfers.xlsx`,
   `/import/internal-transfers`. Интерфейс: `js/transfers.js: openTransfers` (кнопка «Внутренние передачи» в журнале).
   Тестов 412, ui_smoke дополнен.
+- 2026-11-19 — 20.4 влита (PR 84). Владелец описал конечные точки (продажа / дисконт / утиль) и пути товара на точку
+  (покупной, продукция, доготовка из полуфабриката) — `docs/TZ.md`, раздел 29; план объёмов разделён на 20.5 и 20.6.
+  Шаг 20.5 (ветка `etap-20-5-routes`), «Детали 20.5». Миграция 0058: `nomenclature.route` (purchased/product/assembled),
+  `producer_cfo_id` (SET NULL), `nomenclature_components` (товар, составляющая RESTRICT, норма numeric(18,4), уникальна
+  пара). `app/services/routes.py`: `check_item` (производство — ЦФО со звеном production), `set_components`,
+  `components_of`, Excel (`routes_xlsx`, `import_routes`). Хук `_check_nomenclature` в справочнике номенклатуры;
+  API `GET/PUT /nomenclature/{id}/components`, `/import/routes.xlsx`, `/import/routes`. У ЦФО `chain_link` в
+  `nullable_fields` (можно очистить). Интерфейс: «Маршрут», «Производство», «состав» (`openComponents`), «Маршруты
+  в Excel» / «Загрузить маршруты». Тестов 413, ui_smoke дополнен.
 
