@@ -10,6 +10,11 @@ from tests.test_payment_requests import env  # noqa: F401
 TODAY = dt.date.today()
 
 
+def opex(env):
+    """Вид затрат (21.3): операционная, статья расходов ОПиУ."""
+    return {"cost_kind": "opex", "budget_article_id": env["art"]["Прочие управленческие расходы"]}
+
+
 def act(client, h, req, action, **body):
     return client.post(f"/api/asset-requests/{req['id']}/{action}", headers=h, json=body or None)
 
@@ -35,7 +40,7 @@ def test_request_decision_delivery(client, env, db, make_user, headers_for):  # 
     person = env["post"]("employees", {"full_name": "Матвеев Олег", "user_id": mol_user.id})
     url = f"{env['o']}/asset-requests"
     body = {"name": "Холодильник", "quantity": 2, "cfo_id": env["shop"]["id"], "justification": "сломался старый",
-            "estimated_price": "40000", "needed_on": TODAY.isoformat()}
+            "estimated_price": "40000", "needed_on": TODAY.isoformat(), **opex(env)}
     assert client.post(url, headers=mol, json=body).status_code == 403  # МОЛ заявки не подаёт
     resp = client.post(url, headers=engineer, json=body)
     assert resp.status_code == 201, resp.text
@@ -95,7 +100,7 @@ def test_request_decision_delivery(client, env, db, make_user, headers_for):  # 
 def test_leasing_and_reject(client, env, db, make_user, headers_for):  # noqa: F811
     _, aho = member(db, make_user, headers_for, env, "aho", "aho_operator")
     url = f"{env['o']}/asset-requests"
-    need = {"cfo_id": env["shop"]["id"], "estimated_price": "500000", "needed_on": TODAY.isoformat()}
+    need = {"cfo_id": env["shop"]["id"], "estimated_price": "500000", "needed_on": TODAY.isoformat(), **opex(env)}
     req = client.post(url, headers=aho, json={"name": "Печь конвекционная", **need}).json()
     req = act(client, aho, req, "submit").json()
     assert act(client, aho, req, "reject", reason="нет").status_code == 403
@@ -139,7 +144,7 @@ def test_receipt(client, env, db, make_user, headers_for):  # noqa: F811
     cats = {c["name"]: c["id"] for c in client.get(f"{env['o']}/asset-categories", headers=aho).json()}
     req = client.post(f"{env['o']}/asset-requests", headers=aho, json={
         "name": "Стеллаж", "quantity": 3, "category_id": cats["Мебель"], "cfo_id": env["shop"]["id"],
-        "estimated_price": "5000", "needed_on": TODAY.isoformat()}).json()
+        "estimated_price": "5000", "needed_on": TODAY.isoformat(), **opex(env)}).json()
     req = to_fd(client, env, act(client, aho, req, "submit").json())
     assert req["can_receive"] is False  # до решения ФД не принимают
     assert act(client, aho, req, "receive", received_on=TODAY.isoformat(), quantity=1).status_code == 422
@@ -208,19 +213,19 @@ def test_approval_route_and_budget(client, env, db, make_user, headers_for):  # 
     h_buyer = head_of(db, make_user, headers_for, env, "buyer", "executor_head", executor_id=buyers["id"])
     _, engineer = member(db, make_user, headers_for, env, "engineer", "engineer")
 
-    # бюджет: покупка ОС у филиала на следующий месяц — 100 000
+    # бюджет: прочие управленческие расходы филиала на следующий месяц — 100 000 (план ОПиУ, 21.3)
     target = (TODAY.replace(day=1) + dt.timedelta(days=40)).replace(day=10)
     budget = client.post(f"{env['o']}/budgets", headers=env["h"], json={"kind": "year", "year": target.year}).json()
     version = budget["versions"][0]
     resp = client.put(f"/api/budget-versions/{version['id']}/cells", headers=env["h"], json={
-        "kind": "cf", "cfo_id": branch["id"],
-        "cells": [{"article_id": env["art"]["Покупка основных средств"], "month": target.month, "amount": "100000"}]})
+        "kind": "pl", "cfo_id": branch["id"],
+        "cells": [{"article_id": env["art"]["Прочие управленческие расходы"], "month": target.month, "amount": "100000"}]})
     assert resp.status_code == 200, resp.text
     assert client.post(f"/api/budget-versions/{version['id']}/approve", headers=env["h"]).status_code == 200
 
     url = f"{env['o']}/asset-requests"
     body = {"name": "Витрина", "quantity": 2, "cfo_id": shop["id"], "estimated_price": "30000",
-            "needed_on": target.isoformat(), "executor_id": buyers["id"]}
+            "needed_on": target.isoformat(), "executor_id": buyers["id"], **opex(env)}
     first = client.post(url, headers=h_shop, json={**body, "needed_on": None}).json()
     assert act(client, h_shop, first, "submit").status_code == 422  # без «когда нужно» не подать
     first = client.put(f"/api/asset-requests/{first['id']}", headers=h_shop, json=body).json()

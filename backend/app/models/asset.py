@@ -149,6 +149,7 @@ class AssetRequest(Base):
         CheckConstraint("status IN ('draft', 'pending', 'revision', 'rejected', 'approved', 'ordered', 'shipped', "
                         "'delivered', 'received', 'cancelled')", name="status"),
         CheckConstraint("budget_mark IS NULL OR budget_mark IN ('within', 'over')", name="budget_mark"),
+        CheckConstraint("cost_kind IS NULL OR cost_kind IN ('invest', 'opex')", name="cost_kind"),
         CheckConstraint("purchase_kind IS NULL OR purchase_kind IN ('prepay', 'deferral', 'leasing')",
                         name="purchase_kind"),
         CheckConstraint("quantity > 0", name="quantity"),
@@ -178,6 +179,14 @@ class AssetRequest(Base):
     budget_cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="SET NULL"))
     budget_plan: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))  # план ДДС ветки на месяц (None — плана нет)
     budget_used: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))  # другие заявки на имущество ветки в месяце
+    # вид затрат (docs/TZ.md, раздел 28, «Детали 21.3»): invest — инвестпроект (+ статья вложений), opex — статья
+    # расходов ОПиУ; бюджет заявки — план вложений проекта или план ОПиУ ветки ЦФО; NULL — прежние заявки (план ДДС)
+    cost_kind: Mapped[str | None] = mapped_column(String(6))
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("investment_projects.id", ondelete="SET NULL"),
+                                                   index=True)
+    budget_article_id: Mapped[int | None] = mapped_column(ForeignKey("articles.id", ondelete="SET NULL"))
+    budget_fact: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))  # факт месяца (вложения / расходы)
+    budget_limit_left: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))  # остаток лимита проекта
     # решение финансового директора
     model_name: Mapped[str] = mapped_column(String(255), default="", server_default="")  # утверждённое наименование
     counterparty_id: Mapped[int | None] = mapped_column(ForeignKey("counterparties.id", ondelete="RESTRICT"))

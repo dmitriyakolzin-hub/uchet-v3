@@ -36,6 +36,7 @@ from app.models import (
     Cfo,
     Employee,
     Executor,
+    InvestmentProject,
     LegalEntity,
     User,
 )
@@ -53,6 +54,7 @@ from app.services import asset_requests as service
 from app.services import asset_route as route
 from app.services import leasing
 from app.services import assets as asset_service
+from app.services.articles import labels as article_labels
 from app.services.asset_requests import AssetRequestError
 from app.services.payment_requests import STATUS_TITLES as PAYMENT_STATUS_TITLES
 
@@ -74,6 +76,27 @@ class RequestIn(BaseModel):
     estimated_price: Money | None = None
     needed_on: dt.date | None = None  # когда нужно: по бюджету этого месяца проверяется заявка
     executor_id: int | None = None  # кто закупает (ЦФУ); пусто — сам ЦФО
+    # вид затрат (21.3): invest — инвестпроект + статья вложений, opex — статья расходов ОПиУ
+    cost_kind: Literal["invest", "opex"] | None = None
+    project_id: int | None = None
+    budget_article_id: int | None = None
+
+
+class CostIn(BaseModel):
+    cost_kind: Literal["invest", "opex"]
+    project_id: int | None = None
+    budget_article_id: int | None = None
+
+
+class OptionOut(BaseModel):
+    id: int
+    name: str
+
+
+class BudgetOptionsOut(BaseModel):
+    projects: list[OptionOut]
+    invest_articles: list[OptionOut]
+    opex_articles: list[OptionOut]
 
 
 class CommentIn(BaseModel):
@@ -161,6 +184,12 @@ class RequestOut(BaseModel):
     executor_id: int | None
     executor_name: str
     amount: Decimal | None  # сколько заявка занимает бюджета: решение ФД или ориентир × количество
+    cost_kind: str | None = None
+    cost_kind_title: str = ""
+    project_id: int | None = None
+    project_name: str = ""
+    budget_article_id: int | None = None
+    budget_article_name: str = ""
     route: list[StepOut] = []
     step_title: str = ""  # у кого сейчас заявка
     can_act: bool = False  # пользователь — на текущем шаге (на шаге ФД — решение)
@@ -171,6 +200,8 @@ class RequestOut(BaseModel):
     budget_cfo_name: str
     budget_plan: Decimal | None
     budget_used: Decimal | None
+    budget_fact: Decimal | None = None
+    budget_limit_left: Decimal | None = None
     budget_remaining: Decimal | None
     budget_excess: Decimal | None  # насколько сверх бюджета
     can_mark: bool = False  # финансовый директор меняет отметку о бюджете
@@ -337,6 +368,8 @@ def _out(db: Session, requests: list[AssetRequest], scope: Scope) -> list[Reques
     contracts = _names(db, Contract, ids("contract_id"), lambda c: c.name or f"№ {c.number}")
     employees = _names(db, Employee, ids("employee_id"), lambda e: e.full_name)
     executors = _names(db, Executor, ids("executor_id"), lambda e: e.name)
+    projects = _names(db, InvestmentProject, ids("project_id"), lambda p: p.name)
+    articles = article_labels(db, requests[0].organization_id)
     cfo_names = dict(db.execute(select(Cfo.id, Cfo.name).where(Cfo.organization_id == requests[0].organization_id)).all())
     users = _names(db, User, ids("created_by") + ids("decided_by"), lambda u: u.full_name or u.login)
     receipts: dict[int, list[ReceiptOut]] = {}
@@ -361,15 +394,21 @@ def _out(db: Session, requests: list[AssetRequest], scope: Scope) -> list[Reques
     rows = []
     for r in requests:
         need = route.amount(r)
-        remaining = r.budget_plan - (r.budget_used or Decimal("0.00")) if r.budget_plan is not None else None
+        remaining = (r.budget_plan - (r.budget_fact or Decimal("0.00")) - (r.budget_used or Decimal("0.00"))
+                     if r.budget_plan is not None else None)
         excess = None
         if r.budget_mark == "over" and need is not None:
             excess = need - max(remaining, Decimal("0.00")) if remaining is not None else need
+            if r.budget_limit_left is not None:
+                excess = max(excess, need - max(r.budget_limit_left, Decimal("0.00")))
         steps = list(r.route or [])
         done = r.step if r.status == "pending" else (len(steps) if r.status not in service.EDITABLE else 0)
         rows.append(RequestOut(
             needed_on=r.needed_on, executor_id=r.executor_id, executor_name=executors.get(r.executor_id, ""),
-            amount=need,
+            amount=need, cost_kind=r.cost_kind, cost_kind_title=route.COST_KINDS.get(r.cost_kind or "", ""),
+            project_id=r.project_id, project_name=projects.get(r.project_id, ""),
+            budget_article_id=r.budget_article_id, budget_article_name=articles.get(r.budget_article_id, ""),
+            budget_fact=r.budget_fact, budget_limit_left=r.budget_limit_left,
             route=[StepOut(key=k, title=route.step_title(k, cfo_names),
                            state="done" if i < done else "current" if i == done and r.status == "pending" else "next")
                    for i, k in enumerate(steps)],
@@ -514,6 +553,35 @@ def approve_step(request_id: int, user: CurrentUser, db: DbSession, body: Commen
     budget_text = _run(db, lambda: route.approve_step(db, req))
     service.event(db, req, user, "step_approved", "; ".join(x for x in (title, body.comment if body else "", budget_text) if x))
     return _save(db, req, scope)
+
+
+@router.post("/asset-requests/{request_id}/cost", response_model=RequestOut)
+def set_cost(request_id: int, body: CostIn, user: CurrentUser, db: DbSession):
+    """Финансовый директор указывает или поправляет вид затрат — бюджет заявки пересчитывается (21.3)."""
+    req, scope = _request(db, user, request_id)
+    _need(scope, Perm.SUPERVISE)
+    details = _run(db, lambda: route.set_cost(db, req, body.cost_kind, body.project_id, body.budget_article_id))
+    service.event(db, req, user, "cost", details)
+    return _save(db, req, scope)
+
+
+@router.get("/organizations/{organization_id}/asset-requests/budget-options", response_model=BudgetOptionsOut)
+def budget_options(organization_id: int, user: CurrentUser, db: DbSession):
+    """Для формы заявки: инвестпроекты, статьи вложений и статьи расходов ОПиУ (без подстатей)."""
+    from app.services import plan as plan_service
+
+    Scope(db, user, organization_id)
+    projects = db.scalars(select(InvestmentProject).where(InvestmentProject.organization_id == organization_id,
+                                                          InvestmentProject.is_active,
+                                                          InvestmentProject.status != "done")
+                          .order_by(InvestmentProject.name))
+    return BudgetOptionsOut(
+        projects=[OptionOut(id=p.id, name=p.name) for p in projects],
+        invest_articles=[OptionOut(id=a.id, name=a.display_name)
+                         for a, _ in plan_service.plan_articles(db, organization_id, "inv")],
+        opex_articles=[OptionOut(id=a.id, name=a.display_name)
+                       for a, _ in plan_service.plan_articles(db, organization_id, "pl")
+                       if a.pl_section in route.EXPENSE_SECTIONS])
 
 
 @router.post("/asset-requests/{request_id}/revise", response_model=RequestOut)
