@@ -3,7 +3,7 @@
 
 import datetime as dt
 
-from tests.test_asset_requests import act, to_fd
+from tests.test_asset_requests import act, opex, to_fd
 from tests.test_assets import member
 from tests.test_closing import env as closing_env  # noqa: F401
 from tests.test_payment_requests import env  # noqa: F401
@@ -14,7 +14,7 @@ TODAY = dt.date.today()
 def leased(client, env, aho, name, quantity):
     req = client.post(f"{env['o']}/asset-requests", headers=aho, json={
         "name": name, "quantity": quantity, "cfo_id": env["office"]["id"], "estimated_price": "100000",
-        "needed_on": TODAY.isoformat()}).json()
+        "needed_on": TODAY.isoformat(), **opex(env)}).json()
     req = to_fd(client, env, act(client, aho, req, "submit").json())
     resp = act(client, env["h"], req, "approve", legal_entity_id=env["le"].id, purchase_kind="leasing")
     assert resp.status_code == 200, resp.text

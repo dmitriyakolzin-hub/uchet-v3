@@ -109,6 +109,8 @@ class ItemOut(BaseModel):
     accounting_operation_number: int | None = None
     supplier_id: int | None = None  # поставщик и договор из заявки на имущество — для постановки на учёт
     supplier_contract_id: int | None = None
+    source_cost_kind: str | None = None  # вид затрат заявки (21.3): opex — статья расходов при постановке на учёт
+    source_article_id: int | None = None
     in_transfer: bool = False  # в неподтверждённом перемещении (шаг 19.5)
     in_disposal: bool = False  # в выбытии на согласовании (шаг 19.6)
 
@@ -211,7 +213,8 @@ def _out(db: Session, items: list[AssetItem], scope: Scope) -> list[ItemOut]:
         accounting_operation_id=i.accounting_operation_id,
         accounting_operation_number=op_numbers.get(i.accounting_operation_id),
         supplier_id=(src.counterparty_id if (src := sources.get(i.receipt_id)) else None),
-        supplier_contract_id=(src.contract_id if src else None), in_transfer=i.id in moving, in_disposal=i.id in leaving,
+        supplier_contract_id=(src.contract_id if src else None),
+        source_cost_kind=(src.cost_kind if src else None), source_article_id=(src.budget_article_id if src else None), in_transfer=i.id in moving, in_disposal=i.id in leaving,
     ) for i in items]
 
 

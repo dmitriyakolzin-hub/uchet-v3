@@ -17,6 +17,7 @@ from app.models import (
     Counterparty,
     Employee,
     Executor,
+    InvestmentProject,
     LegalEntity,
     PaymentRequest,
     User,
@@ -72,6 +73,8 @@ def validate(db: Session, req: AssetRequest) -> None:
     _own(db, req, Cfo, req.cfo_id, "ЦФО")
     _own(db, req, LegalEntity, req.legal_entity_id, "Юрлицо")
     _own(db, req, Executor, req.executor_id, "ЦФУ (кто закупает)")
+    _own(db, req, InvestmentProject, req.project_id, "Инвестпроект")
+    _own(db, req, Article, req.budget_article_id, "Статья бюджета")
 
 
 def total(req: AssetRequest) -> Decimal | None:

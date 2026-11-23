@@ -909,3 +909,14 @@
   `periodic.active_terms` сравнивает число по договору, а не перенесённое с выходного (терялся первый месяц). Интерфейс:
   вкладка «Лизинг» (`js/pages/assetleasing.js`), «Заполнить лизинг…» / «Снять сведения о лизинге» в заявках, «ждём договор
   лизинга», договор лизинга в карточке и форме единицы, вид «Лизинг» у договоров. Тестов 418, ui_smoke дополнен.
+- 2026-11-23 — 21.2 влита (PR 89). Шаг 21.3 (ветка `etap-21-3-request-budgets`), `docs/TZ.md`, раздел 28 «Детали 21.3»
+  (ответы «1 а, 2 б, 3 а, 4 б»). Миграция 0063: в `asset_requests` — `cost_kind` (invest/opex), `project_id`, `budget_article_id`,
+  `budget_fact`, `budget_limit_left`. `asset_route`: `budget()` по виду — `_invest_budget` (план «inv» проекта на месяц
+  [+ статья] − дебет 08 его ОС за месяц через `ReportFilter.lines` − `_other_requests`; лимит − вложено с начала − все открытые
+  заявки проекта), `_opex_budget` (план «pl» по `ReportFilter(plan_versions)` и факт — дебет − кредит строк со статьёй, без
+  ввода остатков и корр. 84; ближайший ЦФО с планом), `_cash_budget` — прежние заявки без вида; `OPEN_REQUESTS` (до приёмки);
+  `check_cost` (при подаче), `set_cost`. API: `POST /asset-requests/{id}/cost` (SUPERVISE), `GET /organizations/{id}/
+  asset-requests/budget-options`; `RequestOut.cost_kind/project/budget_article/budget_fact/budget_limit_left`. Карточка ОС
+  при учёте получает `project_id` инвестиционной заявки; `ItemOut.source_cost_kind/source_article_id` (форма учёта —
+  «в расход» на статью операционной заявки). Отчёт «Инвестиции»: поле `requested` («В заявках на имущество»). Интерфейс:
+  вид затрат / проект / статья в форме заявки, «Вид затрат…», расчёт бюджета словами. Тестов 419, ui_smoke дополнен.

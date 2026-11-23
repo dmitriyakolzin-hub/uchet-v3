@@ -100,9 +100,11 @@ def account(db: Session, items: list[AssetItem], user: User, *, kind: str, on_da
             raise AccountingError("Статья амортизации — статья ОПиУ с шаблоном проводки, без подстатей")
         ids = _accounts(db, "08", "60.01")
         for item in items:
+            src = source_request(db, item)  # инвестиционная заявка — карточка ОС в её инвестпроекте (21.3)
             fa = FixedAsset(organization_id=org, name=item.name, inventory_number=item.number,
                             legal_entity_id=item.legal_entity_id, cost=item.purchase_price,
-                            useful_life_months=useful_life_months, cfo_id=item.cfo_id, pl_item_id=depreciation.id)
+                            useful_life_months=useful_life_months, cfo_id=item.cfo_id, pl_item_id=depreciation.id,
+                            project_id=src.project_id if src is not None and src.cost_kind == "invest" else None)
             db.add(fa)
             db.flush()
             item.fixed_asset_id = fa.id

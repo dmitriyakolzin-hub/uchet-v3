@@ -429,8 +429,11 @@ export async function renderAssets(view) {
         { name: "expense_account", label: "Счёт затрат", type: "select", options: [["26", "26 Общехозяйственные расходы"], ["44", "44 Расходы на продажу"]] },
         { name: "expense_item_id", label: "Статья ОПиУ расхода", type: "select", options: options(plItems, (a) => full.articleLabel.get(a.id)) },
       ],
-      values: { kind: "fixed_asset", on_date: new Date().toISOString().slice(0, 10), counterparty_id: String(first.supplier_id ?? ""),
-        contract_id: String(first.supplier_contract_id ?? ""), useful_life_months: "60", commission: true, expense_account: "26" },
+      // операционная заявка (21.3) — сразу «в расход» на её статью; инвестиционная — основное средство (в проекте)
+      values: { kind: first.source_cost_kind === "opex" ? "expense" : "fixed_asset", on_date: new Date().toISOString().slice(0, 10),
+        counterparty_id: String(first.supplier_id ?? ""), contract_id: String(first.supplier_contract_id ?? ""),
+        useful_life_months: "60", commission: true, expense_account: "26",
+        expense_item_id: first.source_cost_kind === "opex" ? String(first.source_article_id ?? "") : "" },
       submitText: "Поставить на учёт",
       onSubmit: async (v) => {
         const fixed = v.kind === "fixed_asset";

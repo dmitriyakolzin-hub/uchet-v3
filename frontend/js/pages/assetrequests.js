@@ -11,9 +11,11 @@ const STATUS_FILTER = [["", "Все"], ["to_act", "Ждут моего реше�
   ["draft,revision,rejected", "Черновики, доработка, отклонённые"], ["pending", "На согласовании"],
   ["approved,ordered,shipped", "Закупаются"], ["delivered", "Доставлены"], ["received,cancelled", "Закрытые"]];
 const KINDS = [["prepay", "Предоплата"], ["deferral", "Отсрочка"], ["leasing", "Лизинг"]];
+const COST_KINDS = [["", "— выберите —"], ["invest", "Инвестиционная (капвложение)"], ["opex", "Операционная (расход)"]];
+const OPEN = ["pending", "approved", "ordered", "shipped", "delivered"];
 const ACTIONS = { created: "создал(а)", edited: "изменил(а)", submitted: "подал(а) на согласование", recalled: "отозвал(а)",
   step_approved: "согласовал(а)", revised: "вернул(а) на доработку", budget: "поставил(а) отметку о бюджете",
-  lease: "заполнил(а) лизинг", lease_removed: "снял(а) сведения о лизинге",
+  lease: "заполнил(а) лизинг", lease_removed: "снял(а) сведения о лизинге", cost: "указал(а) вид затрат",
   approved: "принял(а) решение", rejected: "отклонил(а)", unapproved: "вернул(а) на решение", cancelled: "отменил(а)",
   delivery: "отметил(а) поставку", received: "принял(а)", receipt_undone: "отменил(а) приёмку",
   file: "приложил(а) файл", file_removed: "убрал(а) файл" };
@@ -96,10 +98,66 @@ export function assetRequestsTab(box, ctx) {
   }
 
   function budgetBadge(r) {
-    if (!r.budget_mark) return "";
-    return el("span", { class: `badge budget-${r.budget_mark}`, title: r.budget_comment || "" },
+    const what = r.project_name || r.budget_article_name;
+    const kind = r.cost_kind ? el("div", { class: "muted small" }, `${r.cost_kind === "invest" ? "инвест." : "расход"}${what ? `: ${what}` : ""}`) : "";
+    if (!r.budget_mark) return kind;
+    return el("span", {}, el("span", { class: `badge budget-${r.budget_mark}`, title: r.budget_comment || "" },
       r.budget_mark_title + (r.budget_manual ? " (вручную)" : ""),
-      r.budget_excess ? el("div", { class: "small" }, `+${money(r.budget_excess)}`) : "");
+      r.budget_excess ? el("div", { class: "small" }, `+${money(r.budget_excess)}`) : ""), kind);
+  }
+
+  // расчёт бюджета словами (21.3): план, факт, другие заявки, остаток, лимит проекта
+  function budgetCalc(r) {
+    if (r.budget_plan === null) return "плана на этот месяц нет";
+    return `план ${money(r.budget_plan)}${r.budget_fact !== null ? `, факт ${money(r.budget_fact)}` : ""}, другие заявки ${money(r.budget_used)}, `
+      + `остаток ${money(r.budget_remaining)}, заявка ${money(r.amount)}`
+      + (r.budget_limit_left !== null ? `; остаток лимита проекта ${money(r.budget_limit_left)}` : "");
+  }
+
+  // вид затрат, инвестпроект и статья — поля формы заявки и окна «Вид затрат…»
+  const loadBudgetOptions = () => api.get(`/api/organizations/${ctx.org().id}/asset-requests/budget-options`);
+  const costFields = (opts) => [
+    { name: "cost_kind", label: "Вид затрат", type: "select", options: COST_KINDS },
+    { name: "project_id", label: "Инвестпроект", type: "select", options: options(opts.projects, (p) => p.name) },
+    { name: "budget_article_id", label: "Статья", type: "select", options: [["", "— не указано —"]] },
+  ];
+  function wireCost(form, opts, value) {
+    const nodes = (name) => {
+      const input = form.elements[name];
+      return [form.querySelector(`label[for="${input.id}"]`), input].filter(Boolean);
+    };
+    const toggle = () => {
+      const kind = form.elements.cost_kind.value;
+      nodes("project_id").forEach((n) => { n.hidden = kind !== "invest"; });
+      nodes("budget_article_id").forEach((n) => { n.hidden = !kind; });
+      const list = kind === "invest" ? options(opts.invest_articles, (a) => a.name, "— любая статья вложений —")
+        : options(opts.opex_articles, (a) => a.name, "— выберите статью расходов —");
+      const current = form.elements.budget_article_id.value || value;
+      form.elements.budget_article_id.replaceChildren(...list.map(([v, t]) => el("option", { value: v, selected: v === current }, t)));
+      form.querySelector(`label[for="${form.elements.budget_article_id.id}"]`).firstChild.textContent =
+        kind === "invest" ? "Статья вложений" : "Статья расходов ОПиУ";
+    };
+    form.elements.cost_kind.addEventListener("change", () => { form.elements.budget_article_id.value = ""; toggle(); });
+    toggle();
+  }
+  const costBody = (v) => ({ cost_kind: v.cost_kind || null, project_id: v.cost_kind === "invest" ? idOrNull(v.project_id) : null,
+    budget_article_id: idOrNull(v.budget_article_id) });
+
+  async function setCost(r) {
+    let opts;
+    try {
+      opts = await loadBudgetOptions();
+    } catch (err) {
+      toast(err.message, "error");
+      return;
+    }
+    const dialog = openForm({ title: `Вид затрат: заявка № ${r.number}`, fields: costFields(opts),
+      values: { cost_kind: r.cost_kind ?? "", project_id: String(r.project_id ?? "") },
+      extra: el("p", { class: "muted small" }, "Бюджет заявки пересчитается: инвестиционная — план вложений проекта на месяц "
+        + "и остаток лимита проекта, операционная — план расходов ОПиУ ветки ЦФО по статье минус факт."),
+      submitText: "Сохранить",
+      onSubmit: async (v) => { await api.post(`/api/asset-requests/${r.id}/cost`, costBody(v)); await load(); } });
+    wireCost(dialog.querySelector("form"), opts, String(r.budget_article_id ?? ""));
   }
 
   // сверх бюджета — отдельно: по ЦФО бюджета, сколько заявок и насколько сверх
@@ -130,6 +188,7 @@ export function assetRequestsTab(box, ctx) {
     else if (r.can_act) list.push(["step", "Согласовать"]);
     if (r.status === "pending" && (r.can_act || can("supervise"))) list.push(["revise", "Вернуть на доработку"], ["reject", "Отклонить"]);
     if (r.can_mark) list.push(["mark", "Отметка о бюджете…"]);
+    if (OPEN.includes(r.status) && can("supervise")) list.push(["cost", "Вид затрат…"]);
     if (r.lease_pending && can("supervise")) list.push(["lease", "Заполнить лизинг…"]);
     if (r.purchase_kind === "leasing" && r.contract_id && !r.lease_pending && r.status !== "cancelled" && can("supervise")) {
       list.push(["unlease", "Снять сведения о лизинге"]);
@@ -172,6 +231,7 @@ export function assetRequestsTab(box, ctx) {
         fields: [{ name: "comment", label: "Комментарий (необязательно)", type: "textarea" }], submitText: "Согласовать",
         onSubmit: async (v) => { await api.post(`/api/asset-requests/${r.id}/approve-step`, { comment: v.comment ?? "" }); await load(); } });
     } else if (action === "mark") markBudget(r);
+    else if (action === "cost") setCost(r);
     else if (action === "lease") fillLease(r);
     else if (action === "unlease") {
       if (confirm(`Снять сведения о лизинге по заявке № ${r.number}? Платёж заявки уйдёт из платежа договора.`)) {
@@ -193,8 +253,7 @@ export function assetRequestsTab(box, ctx) {
 
   // отметка о бюджете вручную (финансовый директор) или снова по расчёту
   function markBudget(r) {
-    const calc = r.budget_plan === null ? "плана на покупку ОС на этот месяц нет"
-      : `план ${money(r.budget_plan)}, другие заявки ${money(r.budget_used)}, остаток ${money(r.budget_remaining)}, заявка ${money(r.amount)}`;
+    const calc = budgetCalc(r);
     openForm({ title: `Отметка о бюджете: заявка № ${r.number}`,
       fields: [
         { name: "mark", label: "Отметка", type: "select", options: [["", "По расчёту"], ["within", "В рамках бюджета"], ["over", "Сверх бюджета"]] },
@@ -304,9 +363,16 @@ export function assetRequestsTab(box, ctx) {
     });
   }
 
-  function editRequest(r) {
+  async function editRequest(r) {
     const ref = ctx.ref();
-    openForm({
+    let opts;
+    try {
+      opts = await loadBudgetOptions();
+    } catch (err) {
+      toast(err.message, "error");
+      return;
+    }
+    const dialog = openForm({
       title: r ? `Заявка на имущество № ${r.number}` : "Новая заявка на имущество",
       fields: [
         { name: "name", label: "Что нужно", required: true, placeholder: "Холодильник для магазина" },
@@ -318,6 +384,7 @@ export function assetRequestsTab(box, ctx) {
         { name: "needed_on", label: "Когда нужно (по бюджету этого месяца проверяется заявка)", type: "date" },
         { name: "executor_id", label: "Кто закупает", type: "select", options: options(ref.executors ?? [], (e) => e.name, "— сам ЦФО —") },
         { name: "estimated_price", label: "Ориентир цены за единицу, ₽", placeholder: "0,00" },
+        ...costFields(opts),
         { name: "justification", label: "Зачем (обоснование)", type: "textarea" },
       ],
       values: r ? { ...Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v === null ? "" : String(v)])),
@@ -327,12 +394,14 @@ export function assetRequestsTab(box, ctx) {
         const body = { name: v.name, quantity: Number(v.quantity || 1), category_id: idOrNull(v.category_id),
           cfo_id: idOrNull(v.cfo_id), legal_entity_id: idOrNull(v.legal_entity_id), needed_on: v.needed_on || null,
           executor_id: idOrNull(v.executor_id),
-          estimated_price: v.estimated_price ? parseNumber(v.estimated_price) : null, justification: v.justification ?? "" };
+          estimated_price: v.estimated_price ? parseNumber(v.estimated_price) : null, justification: v.justification ?? "",
+          ...costBody(v) };
         if (r) await api.put(`/api/asset-requests/${r.id}`, body);
         else await api.post(`/api/organizations/${ctx.org().id}/asset-requests`, body);
         await load();
       },
     });
+    wireCost(dialog.querySelector("form"), opts, String(r?.budget_article_id ?? ""));
   }
 
   async function decide(r) {
@@ -424,9 +493,11 @@ export function assetRequestsTab(box, ctx) {
           + (item.reject_reason ? `: ${item.reject_reason}` : "")),
         field("Когда нужно", item.needed_on ? ruDate(item.needed_on) : ""),
         field("Кто закупает", item.executor_name || (item.status !== "draft" ? "сам ЦФО" : "")),
+        field("Вид затрат", item.cost_kind_title),
+        field("Инвестпроект", item.project_name),
+        field(item.cost_kind === "invest" ? "Статья вложений" : "Статья расходов", item.budget_article_name),
         field("Бюджет", item.budget_mark ? `${item.budget_mark_title}${item.budget_manual ? ` (вручную: ${item.budget_comment})` : ""}`
-          + (item.budget_plan !== null ? ` — план ${money(item.budget_plan)} (${item.budget_cfo_name}), другие заявки ${money(item.budget_used)}, остаток ${money(item.budget_remaining)}`
-            : " — плана на покупку ОС на этот месяц нет")
+          + ` — ${budgetCalc(item)}${item.budget_cfo_name && item.cost_kind !== "invest" ? ` (${item.budget_cfo_name})` : ""}`
           + (item.budget_excess ? `, сверх на ${money(item.budget_excess)}` : "") : ""),
         field("Что нужно", `${item.name} × ${item.quantity}`), field("Категория", item.category_name),
         field("Для ЦФО", item.cfo_name), field("Юрлицо", item.legal_entity_name), field("Обоснование", item.justification),

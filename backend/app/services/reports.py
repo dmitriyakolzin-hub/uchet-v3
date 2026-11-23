@@ -1090,7 +1090,7 @@ def stock(db: Session, f: ReportFilter, account_id: int | None = None,
 
 # --- Инвестиции: план/факт по инвестпроектам ---
 
-INVESTMENT_FIELDS = ("limit", "plan", "fact", "fact_total", "paid", "left")
+INVESTMENT_FIELDS = ("limit", "plan", "fact", "fact_total", "requested", "paid", "left")
 
 
 def project_analytics(db: Session, project_id: int, part: str) -> dict[str, list[int]]:
@@ -1136,11 +1136,22 @@ def investments(db: Session, f: ReportFilter, version_id: int | None = None) -> 
                         analytics_in=project_analytics(db, project_id, part)).subquery()
         return Decimal(db.scalar(select(func.coalesce(func.sum(lines.c.amount_rub), 0)))) + ZERO
 
+    # в заявках на имущество (21.3): поданные и в закупке, ещё не принятые — обязательства, которые станут вложениями
+    from app.models.asset import AssetRequest
+    from app.services.asset_route import OPEN_REQUESTS, amount
+
+    requested: dict[int, Decimal] = {}
+    for r in db.scalars(select(AssetRequest).where(AssetRequest.organization_id == f.organization_id,
+                                                   AssetRequest.cost_kind == "invest",
+                                                   AssetRequest.status.in_(OPEN_REQUESTS))):
+        requested[r.project_id] = requested.get(r.project_id, ZERO) + (amount(r) or ZERO)
+
     rows, total = [], {k: ZERO for k in INVESTMENT_FIELDS}
     for p in projects:
         fact_total = turnover(p.id, "fact", None)
         values = {"limit": p.limit_amount + ZERO, "plan": plan.get(p.id, ZERO) + ZERO,
                   "fact": turnover(p.id, "fact", f.date_from), "fact_total": fact_total,
+                  "requested": requested.get(p.id, ZERO),
                   "paid": turnover(p.id, "paid", f.date_from), "left": p.limit_amount - fact_total}
         if not p.is_active and not any(v for k, v in values.items() if k != "limit"):
             continue

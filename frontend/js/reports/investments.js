@@ -31,7 +31,8 @@ export function investmentsReport({ box, ctx }) {
     columns: [
       { title: "Инвестпроект", field: "name", minWidth: 220, widthGrow: 3, headerSort: false },
       col("limit", "Лимит"), col("plan", "План за период"), col("fact", "Вложено за период", true),
-      col("fact_total", "Вложено с начала", true), col("paid", "Оплачено за период", true),
+      col("fact_total", "Вложено с начала", true), col("requested", "В заявках на имущество"),
+      col("paid", "Оплачено за период", true),
       col("left", "Остаток лимита"),
     ],
   });

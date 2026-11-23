@@ -662,7 +662,8 @@ def get_investments(f: Filter, user: CurrentUser, db: DbSession, version_id: int
 
 
 INVESTMENT_XLSX = [("limit", "Лимит"), ("plan", "План за период"), ("fact", "Вложено за период"),
-                   ("fact_total", "Вложено с начала"), ("paid", "Оплачено за период"), ("left", "Остаток лимита")]
+                   ("fact_total", "Вложено с начала"), ("requested", "В заявках на имущество"),
+                   ("paid", "Оплачено за период"), ("left", "Остаток лимита")]
 
 
 @router.get("/investments.xlsx")

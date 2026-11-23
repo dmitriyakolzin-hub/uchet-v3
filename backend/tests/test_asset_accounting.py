@@ -3,7 +3,7 @@
 
 import datetime as dt
 
-from tests.test_asset_requests import act, to_fd
+from tests.test_asset_requests import act, opex, to_fd
 from tests.test_assets import member
 from tests.test_closing import env as closing_env  # noqa: F401
 from tests.test_payment_requests import env  # noqa: F401
@@ -14,7 +14,7 @@ TODAY = dt.date.today()
 def received(client, env, aho, *, name, quantity, kind="deferral", **decision):
     req = client.post(f"{env['o']}/asset-requests", headers=aho, json={
         "name": name, "quantity": quantity, "cfo_id": env["office"]["id"], "estimated_price": "1000",
-        "needed_on": TODAY.isoformat()}).json()
+        "needed_on": TODAY.isoformat(), **opex(env)}).json()
     to_fd(client, env, act(client, aho, req, "submit").json())
     body = {"legal_entity_id": env["le"].id, "counterparty_id": env["cp"]["id"], "contract_id": env["contract"]["id"],
             "purchase_kind": kind, "pay_date": (TODAY + dt.timedelta(days=5)).isoformat(), **decision}

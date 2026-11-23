@@ -1136,6 +1136,10 @@ with sync_playwright() as p:
     d = dialog_fill(page, {"name": "Холодильник", "quantity": "2", "estimated_price": "40 000",
                            "needed_on": TODAY.isoformat()})
     d.locator("[name=cfo_id]").select_option(index=1)
+    # вид затрат (шаг 21.3): операционная — статья расходов ОПиУ
+    d.locator("[name=cost_kind]").select_option("opex")
+    expect(d.locator("[name=project_id]")).to_be_hidden()
+    d.locator("[name=budget_article_id]").select_option(label="Прочие управленческие расходы")
     d.locator("button[type=submit]").click()
     areq = page.locator("table.asset-requests tbody tr", has_text="Холодильник")
     expect(areq).to_contain_text("Черновик")
@@ -1144,6 +1148,7 @@ with sync_playwright() as p:
     expect(areq).to_contain_text("На согласовании")
     expect(areq).to_contain_text("Сверх бюджета")
     expect(areq).to_contain_text("у: Финансовый директор")
+    expect(areq).to_contain_text("расход: Прочие управленческие расходы")
     page.locator("[aria-label='Статус заявок']").select_option(label="Сверх бюджета")
     expect(page.locator(".over-summary")).to_contain_text("80 000,00")
     page.locator("[aria-label='Статус заявок']").select_option(label="Все")
@@ -1188,6 +1193,8 @@ with sync_playwright() as p:
     d = dialog_fill(page, {"name": "Печь конвекционная", "quantity": "1", "estimated_price": "900 000",
                            "needed_on": TODAY.isoformat()})
     d.locator("[name=cfo_id]").select_option(index=1)
+    d.locator("[name=cost_kind]").select_option("opex")
+    d.locator("[name=budget_article_id]").select_option(index=1)
     d.locator("button[type=submit]").click()
     lreq = page.locator("table.asset-requests tbody tr", has_text="Печь конвекционная")
     lreq.locator("select.action-menu").select_option(label="Подать на согласование")
@@ -1223,6 +1230,10 @@ with sync_playwright() as p:
     page.click(".bulk-bar button:has-text('Поставить на учёт')")
     d = page.locator("dialog[open]")
     expect(d.locator("[name=counterparty_id] option:checked")).to_have_text("Поставщик Плюс")  # из заявки
+    # операционная заявка (21.3) — по умолчанию «в расход» на её статью; здесь ставим как ОС
+    expect(d.locator("[name=kind]")).to_have_value("expense")
+    expect(d.locator("[name=expense_item_id] option:checked")).to_have_text("Прочие управленческие расходы")
+    d.locator("[name=kind]").select_option("fixed_asset")
     expect(d.locator("[name=expense_item_id]")).to_be_hidden()
     d.locator("[name=useful_life_months]").fill("36")
     d.locator("button[type=submit]").click()
