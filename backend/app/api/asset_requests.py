@@ -1,8 +1,10 @@
-"""Заявки на имущество (docs/TZ.md, раздел 28, «Детали 19.2»).
+"""Заявки на имущество (docs/TZ.md, раздел 28, «Детали 19.2», «Детали 21.1»).
 
-Видеть — право ASSETS (руководитель ЦФО — своей ветки и свои, МОЛ — где он ответственный); подавать — ASSET_REQUEST
-(финансовый директор, инженер, оператор АХО); решение, отклонение, отмена — SUPERVISE (финансовый директор);
-статус поставки — ASSETS_EDIT.
+Видеть — право ASSETS (руководитель ЦФО — своей ветки и свои, МОЛ — где он ответственный); руководитель ЦФУ — заявки,
+где его ЦФУ закупает. Подавать — ASSET_REQUEST (финансовый директор, руководитель ЦФО, инженер, оператор АХО).
+Согласование — по маршруту (app/services/asset_route.py): руководители ЦФО снизу вверх, CEO (сверх бюджета),
+решение — финансовый директор (SUPERVISE). Отклонить и вернуть на доработку — тот, чей шаг, или финансовый директор.
+Статус поставки и приёмка — ASSETS_EDIT или ЦФУ, который закупает.
 """
 
 import datetime as dt
@@ -16,7 +18,14 @@ from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions, role_in
+from app.api.access import (
+    branch_ids,
+    cfo_scope,
+    executor_scope,
+    get_organization_any,
+    org_permissions,
+    role_in,
+)
 from app.api import assets as asset_files
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm, Role
@@ -24,12 +33,15 @@ from app.models import (
     AssetCategory,
     Contract,
     Counterparty,
+    Cfo,
     Employee,
+    Executor,
     LegalEntity,
     User,
 )
 from app.models.asset import (
     ASSET_REQUEST_STATUSES,
+    BUDGET_MARKS,
     PURCHASE_KINDS,
     AssetItem,
     AssetReceipt,
@@ -38,6 +50,7 @@ from app.models.asset import (
     AssetRequestEvent,
 )
 from app.services import asset_requests as service
+from app.services import asset_route as route
 from app.services import assets as asset_service
 from app.services.asset_requests import AssetRequestError
 from app.services.payment_requests import STATUS_TITLES as PAYMENT_STATUS_TITLES
@@ -58,6 +71,17 @@ class RequestIn(BaseModel):
     legal_entity_id: int | None = None
     justification: Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)] = ""
     estimated_price: Money | None = None
+    needed_on: dt.date | None = None  # когда нужно: по бюджету этого месяца проверяется заявка
+    executor_id: int | None = None  # кто закупает (ЦФУ); пусто — сам ЦФО
+
+
+class CommentIn(BaseModel):
+    comment: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] = ""
+
+
+class MarkIn(BaseModel):
+    mark: Literal["within", "over"] | None = None  # None — снова по расчёту
+    comment: Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)] = ""
 
 
 class DecisionIn(BaseModel):
@@ -95,6 +119,12 @@ class PaymentOut(BaseModel):
     status_title: str
 
 
+class StepOut(BaseModel):
+    key: str
+    title: str
+    state: Literal["done", "current", "next"]
+
+
 class RequestOut(BaseModel):
     id: int
     organization_id: int
@@ -111,6 +141,24 @@ class RequestOut(BaseModel):
     legal_entity_name: str
     justification: str
     estimated_price: Decimal | None
+    needed_on: dt.date | None
+    executor_id: int | None
+    executor_name: str
+    amount: Decimal | None  # сколько заявка занимает бюджета: решение ФД или ориентир × количество
+    route: list[StepOut] = []
+    step_title: str = ""  # у кого сейчас заявка
+    can_act: bool = False  # пользователь — на текущем шаге (на шаге ФД — решение)
+    budget_mark: str | None
+    budget_mark_title: str
+    budget_manual: bool
+    budget_comment: str
+    budget_cfo_name: str
+    budget_plan: Decimal | None
+    budget_used: Decimal | None
+    budget_remaining: Decimal | None
+    budget_excess: Decimal | None  # насколько сверх бюджета
+    can_mark: bool = False  # финансовый директор меняет отметку о бюджете
+    can_delivery: bool = False  # статус поставки
     model_name: str
     counterparty_id: int | None
     counterparty_name: str
@@ -180,7 +228,8 @@ class EventOut(BaseModel):
 
 class Scope:
     def __init__(self, db: Session, user: User, organization_id: int):
-        get_organization_for(db, user, organization_id, Perm.ASSETS)
+        get_organization_any(db, user, organization_id, Perm.ASSETS, Perm.REQUEST)
+        self.db = db
         self.user = user
         self.perms = org_permissions(db, user, organization_id)
         self.own = asset_service.own_employee_ids(db, user, organization_id)
@@ -188,10 +237,19 @@ class Scope:
         self.only_own = not user.is_admin and membership is not None and membership.role == Role.MOL
         root = cfo_scope(db, user, organization_id)
         self.branch = branch_ids(db, root) if root is not None else None
+        # руководитель ЦФУ видит только заявки, где закупает его ЦФУ; без права на имущество — больше никто
+        self.executors = executor_scope(db, user, organization_id)
+        if Perm.ASSETS not in self.perms and self.executors is None:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
+
+    def purchaser(self, req: AssetRequest) -> bool:
+        return self.executors is not None and req.executor_id in self.executors
 
     def visible(self, req: AssetRequest) -> bool:
         if req.created_by == self.user.id:
             return True
+        if self.executors is not None:
+            return self.purchaser(req)
         if self.only_own:
             return req.employee_id in self.own
         if self.branch is not None:
@@ -199,8 +257,18 @@ class Scope:
         return True
 
     def can_receive(self, req: AssetRequest) -> bool:
-        return (Perm.ASSETS_EDIT in self.perms or Perm.ASSET_REQUEST in self.perms
+        return (Perm.ASSETS_EDIT in self.perms or Perm.ASSET_REQUEST in self.perms or self.purchaser(req)
                 or (req.employee_id is not None and req.employee_id in self.own))
+
+    def can_delivery(self, req: AssetRequest) -> bool:
+        return Perm.ASSETS_EDIT in self.perms or self.purchaser(req)
+
+    def can_act(self, req: AssetRequest) -> bool:
+        return route.can_act(self.db, self.user, req, self.perms)
+
+    def can_stop(self, req: AssetRequest) -> bool:
+        """Отклонить или вернуть на доработку: тот, чей шаг, или финансовый директор."""
+        return req.status == "pending" and (self.can_act(req) or Perm.SUPERVISE in self.perms)
 
     def can_edit(self, req: AssetRequest) -> bool:
         return Perm.SUPERVISE in self.perms or (Perm.ASSET_REQUEST in self.perms and req.created_by == self.user.id)
@@ -251,6 +319,8 @@ def _out(db: Session, requests: list[AssetRequest], scope: Scope) -> list[Reques
     counterparties = _names(db, Counterparty, ids("counterparty_id"), lambda c: c.name)
     contracts = _names(db, Contract, ids("contract_id"), lambda c: c.name or f"№ {c.number}")
     employees = _names(db, Employee, ids("employee_id"), lambda e: e.full_name)
+    executors = _names(db, Executor, ids("executor_id"), lambda e: e.name)
+    cfo_names = dict(db.execute(select(Cfo.id, Cfo.name).where(Cfo.organization_id == requests[0].organization_id)).all())
     users = _names(db, User, ids("created_by") + ids("decided_by"), lambda u: u.full_name or u.login)
     receipts: dict[int, list[ReceiptOut]] = {}
     receipt_rows = list(db.scalars(select(AssetReceipt).where(AssetReceipt.request_id.in_(ids("id")))
@@ -273,7 +343,26 @@ def _out(db: Session, requests: list[AssetRequest], scope: Scope) -> list[Reques
                 files=files.get(x.id, [])))
     rows = []
     for r in requests:
+        need = route.amount(r)
+        remaining = r.budget_plan - (r.budget_used or Decimal("0.00")) if r.budget_plan is not None else None
+        excess = None
+        if r.budget_mark == "over" and need is not None:
+            excess = need - max(remaining, Decimal("0.00")) if remaining is not None else need
+        steps = list(r.route or [])
+        done = r.step if r.status == "pending" else (len(steps) if r.status not in service.EDITABLE else 0)
         rows.append(RequestOut(
+            needed_on=r.needed_on, executor_id=r.executor_id, executor_name=executors.get(r.executor_id, ""),
+            amount=need,
+            route=[StepOut(key=k, title=route.step_title(k, cfo_names),
+                           state="done" if i < done else "current" if i == done and r.status == "pending" else "next")
+                   for i, k in enumerate(steps)],
+            step_title=route.step_title(route.current_step(r), cfo_names) if route.current_step(r) else "",
+            can_act=scope.can_act(r), budget_mark=r.budget_mark,
+            budget_mark_title=BUDGET_MARKS.get(r.budget_mark or "", ""), budget_manual=r.budget_manual,
+            budget_comment=r.budget_comment, budget_cfo_name=cfo_names.get(r.budget_cfo_id, ""),
+            budget_plan=r.budget_plan, budget_used=r.budget_used, budget_remaining=remaining, budget_excess=excess,
+            can_mark=r.status == "pending" and Perm.SUPERVISE in scope.perms,
+            can_delivery=r.status in ("approved", "ordered", "shipped") and scope.can_delivery(r),
             id=r.id, organization_id=r.organization_id, number=r.number, status=r.status,
             status_title=ASSET_REQUEST_STATUSES[r.status], name=r.name, quantity=r.quantity,
             category_id=r.category_id, category_name=categories.get(r.category_id, ""), cfo_id=r.cfo_id,
@@ -290,7 +379,7 @@ def _out(db: Session, requests: list[AssetRequest], scope: Scope) -> list[Reques
             created_at=r.created_at, decided_by_name=users.get(r.decided_by, ""), decided_at=r.decided_at,
             payments=[PaymentOut(id=p.id, number=p.number, pay_date=p.pay_date, amount=p.amount, status=p.status,
                                  status_title=PAYMENT_STATUS_TITLES[p.status])
-                      for p in service.linked_payments(db, r)] if r.status not in ("draft", "pending", "rejected") else [],
+                      for p in service.linked_payments(db, r)] if r.status not in ("draft", "pending", "revision", "rejected") else [],
             can_edit=scope.can_edit(r),
             received_quantity=sum(x.quantity for x in receipts.get(r.id, [])), receipts=receipts.get(r.id, []),
             can_receive=r.status in service.RECEIVABLE and scope.can_receive(r),
@@ -309,10 +398,10 @@ def _save(db: Session, req: AssetRequest, scope: Scope) -> RequestOut:
     return _out(db, [req], scope)[0]
 
 
-def _run(db: Session, action) -> None:
+def _run(db: Session, action):
     try:
-        action()
-    except AssetRequestError as exc:
+        return action()
+    except (AssetRequestError, route.RouteError) as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
 
@@ -322,14 +411,20 @@ def _run(db: Session, action) -> None:
 
 @router.get("/organizations/{organization_id}/asset-requests", response_model=list[RequestOut])
 def list_requests(organization_id: int, user: CurrentUser, db: DbSession,
-                  status_: Annotated[str | None, Query(alias="status")] = None, mine: bool = False):
+                  status_: Annotated[str | None, Query(alias="status")] = None, mine: bool = False,
+                  budget: Literal["within", "over"] | None = None, to_act: bool = False):
+    """budget=over — заявки сверх бюджета (рассматриваются отдельно); to_act — ждут действия пользователя."""
     scope = Scope(db, user, organization_id)
     query = select(AssetRequest).where(AssetRequest.organization_id == organization_id)
     if status_:
         query = query.where(AssetRequest.status.in_(status_.split(",")))
     if mine:
         query = query.where(AssetRequest.created_by == user.id)
+    if budget:
+        query = query.where(AssetRequest.budget_mark == budget)
     requests = [r for r in db.scalars(query.order_by(AssetRequest.number.desc())) if scope.visible(r)]
+    if to_act:
+        requests = [r for r in requests if scope.can_act(r)]
     return _out(db, requests, scope)
 
 
@@ -379,13 +474,50 @@ def delete_request(request_id: int, user: CurrentUser, db: DbSession) -> Respons
 
 @router.post("/asset-requests/{request_id}/submit", response_model=RequestOut)
 def submit_request(request_id: int, user: CurrentUser, db: DbSession):
-    """На решение финансового директора."""
+    """На согласование: маршрут по ЦФО заявки и отметка о бюджете."""
     req, scope = _request(db, user, request_id)
     if not scope.can_edit(req):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Подать заявку может её автор или финансовый директор")
     _status(req, *service.EDITABLE)
-    req.status, req.reject_reason = "pending", ""
-    service.event(db, req, user, "submitted")
+    details = _run(db, lambda: route.submit(db, req, user))
+    service.event(db, req, user, "submitted", details)
+    return _save(db, req, scope)
+
+
+@router.post("/asset-requests/{request_id}/approve-step", response_model=RequestOut)
+def approve_step(request_id: int, user: CurrentUser, db: DbSession, body: CommentIn | None = None):
+    """Согласовать на шаге руководителя ЦФО или CEO; заявка переходит к следующему."""
+    req, scope = _request(db, user, request_id)
+    _status(req, "pending")
+    if not scope.can_act(req):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Сейчас заявку согласует другой участник")
+    step = route.current_step(req)
+    title = route.step_title(step, dict(db.execute(select(Cfo.id, Cfo.name).where(Cfo.id == route.cfo_of(step))).all()))
+    budget_text = _run(db, lambda: route.approve_step(db, req))
+    service.event(db, req, user, "step_approved", "; ".join(x for x in (title, body.comment if body else "", budget_text) if x))
+    return _save(db, req, scope)
+
+
+@router.post("/asset-requests/{request_id}/revise", response_model=RequestOut)
+def revise_request(request_id: int, body: ReasonIn, user: CurrentUser, db: DbSession):
+    """Вернуть на доработку: автор правит и подаёт снова (маршрут — сначала)."""
+    req, scope = _request(db, user, request_id)
+    _status(req, "pending")
+    if not scope.can_stop(req):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Вернуть заявку может тот, у кого она сейчас, "
+                                                              "или финансовый директор")
+    req.status, req.reject_reason = "revision", body.reason
+    service.event(db, req, user, "revised", body.reason)
+    return _save(db, req, scope)
+
+
+@router.post("/asset-requests/{request_id}/budget", response_model=RequestOut)
+def set_budget_mark(request_id: int, body: MarkIn, user: CurrentUser, db: DbSession):
+    """Финансовый директор меняет отметку «в рамках / сверх бюджета» (с комментарием) или возвращает расчёт."""
+    req, scope = _request(db, user, request_id)
+    _need(scope, Perm.SUPERVISE)
+    details = _run(db, lambda: route.set_mark(db, req, body.mark, body.comment))
+    service.event(db, req, user, "budget", details)
     return _save(db, req, scope)
 
 
@@ -395,7 +527,7 @@ def recall_request(request_id: int, user: CurrentUser, db: DbSession):
     if not scope.can_edit(req):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Отозвать заявку может её автор")
     _status(req, "pending")
-    req.status = "draft"
+    req.status, req.step = "draft", 0
     service.event(db, req, user, "recalled")
     return _save(db, req, scope)
 
@@ -412,8 +544,10 @@ def approve_request(request_id: int, body: DecisionIn, user: CurrentUser, db: Db
 @router.post("/asset-requests/{request_id}/reject", response_model=RequestOut)
 def reject_request(request_id: int, body: ReasonIn, user: CurrentUser, db: DbSession):
     req, scope = _request(db, user, request_id)
-    _need(scope, Perm.SUPERVISE)
     _status(req, "pending")
+    if not scope.can_stop(req):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Отклонить заявку может тот, у кого она сейчас, "
+                                                              "или финансовый директор")
     req.status, req.reject_reason = "rejected", body.reason
     req.decided_by, req.decided_at = user.id, dt.datetime.now(dt.UTC)
     service.event(db, req, user, "rejected", body.reason)
@@ -427,7 +561,8 @@ def unapprove_request(request_id: int, user: CurrentUser, db: DbSession):
     _need(scope, Perm.SUPERVISE)
     _status(req, "approved")
     _run(db, lambda: service.remove_payments(db, req))
-    req.status, req.decided_by, req.decided_at = "pending", None, None
+    route.back_to_decision(req)
+    req.decided_by, req.decided_at = None, None
     service.event(db, req, user, "unapproved")
     return _save(db, req, scope)
 
@@ -446,9 +581,10 @@ def cancel_request(request_id: int, body: ReasonIn, user: CurrentUser, db: DbSes
 
 @router.post("/asset-requests/{request_id}/delivery", response_model=RequestOut)
 def set_delivery(request_id: int, body: DeliveryIn, user: CurrentUser, db: DbSession):
-    """Статус поставки: заказано → отгружено → доставлено (оператор АХО, бухгалтер, финансовый директор)."""
+    """Статус поставки: заказано → отгружено → доставлено (оператор АХО, бухгалтер, финансовый директор, ЦФУ закупки)."""
     req, scope = _request(db, user, request_id)
-    _need(scope, Perm.ASSETS_EDIT)
+    if not scope.can_delivery(req):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
     _run(db, lambda: service.set_delivery(db, req, user, body.status, body.on, body.expected_on))
     return _save(db, req, scope)
 

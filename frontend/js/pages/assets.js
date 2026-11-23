@@ -30,7 +30,9 @@ function remember(key, value) {
 const escape = (text) => String(text ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
 
 export async function renderAssets(view) {
-  const orgs = (await api.get("/api/organizations")).filter((o) => o.permissions.includes("assets"));
+  // руководитель ЦФУ — только заявки на имущество, которые закупает его ЦФУ (docs/TZ.md, «Детали 21.1»)
+  const orgs = (await api.get("/api/organizations")).filter((o) => o.permissions.includes("assets") || o.role === "executor_head");
+  const onlyRequests = () => !org.permissions.includes("assets");
   if (!orgs.length) {
     view.replaceChildren(el("h1", {}, "Имущество"), el("p", { class: "muted" }, "У вас нет доступа к имуществу ни в одной организации."));
     return;
@@ -144,14 +146,15 @@ export async function renderAssets(view) {
 
   async function loadRef() {
     const o = `/api/organizations/${org.id}`;
-    const [entities, cfos, warehouses, employees, categories] = await Promise.all([
+    const [entities, cfos, warehouses, employees, categories, executors] = await Promise.all([
       api.get(`${o}/legal-entities`), api.get(`${o}/cfos`), api.get(`${o}/warehouses`), api.get(`${o}/employees`),
-      api.get(`${o}/asset-categories`),
+      api.get(`${o}/asset-categories`), api.get(`${o}/executors`),
     ]);
     const names = new Map(cfos.map((c) => [c.id, c.name]));
     const cfoLabel = new Map(cfos.map((c) => [c.id, String(c.path).split(".").map((id) => names.get(Number(id))).join(" / ")]));
     ref = { entities, cfos: cfos.filter((c) => c.is_active), cfoLabel, warehouses: warehouses.filter((w) => w.is_active),
-      employees: employees.filter((e) => e.is_active), categories: categories.filter((c) => c.is_active) };
+      employees: employees.filter((e) => e.is_active), categories: categories.filter((c) => c.is_active),
+      executors: executors.filter((e) => e.is_active) };
   }
 
   async function load() {
@@ -537,7 +540,9 @@ export async function renderAssets(view) {
   const disposals = assetDisposalsTab(disposalsBox, { org: () => org, reload: () => load() });
   const inventory = assetInventoryTab(inventoryBox, { org: () => org, ref: () => ref, reload: () => load() });
   function renderTabs() {
-    tabBar.replaceChildren(...[["registry", "Реестр"], ["requests", "Заявки на имущество"], ["transfers", "Перемещения"], ["disposals", "Выбытие"], ["inventory", "Инвентаризация"]].map(([k, t]) => el("button", {
+    if (onlyRequests()) tab = "requests";
+    const all = [["registry", "Реестр"], ["requests", "Заявки на имущество"], ["transfers", "Перемещения"], ["disposals", "Выбытие"], ["inventory", "Инвентаризация"]];
+    tabBar.replaceChildren(...all.filter(([k]) => !onlyRequests() || k === "requests").map(([k, t]) => el("button", {
       type: "button", role: "tab", class: `tab${k === tab ? " active" : ""}`,
       onclick: () => { tab = k; remember(TAB_KEY, k); showTab(); },
     }, t)));
@@ -559,8 +564,10 @@ export async function renderAssets(view) {
 
   async function open() {
     await loadRef();
-    renderFilters();
-    await load();
+    if (!onlyRequests()) {
+      renderFilters();
+      await load();
+    }
     await showTab();
   }
   // переход по QR-этикетке: #/assets?item=ID — открыть карточку единицы

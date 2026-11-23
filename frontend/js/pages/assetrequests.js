@@ -1,14 +1,18 @@
-// Вкладка «Заявки на имущество» (docs/TZ.md, раздел 28, «Детали 19.2»): что нужно → решение ФД (наименование,
-// поставщик, ответственный, вариант закупки) → оплаты в платёжном календаре → статус поставки.
+// Вкладка «Заявки на имущество» (docs/TZ.md, раздел 28, «Детали 19.2», «Детали 21.1»): что нужно → согласование
+// руководителями ЦФО снизу вверх → отметка о бюджете → CEO (сверх бюджета) → решение ФД (наименование, поставщик,
+// ответственный, вариант закупки) → оплаты в платёжном календаре → поставка (АХО или ЦФУ, который закупает).
 import { api } from "../api.js";
-import { date as ruDate, money, parseNumber } from "../format.js";
+import { date as ruDate, money, parseNumber, sumMoney } from "../format.js";
 import { el, instruction, openForm, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
 
-const STATUS_FILTER = [["", "Все"], ["draft,rejected", "Черновики и отклонённые"], ["pending", "На решении ФД"],
+// «to_act» — ждут моего решения, «over» — сверх бюджета (рассматриваются отдельно)
+const STATUS_FILTER = [["", "Все"], ["to_act", "Ждут моего решения"], ["over", "Сверх бюджета"],
+  ["draft,revision,rejected", "Черновики, доработка, отклонённые"], ["pending", "На согласовании"],
   ["approved,ordered,shipped", "Закупаются"], ["delivered", "Доставлены"], ["received,cancelled", "Закрытые"]];
 const KINDS = [["prepay", "Предоплата"], ["deferral", "Отсрочка"], ["leasing", "Лизинг"]];
-const ACTIONS = { created: "создал(а)", edited: "изменил(а)", submitted: "подал(а) на решение ФД", recalled: "отозвал(а)",
+const ACTIONS = { created: "создал(а)", edited: "изменил(а)", submitted: "подал(а) на согласование", recalled: "отозвал(а)",
+  step_approved: "согласовал(а)", revised: "вернул(а) на доработку", budget: "поставил(а) отметку о бюджете",
   approved: "принял(а) решение", rejected: "отклонил(а)", unapproved: "вернул(а) на решение", cancelled: "отменил(а)",
   delivery: "отметил(а) поставку", received: "принял(а)", receipt_undone: "отменил(а) приёмку",
   file: "приложил(а) файл", file_removed: "убрал(а) файл" };
@@ -29,11 +33,17 @@ export function assetRequestsTab(box, ctx) {
     const mineBox = el("input", { type: "checkbox", checked: mine, "aria-label": "Мои заявки" });
     mineBox.addEventListener("change", () => { mine = mineBox.checked; load(); });
     box.replaceChildren(
-      instruction("Заявка на имущество: что нужно, сколько, для какого ЦФО и зачем. Подают инженер, оператор АХО, "
-        + "финансовый директор. Финансовый директор принимает решение: наименование, поставщик, ответственный, вариант "
-        + "закупки. Предоплата и отсрочка сразу попадают в платёжный календарь согласованной заявкой на оплату; лизинг — "
-        + "периодическим платежом (заявки на 3 месяца вперёд создаются сами). Дальше оператор АХО отмечает поставку: "
-        + "заказано → отгружено → доставлено. Приёмка и создание карточек — следующий шаг."),
+      instruction("Заявка на имущество: что нужно, сколько, для какого ЦФО, когда нужно, ориентир цены и кто закупает "
+        + "(ЦФУ или сам ЦФО). Подают руководитель ЦФО, инженер, оператор АХО, финансовый директор. Согласование: "
+        + "руководители ЦФО снизу вверх — от ЦФО заявки (руководитель ЦФО сам себя не согласует — сразу вышестоящий) "
+        + "до верха; ЦФО без руководителя пропускается. Затем система ставит отметку о бюджете: план ДДС ветки ЦФО "
+        + "по статье «Покупка основных средств» на месяц «когда нужно» минус другие заявки на имущество ветки этого "
+        + "месяца. В рамках бюджета — заявка у финансового директора; сверх бюджета — сначала у CEO, потом у "
+        + "финансового директора. Финансовый директор может поменять отметку вручную с комментарием. Отклонить или "
+        + "вернуть на доработку может тот, у кого заявка, или финансовый директор. Финансовый директор принимает "
+        + "решение: наименование, поставщик, ответственный, вариант закупки — оплата попадает в платёжный календарь "
+        + "(лизинг — периодическим платежом). Поставку отмечают оператор АХО или ЦФУ, который закупает: заказано → "
+        + "отгружено → доставлено → приёмка. Заявки сверх бюджета — отдельным списком «Сверх бюджета»."),
       el("div", { class: "filters" },
         can("asset_request") ? el("button", { type: "button", onclick: () => editRequest(null) }, "+ Заявка на имущество") : "",
         el("label", { class: "inline" }, "Статус ", status),
@@ -44,7 +54,9 @@ export function assetRequestsTab(box, ctx) {
 
   async function load() {
     const p = new URLSearchParams();
-    if (filter) p.set("status", filter);
+    if (filter === "to_act") p.set("to_act", "true");
+    else if (filter === "over") p.set("budget", "over");
+    else if (filter) p.set("status", filter);
     if (mine) p.set("mine", "true");
     let rows;
     try {
@@ -57,35 +69,67 @@ export function assetRequestsTab(box, ctx) {
       listBox.replaceChildren(el("p", { class: "muted" }, "Заявок пока нет."));
       return;
     }
-    listBox.replaceChildren(el("table", { class: "recon requests asset-requests" },
-      el("thead", {}, el("tr", {}, ...["№", "Дата", "Что нужно", "ЦФО", "Поставщик", "Закупка", "Сумма", "Поставка", "Статус", "Действие"]
+    listBox.replaceChildren(filter === "over" ? overSummary(rows) : "", el("table", { class: "recon requests asset-requests" },
+      el("thead", {}, el("tr", {}, ...["№", "Дата", "Что нужно", "ЦФО", "Когда нужно", "Поставщик", "Закупка", "Сумма", "Бюджет", "Поставка", "Статус", "Действие"]
         .map((t) => el("th", {}, t)))),
       el("tbody", {}, ...rows.map((r) => {
         const tr = el("tr", { "data-number": r.number },
           el("td", {}, String(r.number)),
           el("td", {}, ruDate(r.created_at.slice(0, 10))),
           el("td", {}, `${r.name} × ${r.quantity}`, r.model_name && r.model_name !== r.name ? el("div", { class: "muted small" }, r.model_name) : ""),
-          el("td", {}, r.cfo_name),
+          el("td", {}, r.cfo_name, r.executor_name ? el("div", { class: "muted small" }, `закупает: ${r.executor_name}`) : ""),
+          el("td", {}, r.needed_on ? ruDate(r.needed_on) : ""),
           el("td", {}, r.counterparty_name),
           el("td", {}, r.purchase_kind_title, r.purchase_kind === "leasing" ? el("div", { class: "muted small" }, `${money(r.lease_payment)} × ${r.lease_months} мес.`) : ""),
-          el("td", { class: "num" }, r.total ? money(r.total) : r.estimated_price ? `≈ ${money(r.estimated_price)} за ед.` : ""),
+          el("td", { class: "num" }, r.total ? money(r.total) : r.amount ? `≈ ${money(r.amount)}` : ""),
+          el("td", {}, budgetBadge(r)),
           el("td", {}, r.delivered_on ? `доставлено ${ruDate(r.delivered_on)}` : r.expected_on ? `ожидается ${ruDate(r.expected_on)}` : "",
             r.received_quantity ? el("div", { class: "muted small" }, `принято ${r.received_quantity} из ${r.quantity}`) : ""),
-          el("td", {}, el("span", { class: `badge areq-${r.status}` }, r.status_title)),
+          el("td", {}, el("span", { class: `badge areq-${r.status}` }, r.status_title),
+            r.step_title ? el("div", { class: "muted small" }, `у: ${r.step_title}`) : ""),
           el("td", { class: "req-actions" }, actions(r)));
         tr.addEventListener("click", (e) => { if (!e.target.closest("select, button")) openCard(r); });
         return tr;
       }))));
   }
 
+  function budgetBadge(r) {
+    if (!r.budget_mark) return "";
+    return el("span", { class: `badge budget-${r.budget_mark}`, title: r.budget_comment || "" },
+      r.budget_mark_title + (r.budget_manual ? " (вручную)" : ""),
+      r.budget_excess ? el("div", { class: "small" }, `+${money(r.budget_excess)}`) : "");
+  }
+
+  // сверх бюджета — отдельно: по ЦФО бюджета, сколько заявок и насколько сверх
+  function overSummary(rows) {
+    const groups = new Map();
+    for (const r of rows) {
+      const key = r.budget_cfo_name || r.cfo_name || "—";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(r);
+    }
+    const line = (title, list) => el("tr", {}, el("td", {}, title), el("td", { class: "num" }, String(list.length)),
+      el("td", { class: "num" }, money(sumMoney(list.map((r) => r.amount ?? "0")))),
+      el("td", { class: "num" }, money(sumMoney(list.map((r) => r.budget_excess ?? "0")))));
+    return el("div", { class: "over-summary" }, el("h3", {}, "Сверх бюджета по ЦФО"),
+      el("table", { class: "recon" },
+        el("thead", {}, el("tr", {}, ...["ЦФО бюджета", "Заявок", "Сумма заявок", "Сверх бюджета"].map((t) => el("th", {}, t)))),
+        el("tbody", {}, ...[...groups].map(([k, list]) => line(k, list)),
+          el("tr", { class: "row-key" }, ...line("Итого", rows).children))));
+  }
+
   function actions(r) {
     const list = [];
-    const editable = ["draft", "rejected"].includes(r.status);
-    if (editable && r.can_edit) list.push(["edit", "Изменить"], ["submit", "Подать на решение ФД"], ["delete", "Удалить"]);
+    const editable = ["draft", "revision", "rejected"].includes(r.status);
+    const step = r.route.find((s) => s.state === "current")?.key;
+    if (editable && r.can_edit) list.push(["edit", "Изменить"], ["submit", "Подать на согласование"], ["delete", "Удалить"]);
     if (r.status === "pending" && r.can_edit) list.push(["recall", "Отозвать"]);
-    if (r.status === "pending" && can("supervise")) list.push(["approve", "Принять решение…"], ["reject", "Отклонить"]);
+    if (r.can_act && step === "fd") list.push(["approve", "Принять решение…"]);
+    else if (r.can_act) list.push(["step", "Согласовать"]);
+    if (r.status === "pending" && (r.can_act || can("supervise"))) list.push(["revise", "Вернуть на доработку"], ["reject", "Отклонить"]);
+    if (r.can_mark) list.push(["mark", "Отметка о бюджете…"]);
     if (r.status === "approved" && can("supervise")) list.push(["unapprove", "Вернуть на решение"]);
-    if (["approved", "ordered", "shipped"].includes(r.status) && can("assets_edit")) {
+    if (r.can_delivery) {
       if (r.status === "approved") list.push(["ordered", "Заказано"]);
       if (r.status !== "shipped") list.push(["shipped", "Отгружено"]);
       list.push(["delivered", "Доставлено…"]);
@@ -117,9 +161,15 @@ export function assetRequestsTab(box, ctx) {
     } else if (["submit", "recall", "unapprove", "ordered", "shipped"].includes(action)) {
       post(r, ["ordered", "shipped"].includes(action) ? "delivery" : action, ["ordered", "shipped"].includes(action) ? { status: action } : undefined);
     } else if (action === "approve") decide(r);
-    else if (action === "reject" || action === "cancel") {
-      openForm({ title: `${action === "reject" ? "Отклонить" : "Отменить закупку по"} заявку № ${r.number}`,
-        fields: [{ name: "reason", label: "Причина", type: "textarea", required: true }], submitText: action === "reject" ? "Отклонить" : "Отменить закупку",
+    else if (action === "step") {
+      openForm({ title: `Согласовать заявку № ${r.number}: ${r.name} × ${r.quantity}`,
+        fields: [{ name: "comment", label: "Комментарий (необязательно)", type: "textarea" }], submitText: "Согласовать",
+        onSubmit: async (v) => { await api.post(`/api/asset-requests/${r.id}/approve-step`, { comment: v.comment ?? "" }); await load(); } });
+    } else if (action === "mark") markBudget(r);
+    else if (["reject", "cancel", "revise"].includes(action)) {
+      const titles = { reject: ["Отклонить", "Отклонить"], cancel: ["Отменить закупку по", "Отменить закупку"], revise: ["Вернуть на доработку", "Вернуть"] };
+      openForm({ title: `${titles[action][0]} заявку № ${r.number}`,
+        fields: [{ name: "reason", label: action === "revise" ? "Что доработать" : "Причина", type: "textarea", required: true }], submitText: titles[action][1],
         onSubmit: async (v) => { await api.post(`/api/asset-requests/${r.id}/${action}`, { reason: v.reason }); await load(); } });
     } else if (action === "receive") receive(r);
     else if (action === "delivered") {
@@ -127,6 +177,26 @@ export function assetRequestsTab(box, ctx) {
         values: { on: new Date().toISOString().slice(0, 10) }, submitText: "Отметить",
         onSubmit: async (v) => { await api.post(`/api/asset-requests/${r.id}/delivery`, { status: "delivered", on: v.on }); await load(); } });
     }
+  }
+
+  // отметка о бюджете вручную (финансовый директор) или снова по расчёту
+  function markBudget(r) {
+    const calc = r.budget_plan === null ? "плана на покупку ОС на этот месяц нет"
+      : `план ${money(r.budget_plan)}, другие заявки ${money(r.budget_used)}, остаток ${money(r.budget_remaining)}, заявка ${money(r.amount)}`;
+    openForm({ title: `Отметка о бюджете: заявка № ${r.number}`,
+      fields: [
+        { name: "mark", label: "Отметка", type: "select", options: [["", "По расчёту"], ["within", "В рамках бюджета"], ["over", "Сверх бюджета"]] },
+        { name: "comment", label: "Почему вручную", type: "textarea" },
+      ],
+      extra: el("p", { class: "muted small" }, `Расчёт (${r.budget_cfo_name || r.cfo_name}): ${calc}.`
+        + " Сверх бюджета заявку согласует CEO, в рамках — сразу финансовый директор."),
+      values: { mark: r.budget_manual ? r.budget_mark : "", comment: r.budget_comment },
+      submitText: "Сохранить",
+      onSubmit: async (v) => {
+        await api.post(`/api/asset-requests/${r.id}/budget`, { mark: v.mark || null, comment: v.comment ?? "" });
+        await load();
+      },
+    });
   }
 
   // приёмка: каждая принятая штука — единица имущества в реестре (шаг 19.3)
@@ -172,6 +242,8 @@ export function assetRequestsTab(box, ctx) {
         { name: "cfo_id", label: "Для какого ЦФО", type: "select", options: options(ref.cfos, (c) => ref.cfoLabel.get(c.id)),
           required: Boolean(ctx.org().cfo_scope) },
         { name: "legal_entity_id", label: "Юрлицо", type: "select", options: options(ref.entities, (e) => e.short_name) },
+        { name: "needed_on", label: "Когда нужно (по бюджету этого месяца проверяется заявка)", type: "date" },
+        { name: "executor_id", label: "Кто закупает", type: "select", options: options(ref.executors ?? [], (e) => e.name, "— сам ЦФО —") },
         { name: "estimated_price", label: "Ориентир цены за единицу, ₽", placeholder: "0,00" },
         { name: "justification", label: "Зачем (обоснование)", type: "textarea" },
       ],
@@ -180,7 +252,8 @@ export function assetRequestsTab(box, ctx) {
       submitText: r ? "Сохранить" : "Создать",
       onSubmit: async (v) => {
         const body = { name: v.name, quantity: Number(v.quantity || 1), category_id: idOrNull(v.category_id),
-          cfo_id: idOrNull(v.cfo_id), legal_entity_id: idOrNull(v.legal_entity_id),
+          cfo_id: idOrNull(v.cfo_id), legal_entity_id: idOrNull(v.legal_entity_id), needed_on: v.needed_on || null,
+          executor_id: idOrNull(v.executor_id),
           estimated_price: v.estimated_price ? parseNumber(v.estimated_price) : null, justification: v.justification ?? "" };
         if (r) await api.put(`/api/asset-requests/${r.id}`, body);
         else await api.post(`/api/organizations/${ctx.org().id}/asset-requests`, body);
@@ -269,7 +342,14 @@ export function assetRequestsTab(box, ctx) {
     dialog.append(
       el("h2", {}, `Заявка на имущество № ${item.number}`),
       el("table", { class: "recon request-card" }, el("tbody", {},
-        field("Статус", item.status_title + (item.reject_reason ? `: ${item.reject_reason}` : "")),
+        field("Статус", item.status_title + (item.step_title ? ` — у: ${item.step_title}` : "")
+          + (item.reject_reason ? `: ${item.reject_reason}` : "")),
+        field("Когда нужно", item.needed_on ? ruDate(item.needed_on) : ""),
+        field("Кто закупает", item.executor_name || (item.status !== "draft" ? "сам ЦФО" : "")),
+        field("Бюджет", item.budget_mark ? `${item.budget_mark_title}${item.budget_manual ? ` (вручную: ${item.budget_comment})` : ""}`
+          + (item.budget_plan !== null ? ` — план ${money(item.budget_plan)} (${item.budget_cfo_name}), другие заявки ${money(item.budget_used)}, остаток ${money(item.budget_remaining)}`
+            : " — плана на покупку ОС на этот месяц нет")
+          + (item.budget_excess ? `, сверх на ${money(item.budget_excess)}` : "") : ""),
         field("Что нужно", `${item.name} × ${item.quantity}`), field("Категория", item.category_name),
         field("Для ЦФО", item.cfo_name), field("Юрлицо", item.legal_entity_name), field("Обоснование", item.justification),
         field("Ориентир цены", item.estimated_price ? `${money(item.estimated_price)} ₽ за ед.` : ""),
@@ -282,6 +362,9 @@ export function assetRequestsTab(box, ctx) {
         field("Дата оплаты", item.pay_date ? ruDate(item.pay_date) : ""),
         field("Поставка", item.delivered_on ? `доставлено ${ruDate(item.delivered_on)}` : item.expected_on ? `ожидается ${ruDate(item.expected_on)}` : ""),
         field("Подал(а)", item.created_by_name), field("Решение", item.decided_by_name))),
+      item.route.length ? el("h3", {}, "Маршрут согласования") : "",
+      item.route.length ? el("ol", { class: "asset-route" }, ...item.route.map((x) => el("li", { class: `route-${x.state}` },
+        x.title, x.state === "done" ? " — согласовано" : x.state === "current" ? " — сейчас у него" : ""))) : "",
       item.receipts.length ? el("h3", {}, `Приёмки (принято ${item.received_quantity} из ${item.quantity})`) : "",
       item.receipts.length ? el("ul", { class: "asset-receipts" }, ...item.receipts.map((x) => el("li", {},
         `${ruDate(x.received_on)} — ${x.quantity} шт.${x.employee_name ? `, принял(а) ${x.employee_name}` : ""}: `

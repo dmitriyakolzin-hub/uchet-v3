@@ -59,7 +59,7 @@ ROLE_PERMS: dict[Role, frozenset[Perm]] = {
     Role.FINANCE_MANAGER: frozenset({Perm.VIEW, Perm.DRAFT, Perm.POST, Perm.REQUEST, Perm.ASSETS}),
     Role.CEO: frozenset({Perm.VIEW, Perm.REQUEST, Perm.ASSETS}),
     # Руководитель ЦФО ограничен своей веткой ЦФО (memberships.cfo_id, app/api/access.py: cfo_scope)
-    Role.CFO_HEAD: frozenset({Perm.VIEW, Perm.DRAFT, Perm.REQUEST, Perm.ASSETS}),
+    Role.CFO_HEAD: frozenset({Perm.VIEW, Perm.DRAFT, Perm.REQUEST, Perm.ASSETS, Perm.ASSET_REQUEST}),
     # Руководитель ЦФУ — только заявки своего ЦФУ (memberships.executor_id, access.executor_scope)
     Role.EXECUTOR_HEAD: frozenset({Perm.REQUEST}),
     # бухгалтер — как финансовый менеджер, плюс учёт имущества (docs/TZ.md, раздел 28)
