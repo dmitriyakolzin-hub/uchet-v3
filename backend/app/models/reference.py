@@ -123,7 +123,7 @@ class Contract(OrgScoped, Base):
 
     __tablename__ = "contracts"
     __table_args__ = (
-        CheckConstraint("kind IN ('customer', 'supplier', 'other')", name="kind"),
+        CheckConstraint("kind IN ('customer', 'supplier', 'other', 'leasing')", name="kind"),
         CheckConstraint("deferral_days IS NULL OR deferral_days BETWEEN 0 AND 365", name="deferral_days"),
         CheckConstraint("debt_limit IS NULL OR debt_limit > 0", name="debt_limit"),
     )

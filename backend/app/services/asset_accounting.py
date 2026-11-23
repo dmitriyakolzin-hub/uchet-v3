@@ -190,11 +190,15 @@ def unaccount(db: Session, item: AssetItem, user: User) -> list[AssetItem]:
 
 
 def lease_remaining(db: Session, items: list[AssetItem]) -> dict[int, Decimal]:
-    """Остаток лизинга на единицу: (платёж × срок − оплачено по платежам лизинга) / количество в заявке."""
-    result: dict[int, Decimal] = {}
+    """Остаток лизинга на единицу. С договором лизинга (21.2) — цена с удорожанием × неоплаченная доля договора;
+    по прежним заявкам — (платёж × срок − оплачено по платежам лизинга) / количество в заявке."""
+    from app.services import leasing
+
+    result: dict[int, Decimal] = leasing.remaining_by_item(db, items)
     requests: dict[int, AssetRequest | None] = {}
     for item in items:
-        if item.ownership != "leasing" or item.receipt_id is None:
+        if item.ownership != "leasing" or item.receipt_id is None or item.id in result \
+                or item.lease_contract_id is not None:
             continue
         if item.receipt_id not in requests:
             requests[item.receipt_id] = source_request(db, item)

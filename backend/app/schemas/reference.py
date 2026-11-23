@@ -11,7 +11,7 @@ Account20 = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\
 Kpp = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^\d{9}$")]
 Inn = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^(\d{10}|\d{12})$")]
 CounterpartyKind = Literal["legal", "entrepreneur", "person"]
-ContractKind = Literal["customer", "supplier", "other"]
+ContractKind = Literal["customer", "supplier", "other", "leasing"]  # leasing — договор лизинга (21.2)
 
 
 class _Out(BaseModel):

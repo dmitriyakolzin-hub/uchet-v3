@@ -106,13 +106,17 @@ def test_leasing_and_reject(client, env, db, make_user, headers_for):  # noqa: F
     req = to_fd(client, env, act(client, aho, req, "submit").json())
 
     first = TODAY.replace(day=1) + dt.timedelta(days=40)
-    decision = {"legal_entity_id": env["le"].id, "counterparty_id": env["cp"]["id"], "purchase_kind": "leasing",
-                "pay_date": first.replace(day=15).isoformat(), "lease_payment": "25000", "lease_months": 24}
-    assert act(client, env["h"], req, "approve", **{**decision, "lease_months": None}).status_code == 422
-    req = act(client, env["h"], req, "approve", **decision).json()
-    assert req["total"] == "600000.00"  # цена с удорожанием
+    # решение «лизинг» — только отметка: лизингодатель, договор и платёж — потом (21.2)
+    req = act(client, env["h"], req, "approve", legal_entity_id=env["le"].id, purchase_kind="leasing").json()
+    assert (req["status"], req["lease_pending"], req["payments"]) == ("approved", True, [])
+    lease = {"counterparty_id": env["cp"]["id"], "number": "Л-1", "lease_payment": "25000",
+             "pay_date": first.replace(day=15).isoformat(), "lease_months": 24}
+    assert act(client, aho, req, "lease", **lease).status_code == 403  # заполняет ФД
+    assert act(client, env["h"], req, "lease", **{**lease, "lease_months": None}).status_code == 422
+    req = act(client, env["h"], req, "lease", **lease).json()
+    assert (req["total"], req["lease_pending"], req["contract_name"]) == ("600000.00", False, "№ Л-1")
     periodic = client.get(f"{env['o']}/periodic-payments", headers=env["h"]).json()
-    [terms] = [t for t in periodic if t["name"] == "Лизинг: Печь попроще"]
+    [terms] = [t for t in periodic if t["name"] == "Лизинг: договор № Л-1"]
     assert (terms["amount"], terms["day"], terms["frequency"]) == ("25000.00", 15, "month")
     assert terms["valid_to"].startswith(f"{first.year + 2 if first.month > 1 else first.year + 1}")
     assert len(req["payments"]) >= 1 and all(p["amount"] == "25000.00" for p in req["payments"])
@@ -120,7 +124,7 @@ def test_leasing_and_reject(client, env, db, make_user, headers_for):  # noqa: F
     req = act(client, env["h"], req, "cancel", reason="нашли б/у").json()
     assert (req["status"], req["payments"]) == ("cancelled", [])
     assert not [t for t in client.get(f"{env['o']}/periodic-payments", headers=env["h"]).json()
-                if t["name"] == "Лизинг: Печь попроще"]
+                if t["name"] == "Лизинг: договор № Л-1"]
     # черновик можно удалить, отменённую — нет
     assert client.delete(f"/api/asset-requests/{req['id']}", headers=env["h"]).status_code == 422
     draft = client.post(url, headers=aho, json={"name": "Стол"}).json()

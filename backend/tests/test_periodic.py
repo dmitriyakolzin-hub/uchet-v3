@@ -94,3 +94,18 @@ def test_standalone_periodic_payment(client, env):
     assert client.delete(f"/api/contract-payments/{terms_id}", headers=h["fd"]).status_code == 204
     listed = client.get(f"{o}/payment-requests", headers=h["fd"], params={"date_from": month.isoformat()}).json()["rows"]
     assert not any(r["description"].startswith("НДФЛ") for r in listed)  # неутверждённые заявки удалены вместе с условиями
+
+
+def test_first_payment_on_weekend_not_lost():
+    """Первый платёж 13.12.2026 (воскресенье) платится в пятницу 11-го, но месяц не теряется (шаг 21.2)."""
+    import datetime as dt
+    from decimal import Decimal
+
+    from app.models import ContractPayment
+    from app.services import periodic
+
+    terms = ContractPayment(valid_from=dt.date(2026, 12, 13), valid_to=dt.date(2027, 11, 30), day=13,
+                            frequency="month", amount=Decimal("1.00"))
+    assert periodic.active_terms([terms], dt.date(2026, 12, 1)) is terms
+    assert periodic.pay_day(dt.date(2026, 12, 1), 13) == dt.date(2026, 12, 11)
+    assert periodic.active_terms([terms], dt.date(2026, 11, 1)) is None

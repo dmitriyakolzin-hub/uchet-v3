@@ -18,6 +18,8 @@ def received(client, env, aho, *, name, quantity, kind="deferral", **decision):
     to_fd(client, env, act(client, aho, req, "submit").json())
     body = {"legal_entity_id": env["le"].id, "counterparty_id": env["cp"]["id"], "contract_id": env["contract"]["id"],
             "purchase_kind": kind, "pay_date": (TODAY + dt.timedelta(days=5)).isoformat(), **decision}
+    if kind == "leasing":  # лизинг: решение — отметка, договор — потом (21.2)
+        body = {"legal_entity_id": env["le"].id, "purchase_kind": kind}
     resp = act(client, env["h"], req, "approve", **body)
     assert resp.status_code == 200, resp.text
     resp = act(client, aho, req, "receive", received_on=TODAY.isoformat(), quantity=quantity,
@@ -80,13 +82,18 @@ def test_fixed_asset_and_expense(client, env, db, make_user, headers_for):  # no
 def test_lease_remaining_and_labels(client, env, db, make_user, headers_for):  # noqa: F811
     _, aho = member(db, make_user, headers_for, env, "aho", "aho_operator")
     first = (TODAY.replace(day=1) + dt.timedelta(days=40)).replace(day=10)
-    items = received(client, env, aho, name="Тестомес", quantity=2, kind="leasing", lease_payment="10000",
-                     lease_months=12, pay_date=first.isoformat())
-    assert all(i["ownership"] == "leasing" for i in items)
+    items = received(client, env, aho, name="Тестомес", quantity=2, kind="leasing")
+    assert all(i["ownership"] == "leasing" and i["lease_contract_id"] is None for i in items)  # приняли до договора
+    req = client.get(f"{env['o']}/asset-requests", headers=env["h"]).json()[0]
+    resp = act(client, env["h"], req, "lease", counterparty_id=env["cp"]["id"], number="Л-7", lease_payment="10000",
+               lease_months=12, pay_date=first.isoformat())
+    assert resp.status_code == 200, resp.text
+    items = [i for i in client.get(f"{env['o']}/asset-items", headers=aho).json() if i["name"] == "Тестомес"]
+    assert all(i["lease_contract_name"] == "№ Л-7" for i in items)
     assert (items[0]["upgraded_price"], items[0]["lease_remaining"]) == ("60000.00", "60000.00")
     # оплата первого платежа лизинга уменьшает остаток
     pay = next(p for p in client.get(f"{env['o']}/payment-requests", headers=env["h"]).json()["rows"]
-               if "Лизинг: Тестомес" in p["description"])
+               if "Лизинг: договор № Л-7" in p["description"])
     client.post(f"/api/payment-requests/{pay['id']}/submit", headers=env["h"])
     client.post(f"/api/payment-requests/{pay['id']}/approve", headers=env["h"], json={})
     resp = client.post(f"/api/payment-requests/{pay['id']}/pay", headers=env["h"],

@@ -51,6 +51,7 @@ from app.models.asset import (
 )
 from app.services import asset_requests as service
 from app.services import asset_route as route
+from app.services import leasing
 from app.services import assets as asset_service
 from app.services.asset_requests import AssetRequestError
 from app.services.payment_requests import STATUS_TITLES as PAYMENT_STATUS_TITLES
@@ -87,17 +88,32 @@ class MarkIn(BaseModel):
 class DecisionIn(BaseModel):
     model_name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=255)] = ""
     legal_entity_id: int
-    counterparty_id: int
+    counterparty_id: int | None = None  # у лизинга — потом, вместе с договором
     contract_id: int | None = None
     employee_id: int | None = None
     purchase_kind: Literal["prepay", "deferral", "leasing"]
     price: Money | None = None
-    pay_date: dt.date
+    pay_date: dt.date | None = None
     bank_account_id: int | None = None
     article_id: int | None = None
     lease_payment: Money | None = None
     lease_months: Annotated[int, Field(ge=1, le=service.MAX_LEASE_MONTHS)] | None = None
     expected_on: dt.date | None = None
+
+
+class LeaseIn(BaseModel):
+    """Сведения о лизинге: договор (выбрать или завести) и платёж по этой заявке. Срок, первый платёж, счёт и статья —
+    только для нового договора: у договора, где лизинг уже заполнен, они общие."""
+
+    contract_id: int | None = None
+    counterparty_id: int | None = None  # новый договор: лизингодатель, № и дата
+    number: Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)] = ""
+    contract_date: dt.date | None = None
+    lease_payment: Money
+    lease_months: Annotated[int, Field(ge=1, le=service.MAX_LEASE_MONTHS)] | None = None
+    pay_date: dt.date | None = None  # первый платёж
+    bank_account_id: int | None = None
+    article_id: int | None = None
 
 
 class ReasonIn(BaseModel):
@@ -113,7 +129,7 @@ class DeliveryIn(BaseModel):
 class PaymentOut(BaseModel):
     id: int
     number: int
-    pay_date: dt.date
+    pay_date: dt.date | None = None
     amount: Decimal
     status: str
     status_title: str
@@ -159,6 +175,7 @@ class RequestOut(BaseModel):
     budget_excess: Decimal | None  # насколько сверх бюджета
     can_mark: bool = False  # финансовый директор меняет отметку о бюджете
     can_delivery: bool = False  # статус поставки
+    lease_pending: bool = False  # решение «лизинг», ждём договор лизинга (21.2)
     model_name: str
     counterparty_id: int | None
     counterparty_name: str
@@ -363,6 +380,7 @@ def _out(db: Session, requests: list[AssetRequest], scope: Scope) -> list[Reques
             budget_plan=r.budget_plan, budget_used=r.budget_used, budget_remaining=remaining, budget_excess=excess,
             can_mark=r.status == "pending" and Perm.SUPERVISE in scope.perms,
             can_delivery=r.status in ("approved", "ordered", "shipped") and scope.can_delivery(r),
+            lease_pending=leasing.pending(r),
             id=r.id, organization_id=r.organization_id, number=r.number, status=r.status,
             status_title=ASSET_REQUEST_STATUSES[r.status], name=r.name, quantity=r.quantity,
             category_id=r.category_id, category_name=categories.get(r.category_id, ""), cfo_id=r.cfo_id,
@@ -576,6 +594,63 @@ def cancel_request(request_id: int, body: ReasonIn, user: CurrentUser, db: DbSes
     _run(db, lambda: service.remove_payments(db, req))
     req.status = "cancelled"
     service.event(db, req, user, "cancelled", body.reason)
+    return _save(db, req, scope)
+
+
+@router.post("/asset-requests/{request_id}/lease", response_model=RequestOut)
+def fill_lease(request_id: int, body: LeaseIn, user: CurrentUser, db: DbSession):
+    """Финансовый директор заполняет лизинг, когда появился договор: договор и платёж → периодический платёж."""
+    from app.models import Contract, Currency
+
+    req, scope = _request(db, user, request_id)
+    _need(scope, Perm.SUPERVISE)
+    contract_id = body.contract_id
+    if contract_id is None:
+        cp = db.get(Counterparty, body.counterparty_id) if body.counterparty_id else None
+        if cp is None or cp.organization_id != req.organization_id:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Выберите договор лизинга или укажите "
+                                                                              "лизингодателя и № нового договора")
+        if not body.number:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Укажите № договора лизинга")
+        if req.legal_entity_id is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="В решении не указано юрлицо")
+        rub = db.scalar(select(Currency.id).where(Currency.code == "RUB"))
+        contract = Contract(organization_id=req.organization_id, counterparty_id=cp.id,
+                            legal_entity_id=req.legal_entity_id, currency_id=rub, kind="leasing", number=body.number,
+                            contract_date=body.contract_date, name="")
+        db.add(contract)
+        db.flush()
+        contract_id = contract.id
+    details = _run(db, lambda: _lease(db, req, user, contract_id, body))
+    service.event(db, req, user, "lease", details)
+    return _save(db, req, scope)
+
+
+def _lease(db: Session, req: AssetRequest, user: User, contract_id: int, body: LeaseIn) -> str:
+    try:
+        return leasing.set_lease(db, req, user, contract_id=contract_id, payment=body.lease_payment,
+                                 months=body.lease_months, first_payment=body.pay_date,
+                                 bank_account_id=body.bank_account_id, article_id=body.article_id)
+    except leasing.LeasingError as exc:
+        raise AssetRequestError(str(exc)) from None
+
+
+@router.delete("/asset-requests/{request_id}/lease", response_model=RequestOut)
+def remove_lease(request_id: int, user: CurrentUser, db: DbSession):
+    """Снять сведения о лизинге (ошиблись договором): заявка снова «ждём договор лизинга»."""
+    req, scope = _request(db, user, request_id)
+    _need(scope, Perm.SUPERVISE)
+    if req.purchase_kind != "leasing" or req.periodic_id is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Лизинг по заявке не заполнен")
+
+    def undo():
+        try:
+            leasing.unset_lease(db, req)
+        except leasing.LeasingError as exc:
+            raise AssetRequestError(str(exc)) from None
+
+    _run(db, undo)
+    service.event(db, req, user, "lease_removed")
     return _save(db, req, scope)
 
 
