@@ -20,6 +20,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -127,10 +128,12 @@ def _organization_asset_categories(_mapper, connection, target: Organization) ->
 
 
 ASSET_REQUEST_STATUSES = {
-    "draft": "Черновик", "pending": "На решении ФД", "rejected": "Отклонена", "approved": "Решение принято",
+    "draft": "Черновик", "pending": "На согласовании", "revision": "На доработке", "rejected": "Отклонена",
+    "approved": "Решение принято",
     "ordered": "Заказано", "shipped": "Отгружено", "delivered": "Доставлено", "received": "Принято",
     "cancelled": "Отменена",
 }
+BUDGET_MARKS = {"within": "В рамках бюджета", "over": "Сверх бюджета"}
 PURCHASE_KINDS = {"prepay": "Предоплата", "deferral": "Отсрочка", "leasing": "Лизинг"}
 
 
@@ -141,8 +144,9 @@ class AssetRequest(Base):
     __tablename__ = "asset_requests"
     __table_args__ = (
         UniqueConstraint("organization_id", "number"),
-        CheckConstraint("status IN ('draft', 'pending', 'rejected', 'approved', 'ordered', 'shipped', 'delivered', "
-                        "'received', 'cancelled')", name="status"),
+        CheckConstraint("status IN ('draft', 'pending', 'revision', 'rejected', 'approved', 'ordered', 'shipped', "
+                        "'delivered', 'received', 'cancelled')", name="status"),
+        CheckConstraint("budget_mark IS NULL OR budget_mark IN ('within', 'over')", name="budget_mark"),
         CheckConstraint("purchase_kind IS NULL OR purchase_kind IN ('prepay', 'deferral', 'leasing')",
                         name="purchase_kind"),
         CheckConstraint("quantity > 0", name="quantity"),
@@ -160,6 +164,18 @@ class AssetRequest(Base):
     legal_entity_id: Mapped[int | None] = mapped_column(ForeignKey("legal_entities.id", ondelete="RESTRICT"))
     justification: Mapped[str] = mapped_column(String(2000), default="", server_default="")
     estimated_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))  # ориентир цены за единицу
+    needed_on: Mapped[date | None] = mapped_column(Date)  # когда нужно — месяц, по бюджету которого проверяется заявка
+    executor_id: Mapped[int | None] = mapped_column(ForeignKey("executors.id", ondelete="SET NULL"))  # кто закупает
+    # маршрут согласования (docs/TZ.md, раздел 28, «Детали 21.1»): «cfo:<id>» снизу вверх, «ceo», «fd»
+    route: Mapped[list] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
+    step: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    # отметка о бюджете: within / over; budget_* — расчёт на момент отметки
+    budget_mark: Mapped[str | None] = mapped_column(String(6))
+    budget_manual: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    budget_comment: Mapped[str] = mapped_column(String(1000), default="", server_default="")
+    budget_cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="SET NULL"))
+    budget_plan: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))  # план ДДС ветки на месяц (None — плана нет)
+    budget_used: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))  # другие заявки на имущество ветки в месяце
     # решение финансового директора
     model_name: Mapped[str] = mapped_column(String(255), default="", server_default="")  # утверждённое наименование
     counterparty_id: Mapped[int | None] = mapped_column(ForeignKey("counterparties.id", ondelete="RESTRICT"))

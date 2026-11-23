@@ -121,7 +121,7 @@ def test_me_shows_roles(client, headers_for, make_user, make_org):
     me = client.get("/api/auth/me", headers=headers_for(user)).json()
     assert me["is_admin"] is False
     assert me["memberships"][0]["role"] == "cfo_head"
-    assert me["memberships"][0]["permissions"] == ["assets", "draft", "request", "view"]
+    assert me["memberships"][0]["permissions"] == ["asset_request", "assets", "draft", "request", "view"]
 
 
 def test_roles_list(client, headers_for, make_user):

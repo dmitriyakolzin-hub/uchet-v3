@@ -399,6 +399,13 @@ select.action-menu { min-width: 130px; font-size: 13px; padding: 3px 6px; }
 .badge.areq-approved, .badge.areq-ordered, .badge.areq-shipped { background: #fffaeb; color: #b54708; }
 .badge.areq-delivered, .badge.areq-received { background: #ecfdf3; color: #067647; }
 .badge.areq-rejected, .badge.areq-cancelled { background: #fef3f2; color: #b42318; }
+.badge.areq-revision { background: #fef6ee; color: #b93815; }
+.badge.budget-within { background: #ecfdf3; color: #067647; }
+.badge.budget-over { background: #fef3f2; color: #b42318; }
+.asset-route .route-done { color: #067647; }
+.asset-route .route-current { font-weight: 600; }
+.asset-route .route-next { color: #667085; }
+.over-summary { margin-bottom: 1rem; }
 table.asset-requests tbody tr { cursor: pointer; }
 /* перемещения и работы (шаг 19.5) */
 .badge.transfer-pending { background: #eff8ff; color: #175cd3; }

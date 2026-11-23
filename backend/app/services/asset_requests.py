@@ -17,6 +17,7 @@ from app.models import (
     ContractPayment,
     Counterparty,
     Employee,
+    Executor,
     LegalEntity,
     PaymentRequest,
     User,
@@ -29,13 +30,13 @@ from app.models.asset import (
     AssetRequest,
     AssetRequestEvent,
 )
-from app.services import approval
+from app.services import approval, asset_route
 from app.services import assets as asset_service
 from app.services import payment_requests as payments
 from app.services import periodic
 from app.services.articles import is_group, system_article
 
-EDITABLE = ("draft", "rejected")  # правит автор (или ФД); «отклонена» после правки снова черновик
+EDITABLE = ("draft", "revision", "rejected")  # правит автор (или ФД); после правки — снова черновик
 DELIVERY = ("approved", "ordered", "shipped", "delivered")  # статусы поставки по порядку
 MAX_LEASE_MONTHS = 120
 
@@ -72,6 +73,7 @@ def validate(db: Session, req: AssetRequest) -> None:
     _own(db, req, AssetCategory, req.category_id, "Категория")
     _own(db, req, Cfo, req.cfo_id, "ЦФО")
     _own(db, req, LegalEntity, req.legal_entity_id, "Юрлицо")
+    _own(db, req, Executor, req.executor_id, "ЦФУ (кто закупает)")
 
 
 def total(req: AssetRequest) -> Decimal | None:
@@ -180,9 +182,8 @@ DECISION_FIELDS = ("model_name", "counterparty_id", "contract_id", "employee_id"
 
 
 def decide(db: Session, req: AssetRequest, user: User, decision: dict) -> None:
-    if req.status != "pending":
-        raise AssetRequestError(f"Заявка: {ASSET_REQUEST_STATUSES[req.status].lower()} — решение принимается на заявке "
-                                "«На решении ФД»")
+    if asset_route.current_step(req) != "fd":
+        raise AssetRequestError("Решение принимается, когда заявка дошла до финансового директора")
     for key, value in decision.items():
         setattr(req, key, value)
     if req.purchase_kind != "leasing":  # у лизинга цена покупки необязательна, платёж и срок — обязательны

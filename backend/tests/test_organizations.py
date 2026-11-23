@@ -75,7 +75,7 @@ def test_permissions_in_list(client, headers_for, setup):
     assert by_user["fd"] == ["asset_request", "asset_service", "assets", "assets_edit", "draft", "edit_reference",
                              "post", "request", "supervise", "view"]
     assert by_user["ceo"] == ["assets", "request", "view"]
-    assert by_user["head"] == ["assets", "draft", "request", "view"]
+    assert by_user["head"] == ["asset_request", "assets", "draft", "request", "view"]
 
 
 def test_user_without_roles_sees_nothing(client, headers_for, make_user, setup):
