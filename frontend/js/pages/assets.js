@@ -7,6 +7,7 @@ import { assetRequestsTab } from "./assetrequests.js";
 import { assetTransfersTab, transferForm } from "./assettransfers.js";
 import { assetDisposalsTab, disposalForm } from "./assetdisposals.js";
 import { activeInventory, assetInventoryTab, markInActive } from "./assetinventory.js";
+import { assetLeasingTab } from "./assetleasing.js";
 import { loadReferences } from "./journal.js";
 
 const ORG_KEY = "uchet3_org";
@@ -47,16 +48,17 @@ export async function renderAssets(view) {
   const summary = el("p", { class: "muted" });
   // вкладки: реестр единиц и заявки на имущество (шаг 19.2)
   const TAB_KEY = "uchet3_assets_tab";
-  let tab = ["requests", "transfers", "disposals", "inventory"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "registry";
+  let tab = ["requests", "leasing", "transfers", "disposals", "inventory"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "registry";
   const tabBar = el("div", { class: "tabs", role: "tablist" });
   const registryBox = el("div");
   const requestsBox = el("div");
   const transfersBox = el("div");
   const disposalsBox = el("div");
   const inventoryBox = el("div");
+  const leasingBox = el("div");
   view.replaceChildren(
     el("div", { class: "page-head" }, el("h1", {}, "Имущество"), el("label", { class: "inline" }, "Организация ", orgSelect)),
-    tabBar, registryBox, requestsBox, transfersBox, disposalsBox, inventoryBox,
+    tabBar, registryBox, requestsBox, leasingBox, transfersBox, disposalsBox, inventoryBox,
   );
   registryBox.append(
     instruction("Каждая единица имущества — своя карточка с инвентарным номером, местом (ЦФО, склад), МОЛ и историей. "
@@ -69,7 +71,7 @@ export async function renderAssets(view) {
   );
 
   let ref = null;
-  const filters = { search: "", legal_entity_id: "", cfo_id: "", employee_id: "", category_id: "", status: "", ownership: "", mine: false };
+  const filters = { search: "", legal_entity_id: "", cfo_id: "", employee_id: "", category_id: "", status: "", ownership: "", lease_contract_id: "", mine: false };
   const canEdit = () => org.permissions.includes("assets_edit");
 
   const table = makeTable(tableBox, {
@@ -119,6 +121,7 @@ export async function renderAssets(view) {
       select("category_id", "Категория", options(ref.categories, (c) => c.name, "Все категории")),
       select("status", "Статус", [["", "Все статусы"], ...STATUSES]),
       select("ownership", "Владение", [["", "Любое владение"], ...OWNERSHIP]),
+      ref.leases.length ? select("lease_contract_id", "Договор лизинга", options(ref.leases, (c) => c.label, "Все договоры лизинга")) : "",
       el("label", { class: "check" }, mine, " Моё имущество"),
     );
     const fileInput = el("input", { type: "file", accept: ".xlsx", hidden: true, "aria-label": "Файл Excel с имуществом" });
@@ -146,15 +149,18 @@ export async function renderAssets(view) {
 
   async function loadRef() {
     const o = `/api/organizations/${org.id}`;
-    const [entities, cfos, warehouses, employees, categories, executors] = await Promise.all([
+    const [entities, cfos, warehouses, employees, categories, executors, contracts] = await Promise.all([
       api.get(`${o}/legal-entities`), api.get(`${o}/cfos`), api.get(`${o}/warehouses`), api.get(`${o}/employees`),
-      api.get(`${o}/asset-categories`), api.get(`${o}/executors`),
+      api.get(`${o}/asset-categories`), api.get(`${o}/executors`), api.get(`${o}/contracts`),
     ]);
     const names = new Map(cfos.map((c) => [c.id, c.name]));
     const cfoLabel = new Map(cfos.map((c) => [c.id, String(c.path).split(".").map((id) => names.get(Number(id))).join(" / ")]));
     ref = { entities, cfos: cfos.filter((c) => c.is_active), cfoLabel, warehouses: warehouses.filter((w) => w.is_active),
       employees: employees.filter((e) => e.is_active), categories: categories.filter((c) => c.is_active),
-      executors: executors.filter((e) => e.is_active) };
+      executors: executors.filter((e) => e.is_active),
+      // договоры лизинга (21.2): по каждому видно всё имущество договора
+      leases: contracts.filter((c) => c.kind === "leasing").map((c) => ({ ...c,
+        label: `№ ${c.number}${c.contract_date ? ` от ${ruDate(c.contract_date)}` : ""}${c.name ? ` ${c.name}` : ""}` })) };
   }
 
   async function load() {
@@ -178,6 +184,8 @@ export async function renderAssets(view) {
       { name: "number", label: "Инвентарный номер", hint: creating ? "Пусто — присвоится сам («ИН-000001»)" : "" },
       { name: "category_id", label: "Категория", type: "select", options: options(ref.categories, (c) => c.name) },
       { name: "ownership", label: "Владение", type: "select", options: OWNERSHIP },
+      { name: "lease_contract_id", label: "Договор лизинга", type: "select", options: options(ref.leases, (c) => c.label),
+        hint: "С договором владение — «лизинг»" },
       { name: "legal_entity_id", label: "Юрлицо", type: "select", options: options(ref.entities, (e) => e.short_name) },
       { name: "serial_number", label: "Серийный (заводской) номер" },
       { name: "cfo_id", label: "Место (ЦФО)", type: "select", options: options(ref.cfos, (c) => ref.cfoLabel.get(c.id)) },
@@ -207,7 +215,7 @@ export async function renderAssets(view) {
           legal_entity_id: idOrNull(v.legal_entity_id), serial_number: v.serial_number ?? "", cfo_id: idOrNull(v.cfo_id),
           warehouse_id: idOrNull(v.warehouse_id), employee_id: idOrNull(v.employee_id), status: v.status,
           purchase_price: v.purchase_price ? parseNumber(v.purchase_price) : null, acquired_on: v.acquired_on || null,
-          note: v.note ?? "",
+          note: v.note ?? "", lease_contract_id: idOrNull(v.lease_contract_id),
         };
         if (creating) {
           const created = await api.post(`/api/organizations/${org.id}/asset-items`, { ...body, count: Number(v.count || 1) });
@@ -310,6 +318,7 @@ export async function renderAssets(view) {
         field("Учёт", item.accounting ? `${item.accounting_title}${item.accounted_on ? ` с ${ruDate(item.accounted_on)}` : ""}`
           + (item.accounting_operation_number ? `, операция № ${item.accounting_operation_number}` : "") : "не поставлена на учёт"),
         field("Цена с удорожанием", item.upgraded_price ? `${money(item.upgraded_price)} ₽` : ""),
+        field("Договор лизинга", item.lease_contract_name),
         field("Остаток лизинга", item.lease_remaining !== null && item.ownership === "leasing" ? `${money(item.lease_remaining)} ₽` : ""),
         field("Примечание", item.note))),
       el("h3", {}, "Файлы"),
@@ -502,8 +511,9 @@ export async function renderAssets(view) {
         { name: "employee_id", label: "МОЛ", type: "select", options: keep(ref.employees, (e) => e.full_name) },
         { name: "category_id", label: "Категория", type: "select", options: keep(ref.categories, (c) => c.name) },
         { name: "status", label: "Статус", type: "select", options: [[KEEP, "— не менять —"], ...STATUSES.filter(([k]) => k !== "disposed")] },
+        { name: "lease_contract_id", label: "Договор лизинга", type: "select", options: keep(ref.leases, (c) => c.label) },
       ],
-      values: { cfo_id: KEEP, warehouse_id: KEEP, employee_id: KEEP, category_id: KEEP, status: KEEP },
+      values: { cfo_id: KEEP, warehouse_id: KEEP, employee_id: KEEP, category_id: KEEP, status: KEEP, lease_contract_id: KEEP },
       submitText: "Применить",
       onSubmit: async (v) => {
         const body = { ids: selected.map((r) => r.id) };
@@ -539,10 +549,20 @@ export async function renderAssets(view) {
   const transfers = assetTransfersTab(transfersBox, { org: () => org, reload: () => load() });
   const disposals = assetDisposalsTab(disposalsBox, { org: () => org, reload: () => load() });
   const inventory = assetInventoryTab(inventoryBox, { org: () => org, ref: () => ref, reload: () => load() });
+  const leasingTab = assetLeasingTab(leasingBox, { org: () => org, openItem: async (id) => {
+    try {
+      await openCard(await api.get(`/api/asset-items/${id}`));
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  } });
+  // «Лизинг» — тем, кто видит учёт, кроме руководителя ЦФО (21.2)
+  const canLeasing = () => org.permissions.includes("view") && !org.restricted;
   function renderTabs() {
     if (onlyRequests()) tab = "requests";
-    const all = [["registry", "Реестр"], ["requests", "Заявки на имущество"], ["transfers", "Перемещения"], ["disposals", "Выбытие"], ["inventory", "Инвентаризация"]];
-    tabBar.replaceChildren(...all.filter(([k]) => !onlyRequests() || k === "requests").map(([k, t]) => el("button", {
+    if (tab === "leasing" && !canLeasing()) tab = "registry";
+    const all = [["registry", "Реестр"], ["requests", "Заявки на имущество"], ["leasing", "Лизинг"], ["transfers", "Перемещения"], ["disposals", "Выбытие"], ["inventory", "Инвентаризация"]];
+    tabBar.replaceChildren(...all.filter(([k]) => (!onlyRequests() || k === "requests") && (k !== "leasing" || canLeasing())).map(([k, t]) => el("button", {
       type: "button", role: "tab", class: `tab${k === tab ? " active" : ""}`,
       onclick: () => { tab = k; remember(TAB_KEY, k); showTab(); },
     }, t)));
@@ -551,11 +571,13 @@ export async function renderAssets(view) {
     renderTabs();
     registryBox.hidden = tab !== "registry";
     requestsBox.hidden = tab !== "requests";
+    leasingBox.hidden = tab !== "leasing";
     transfersBox.hidden = tab !== "transfers";
     disposalsBox.hidden = tab !== "disposals";
     inventoryBox.hidden = tab !== "inventory";
     if (tab !== "inventory") inventory.hide();
     if (tab === "requests") await requests.show();
+    else if (tab === "leasing") await leasingTab.show();
     else if (tab === "transfers") await transfers.show();
     else if (tab === "disposals") await disposals.show();
     else if (tab === "inventory") await inventory.show();

@@ -15,6 +15,7 @@ from app.api import (
     volumes,
     asset_operation,
     asset_requests,
+    leasing,
     assets,
     auth,
     budgets,
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(suppliers.router)
     app.include_router(assets.router)
     app.include_router(asset_requests.router)
+    app.include_router(leasing.router)
     app.include_router(asset_operation.router)
     app.include_router(asset_disposal.router)
     app.include_router(asset_inventory.router)

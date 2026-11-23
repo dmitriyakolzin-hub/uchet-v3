@@ -14,7 +14,6 @@ from app.models import (
     BankAccount,
     Cfo,
     Contract,
-    ContractPayment,
     Counterparty,
     Employee,
     Executor,
@@ -30,10 +29,9 @@ from app.models.asset import (
     AssetRequest,
     AssetRequestEvent,
 )
-from app.services import approval, asset_route
+from app.services import approval, asset_route, leasing
 from app.services import assets as asset_service
 from app.services import payment_requests as payments
-from app.services import periodic
 from app.services.articles import is_group, system_article
 
 EDITABLE = ("draft", "revision", "rejected")  # правит автор (или ФД); после правки — снова черновик
@@ -86,16 +84,20 @@ def total(req: AssetRequest) -> Decimal | None:
 
 
 def validate_decision(db: Session, req: AssetRequest) -> None:
-    """Решение ФД: юрлицо, поставщик, вариант закупки, цена и дата оплаты (лизинг — платёж, срок, первый платёж)."""
+    """Решение ФД: юрлицо, поставщик, вариант закупки, цена и дата оплаты. Лизинг — только отметка: лизингодатель,
+    договор, платёж и срок заполняются потом, когда появится договор (docs/TZ.md, «Детали 21.2»)."""
     entity = _own(db, req, LegalEntity, req.legal_entity_id, "Юрлицо")
     if entity is None:
         raise AssetRequestError("Укажите юрлицо, которое покупает")
-    if _own(db, req, Counterparty, req.counterparty_id, "Поставщик") is None:
+    lease = req.purchase_kind == "leasing"
+    if _own(db, req, Counterparty, req.counterparty_id, "Поставщик") is None and not lease:
         raise AssetRequestError("Укажите поставщика")
     contract = _own(db, req, Contract, req.contract_id, "Договор")
     if contract is not None and (contract.counterparty_id != req.counterparty_id
                                  or contract.legal_entity_id != entity.id):
         raise AssetRequestError("Договор — с этим поставщиком и этим юрлицом")
+    if contract is not None and (contract.kind == "leasing") != (req.purchase_kind == "leasing"):
+        raise AssetRequestError("У лизинга — договор вида «Лизинг», у покупки — другой договор")
     _own(db, req, Employee, req.employee_id, "Ответственный")
     bank = _own(db, req, BankAccount, req.bank_account_id, "Расчётный счёт")
     if bank is not None and bank.legal_entity_id != entity.id:
@@ -106,12 +108,10 @@ def validate_decision(db: Session, req: AssetRequest) -> None:
         raise AssetRequestError("Статья — статья ДДС выплат без подстатей")
     if req.purchase_kind not in PURCHASE_KINDS:
         raise AssetRequestError("Выберите вариант закупки: предоплата, отсрочка или лизинг")
-    if req.pay_date is None:
-        raise AssetRequestError("Укажите дату оплаты" + (" (первого платежа лизинга)" if req.purchase_kind == "leasing" else ""))
-    if req.purchase_kind == "leasing":
-        if req.lease_payment is None or req.lease_payment <= 0:
-            raise AssetRequestError("Укажите ежемесячный платёж лизинга")
-        if not req.lease_months or not 1 <= req.lease_months <= MAX_LEASE_MONTHS:
+    if req.pay_date is None and not lease:
+        raise AssetRequestError("Укажите дату оплаты")
+    if lease:
+        if req.lease_months and not 1 <= req.lease_months <= MAX_LEASE_MONTHS:
             raise AssetRequestError(f"Срок лизинга — от 1 до {MAX_LEASE_MONTHS} месяцев")
     elif req.price is None or req.price <= 0:
         raise AssetRequestError("Укажите цену за единицу")
@@ -128,25 +128,13 @@ def linked_payments(db: Session, req: AssetRequest) -> list[PaymentRequest]:
 
 def create_payments(db: Session, req: AssetRequest, user: User) -> None:
     """Оплата в платёжный календарь: предоплата и отсрочка — заявка на оплату, сразу согласованная ФД (решение уже
-    принято); лизинг — периодический платёж (заявки на 3 месяца вперёд создаются сами)."""
+    принято). Лизинг — периодический платёж договора лизинга (app/services/leasing.py: set_lease)."""
     article_id = req.article_id
     if article_id is None:
         article = system_article(db, req.organization_id, "asset_purchase")
         article_id = article.id if article else None
     title = req.model_name or req.name
     if req.purchase_kind == "leasing":
-        start = req.pay_date
-        last = periodic._shift(start, req.lease_months - 1)
-        terms = ContractPayment(
-            organization_id=req.organization_id, legal_entity_id=req.legal_entity_id,
-            counterparty_id=req.counterparty_id, name=f"Лизинг: {title}"[:255], frequency="month", valid_from=start,
-            valid_to=periodic._month_end(last), day=start.day, amount=req.lease_payment,
-            bank_account_id=req.bank_account_id, article_id=article_id, cfo_id=req.cfo_id,
-            description=f"заявка на имущество № {req.number}", created_by=user.id)
-        db.add(terms)
-        db.flush()
-        req.periodic_id = terms.id
-        periodic.ensure(db, req.organization_id)
         return
     pay = PaymentRequest(
         organization_id=req.organization_id, number=payments.next_number(db, req.organization_id), direction="out",
@@ -163,17 +151,17 @@ def create_payments(db: Session, req: AssetRequest, user: User) -> None:
 
 
 def remove_payments(db: Session, req: AssetRequest) -> None:
-    """Убрать оплаты решения (при отмене): нельзя, если что-то уже оплачено."""
-    linked = linked_payments(db, req)
+    """Убрать оплаты решения (при отмене): нельзя, если что-то уже оплачено. Лизинг — доля заявки уходит из платежа
+    договора (последняя заявка договора — условия удаляются)."""
+    try:
+        leasing.unset_lease(db, req)
+    except leasing.LeasingError as exc:
+        raise AssetRequestError(str(exc)) from None
+    linked = list(db.scalars(select(PaymentRequest).where(PaymentRequest.asset_request_id == req.id)))
     if any(p.status == "paid" for p in linked):
         raise AssetRequestError("По заявке уже есть оплата — сначала снимите отметку об оплате в календаре")
     for p in linked:
         db.delete(p)
-    if req.periodic_id is not None:
-        terms = db.get(ContractPayment, req.periodic_id)
-        req.periodic_id = None
-        if terms is not None:
-            db.delete(terms)
     db.flush()
 
 
@@ -188,13 +176,26 @@ def decide(db: Session, req: AssetRequest, user: User, decision: dict) -> None:
         setattr(req, key, value)
     if req.purchase_kind != "leasing":  # у лизинга цена покупки необязательна, платёж и срок — обязательны
         req.lease_payment, req.lease_months = None, None
+    lease_now = req.purchase_kind == "leasing" and req.contract_id is not None and req.lease_payment is not None
+    if req.purchase_kind == "leasing" and not lease_now:
+        req.contract_id = None  # договор лизинга — потом, «Заполнить лизинг…»
     validate_decision(db, req)
     req.status, req.decided_by, req.decided_at, req.reject_reason = "approved", user.id, dt.datetime.now(dt.UTC), ""
     db.flush()
     create_payments(db, req, user)
     amount = total(req)
     event(db, req, user, "approved", f"{PURCHASE_KINDS[req.purchase_kind]}"
+          + (" — ждём договор лизинга" if req.purchase_kind == "leasing" and not lease_now else "")
           + (f", {amount:,.2f} ₽".replace(",", " ").replace(".", ",") if amount is not None else ""))
+    if lease_now:
+        contract_id, req.contract_id = req.contract_id, None
+        try:
+            details = leasing.set_lease(db, req, user, contract_id=contract_id, payment=req.lease_payment,
+                                        months=req.lease_months, first_payment=req.pay_date,
+                                        bank_account_id=req.bank_account_id, article_id=req.article_id)
+        except leasing.LeasingError as exc:
+            raise AssetRequestError(str(exc)) from None
+        event(db, req, user, "lease", details)
 
 
 def set_delivery(db: Session, req: AssetRequest, user: User, status: str, on: dt.date | None,
@@ -256,7 +257,8 @@ def receive(db: Session, req: AssetRequest, user: User, *, received_on: dt.date,
             category_id=req.category_id, ownership="leasing" if req.purchase_kind == "leasing" else "own",
             legal_entity_id=req.legal_entity_id, cfo_id=cfo_id, warehouse_id=warehouse_id, employee_id=mol_id,
             status=status, purchase_price=req.price, upgraded_price=upgraded, acquired_on=received_on,
-            note=f"принято по заявке на имущество № {req.number}", receipt_id=receipt.id, created_by=user.id)
+            note=f"принято по заявке на имущество № {req.number}", receipt_id=receipt.id, created_by=user.id,
+            lease_contract_id=req.contract_id if req.purchase_kind == "leasing" and req.periodic_id else None)
         try:
             asset_service.validate(db, item)
         except asset_service.AssetError as exc:

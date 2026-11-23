@@ -400,6 +400,7 @@ select.action-menu { min-width: 130px; font-size: 13px; padding: 3px 6px; }
 .badge.areq-delivered, .badge.areq-received { background: #ecfdf3; color: #067647; }
 .badge.areq-rejected, .badge.areq-cancelled { background: #fef3f2; color: #b42318; }
 .badge.areq-revision { background: #fef6ee; color: #b93815; }
+.lease-pending { color: #b54708; }
 .badge.budget-within { background: #ecfdf3; color: #067647; }
 .badge.budget-over { background: #fef3f2; color: #b42318; }
 .asset-route .route-done { color: #067647; }
@@ -428,3 +429,7 @@ table.asset-requests tbody tr { cursor: pointer; }
 .scan-message.scan-error { color: var(--danger, #c62828); }
 .badge.inventory-open { background: #eff8ff; color: #175cd3; }
 .badge.inventory-closed { background: #f2f4f7; color: #344054; }
+.lease-contracts .lease-row { cursor: pointer; }
+.lease-contracts .lease-row:hover { background: var(--row-hover, rgba(0, 0, 0, 0.03)); }
+.lease-box { padding: 0.5rem 0 0.5rem 1rem; }
+.lease-box h4 { margin: 0.5rem 0 0.25rem; }

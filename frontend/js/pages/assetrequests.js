@@ -13,6 +13,7 @@ const STATUS_FILTER = [["", "Все"], ["to_act", "Ждут моего реше�
 const KINDS = [["prepay", "Предоплата"], ["deferral", "Отсрочка"], ["leasing", "Лизинг"]];
 const ACTIONS = { created: "создал(а)", edited: "изменил(а)", submitted: "подал(а) на согласование", recalled: "отозвал(а)",
   step_approved: "согласовал(а)", revised: "вернул(а) на доработку", budget: "поставил(а) отметку о бюджете",
+  lease: "заполнил(а) лизинг", lease_removed: "снял(а) сведения о лизинге",
   approved: "принял(а) решение", rejected: "отклонил(а)", unapproved: "вернул(а) на решение", cancelled: "отменил(а)",
   delivery: "отметил(а) поставку", received: "принял(а)", receipt_undone: "отменил(а) приёмку",
   file: "приложил(а) файл", file_removed: "убрал(а) файл" };
@@ -80,12 +81,13 @@ export function assetRequestsTab(box, ctx) {
           el("td", {}, r.cfo_name, r.executor_name ? el("div", { class: "muted small" }, `закупает: ${r.executor_name}`) : ""),
           el("td", {}, r.needed_on ? ruDate(r.needed_on) : ""),
           el("td", {}, r.counterparty_name),
-          el("td", {}, r.purchase_kind_title, r.purchase_kind === "leasing" ? el("div", { class: "muted small" }, `${money(r.lease_payment)} × ${r.lease_months} мес.`) : ""),
+          el("td", {}, r.purchase_kind_title, r.purchase_kind === "leasing" && r.lease_payment ? el("div", { class: "muted small" }, `${money(r.lease_payment)} × ${r.lease_months ?? "?"} мес.${r.lease_pending ? " (ориентир)" : ""}`) : ""),
           el("td", { class: "num" }, r.total ? money(r.total) : r.amount ? `≈ ${money(r.amount)}` : ""),
           el("td", {}, budgetBadge(r)),
           el("td", {}, r.delivered_on ? `доставлено ${ruDate(r.delivered_on)}` : r.expected_on ? `ожидается ${ruDate(r.expected_on)}` : "",
             r.received_quantity ? el("div", { class: "muted small" }, `принято ${r.received_quantity} из ${r.quantity}`) : ""),
           el("td", {}, el("span", { class: `badge areq-${r.status}` }, r.status_title),
+            r.lease_pending ? el("div", { class: "lease-pending small" }, "ждём договор лизинга") : "",
             r.step_title ? el("div", { class: "muted small" }, `у: ${r.step_title}`) : ""),
           el("td", { class: "req-actions" }, actions(r)));
         tr.addEventListener("click", (e) => { if (!e.target.closest("select, button")) openCard(r); });
@@ -128,6 +130,10 @@ export function assetRequestsTab(box, ctx) {
     else if (r.can_act) list.push(["step", "Согласовать"]);
     if (r.status === "pending" && (r.can_act || can("supervise"))) list.push(["revise", "Вернуть на доработку"], ["reject", "Отклонить"]);
     if (r.can_mark) list.push(["mark", "Отметка о бюджете…"]);
+    if (r.lease_pending && can("supervise")) list.push(["lease", "Заполнить лизинг…"]);
+    if (r.purchase_kind === "leasing" && r.contract_id && !r.lease_pending && r.status !== "cancelled" && can("supervise")) {
+      list.push(["unlease", "Снять сведения о лизинге"]);
+    }
     if (r.status === "approved" && can("supervise")) list.push(["unapprove", "Вернуть на решение"]);
     if (r.can_delivery) {
       if (r.status === "approved") list.push(["ordered", "Заказано"]);
@@ -166,6 +172,12 @@ export function assetRequestsTab(box, ctx) {
         fields: [{ name: "comment", label: "Комментарий (необязательно)", type: "textarea" }], submitText: "Согласовать",
         onSubmit: async (v) => { await api.post(`/api/asset-requests/${r.id}/approve-step`, { comment: v.comment ?? "" }); await load(); } });
     } else if (action === "mark") markBudget(r);
+    else if (action === "lease") fillLease(r);
+    else if (action === "unlease") {
+      if (confirm(`Снять сведения о лизинге по заявке № ${r.number}? Платёж заявки уйдёт из платежа договора.`)) {
+        api.delete(`/api/asset-requests/${r.id}/lease`).then(load).catch((err) => toast(err.message, "error"));
+      }
+    }
     else if (["reject", "cancel", "revise"].includes(action)) {
       const titles = { reject: ["Отклонить", "Отклонить"], cancel: ["Отменить закупку по", "Отменить закупку"], revise: ["Вернуть на доработку", "Вернуть"] };
       openForm({ title: `${titles[action][0]} заявку № ${r.number}`,
@@ -197,6 +209,67 @@ export function assetRequestsTab(box, ctx) {
         await load();
       },
     });
+  }
+
+  // сведения о лизинге, когда появился договор (21.2): договор (выбрать или новый) и платёж по этой заявке;
+  // у договора, где лизинг уже заполнен, срок, первый платёж, счёт и статья — общие
+  async function fillLease(r) {
+    let ref;
+    let leases;
+    try {
+      [ref, leases] = await Promise.all([loadReferences(ctx.org().id), api.get(`/api/organizations/${ctx.org().id}/leasing`)]);
+    } catch (err) {
+      toast(err.message, "error");
+      return;
+    }
+    const own = leases.filter((c) => c.legal_entity_id === r.legal_entity_id);
+    const label = (c) => `${c.title} — ${c.counterparty_name}` + (c.payment ? ` (${money(c.payment)} в мес. × ${c.months})` : "");
+    const banks = options(ref.bankAccounts.filter((b) => b.legal_entity_id === r.legal_entity_id), (b) => `${b.name} ··${b.number.slice(-4)}`);
+    const articles = ref.leafArticles.filter((a) => a.is_active && a.is_cash_flow && a.cash_flow_direction === "outflow" && !a.is_transfer);
+    const dialog = openForm({
+      title: `Лизинг по заявке № ${r.number}: ${r.model_name || r.name} × ${r.quantity}`,
+      fields: [
+        { name: "contract_id", label: "Договор лизинга", type: "select", options: [["", "— новый договор —"], ...own.map((c) => [String(c.id), label(c)])] },
+        { name: "counterparty_id", label: "Лизингодатель", type: "select", options: options(ref.counterparties, (c) => c.name) },
+        { name: "number", label: "№ договора" },
+        { name: "contract_date", label: "Дата договора", type: "date" },
+        { name: "lease_payment", label: "Платёж по этой заявке в месяц, ₽", required: true, placeholder: "0,00" },
+        { name: "lease_months", label: "Срок, месяцев", type: "number" },
+        { name: "pay_date", label: "Дата первого платежа", type: "date" },
+        { name: "bank_account_id", label: "Расчётный счёт", type: "select", options: banks },
+        { name: "article_id", label: "Статья ДДС", type: "select", options: options(articles, (a) => ref.articleLabel.get(a.id)) },
+      ],
+      values: { lease_payment: r.lease_payment ? money(r.lease_payment) : "", lease_months: r.lease_months ? String(r.lease_months) : "",
+        article_id: String(ref.articleByKey.get("asset_purchase")?.id ?? "") },
+      extra: el("p", { class: "muted small" }, "Если по договору уже заполнен лизинг другой заявки, срок и даты берутся из договора, "
+        + "а платёж договора увеличивается на платёж этой заявки. В календаре — периодический платёж «Лизинг: договор № …»."),
+      submitText: "Сохранить",
+      onSubmit: async (v) => {
+        const body = { lease_payment: parseNumber(v.lease_payment) };
+        if (v.contract_id) body.contract_id = Number(v.contract_id);
+        else Object.assign(body, { counterparty_id: idOrNull(v.counterparty_id), number: v.number ?? "", contract_date: v.contract_date || null });
+        const existing = own.find((c) => String(c.id) === v.contract_id);
+        if (!existing?.payment) {
+          Object.assign(body, { lease_months: v.lease_months ? Number(v.lease_months) : null, pay_date: v.pay_date || null,
+            bank_account_id: idOrNull(v.bank_account_id), article_id: idOrNull(v.article_id) });
+        }
+        await api.post(`/api/asset-requests/${r.id}/lease`, body);
+        toast("Лизинг заполнен: платёж — в периодических платежах календаря");
+        await load();
+      },
+    });
+    const form = dialog.querySelector("form");
+    const nodes = (name) => {
+      const input = form.elements[name];
+      return [form.querySelector(`label[for="${input.id}"]`), input].filter(Boolean);
+    };
+    const toggle = () => {
+      const existing = own.find((c) => String(c.id) === form.elements.contract_id.value);
+      ["counterparty_id", "number", "contract_date"].forEach((n) => nodes(n).forEach((x) => { x.hidden = Boolean(existing); }));
+      ["lease_months", "pay_date", "bank_account_id", "article_id"].forEach((n) => nodes(n).forEach((x) => { x.hidden = Boolean(existing?.payment); }));
+    };
+    form.elements.contract_id.addEventListener("change", toggle);
+    toggle();
   }
 
   // приёмка: каждая принятая штука — единица имущества в реестре (шаг 19.3)
@@ -286,9 +359,9 @@ export function assetRequestsTab(box, ctx) {
         { name: "employee_id", label: "Ответственный", type: "select", options: options(ref.employees, (e) => e.full_name) },
         { name: "purchase_kind", label: "Вариант закупки", type: "select", options: KINDS },
         { name: "price", label: "Цена за единицу, ₽", placeholder: "0,00" },
-        { name: "lease_payment", label: "Ежемесячный платёж лизинга, ₽", placeholder: "0,00" },
-        { name: "lease_months", label: "Срок лизинга, месяцев", type: "number" },
-        { name: "pay_date", label: "Дата оплаты (у лизинга — первого платежа)", type: "date", required: true },
+        { name: "lease_payment", label: "Ориентир платежа лизинга в месяц, ₽", placeholder: "0,00" },
+        { name: "lease_months", label: "Ориентир срока лизинга, месяцев", type: "number" },
+        { name: "pay_date", label: "Дата оплаты", type: "date", required: true },
         { name: "bank_account_id", label: "Расчётный счёт", type: "select", options: banks(entityId) },
         { name: "article_id", label: "Статья ДДС", type: "select", options: options(articles, (a) => ref.articleLabel.get(a.id)) },
         { name: "expected_on", label: "Ожидаемая дата поставки", type: "date" },
@@ -299,14 +372,15 @@ export function assetRequestsTab(box, ctx) {
       onSubmit: async (v) => {
         const leasing = v.purchase_kind === "leasing";
         await api.post(`/api/asset-requests/${r.id}/approve`, {
-          model_name: v.model_name ?? "", legal_entity_id: Number(v.legal_entity_id), counterparty_id: Number(v.counterparty_id),
-          contract_id: idOrNull(v.contract_id), employee_id: idOrNull(v.employee_id), purchase_kind: v.purchase_kind,
-          price: v.price ? parseNumber(v.price) : null, pay_date: v.pay_date,
+          model_name: v.model_name ?? "", legal_entity_id: Number(v.legal_entity_id),
+          counterparty_id: leasing ? null : idOrNull(v.counterparty_id),
+          contract_id: leasing ? null : idOrNull(v.contract_id), employee_id: idOrNull(v.employee_id), purchase_kind: v.purchase_kind,
+          price: v.price ? parseNumber(v.price) : null, pay_date: leasing ? null : v.pay_date || null,
           lease_payment: leasing && v.lease_payment ? parseNumber(v.lease_payment) : null,
           lease_months: leasing && v.lease_months ? Number(v.lease_months) : null,
           bank_account_id: idOrNull(v.bank_account_id), article_id: idOrNull(v.article_id), expected_on: v.expected_on || null,
         });
-        toast(leasing ? "Решение принято: лизинг добавлен в периодические платежи" : "Решение принято: оплата в платёжном календаре");
+        toast(leasing ? "Решение принято: лизинг. Когда появится договор — «Заполнить лизинг…»" : "Решение принято: оплата в платёжном календаре");
         await load();
       },
     });
@@ -318,9 +392,13 @@ export function assetRequestsTab(box, ctx) {
       return [form.querySelector(`label[for="${input.id}"]`), input,
         input.nextElementSibling?.tagName === "SMALL" ? input.nextElementSibling : null].filter(Boolean);
     };
+    // лизинг — только отметка: лизингодатель, договор, платёж и дата — потом, «Заполнить лизинг…» (21.2)
     const toggle = () => {
       const leasing = kind.value === "leasing";
       ["lease_payment", "lease_months"].forEach((n) => nodes(n).forEach((x) => { x.hidden = !leasing; }));
+      ["counterparty_id", "contract_id", "pay_date", "bank_account_id"].forEach((n) => nodes(n).forEach((x) => { x.hidden = leasing; }));
+      cp.required = !leasing;
+      form.elements.pay_date.required = !leasing;
     };
     entity.addEventListener("change", () => { refill(contract, contracts(cp.value, entity.value)); refill(bank, banks(entity.value)); });
     cp.addEventListener("change", () => refill(contract, contracts(cp.value, entity.value)));
@@ -355,9 +433,11 @@ export function assetRequestsTab(box, ctx) {
         field("Ориентир цены", item.estimated_price ? `${money(item.estimated_price)} ₽ за ед.` : ""),
         field("Наименование (модель)", item.model_name), field("Поставщик", item.counterparty_name),
         field("Договор", item.contract_name), field("Ответственный", item.employee_name),
-        field("Вариант закупки", item.purchase_kind_title),
+        field("Вариант закупки", item.purchase_kind_title + (item.lease_pending ? " — ждём договор лизинга" : "")),
+        field("Договор лизинга", item.purchase_kind === "leasing" ? item.contract_name : ""),
         field("Цена за единицу", item.price ? `${money(item.price)} ₽` : ""),
-        field("Лизинг", item.purchase_kind === "leasing" ? `${money(item.lease_payment)} ₽ × ${item.lease_months} мес.` : ""),
+        field("Лизинг", item.purchase_kind === "leasing" && item.lease_payment
+          ? `${money(item.lease_payment)} ₽ × ${item.lease_months ?? "?"} мес.${item.lease_pending ? " (ориентир)" : ""}` : ""),
         field("Стоимость", item.total ? `${money(item.total)} ₽${item.purchase_kind === "leasing" ? " (с удорожанием)" : ""}` : ""),
         field("Дата оплаты", item.pay_date ? ruDate(item.pay_date) : ""),
         field("Поставка", item.delivered_on ? `доставлено ${ruDate(item.delivered_on)}` : item.expected_on ? `ожидается ${ruDate(item.expected_on)}` : ""),

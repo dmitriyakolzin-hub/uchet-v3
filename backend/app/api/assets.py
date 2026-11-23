@@ -45,6 +45,7 @@ class ItemIn(BaseModel):
     purchase_price: Price | None = None
     acquired_on: dt.date | None = None
     note: Annotated[str, StringConstraints(strip_whitespace=True, max_length=2000)] = ""
+    lease_contract_id: int | None = None  # договор лизинга (21.2); при правке меняется, только если передан
 
 
 class CreateIn(ItemIn):
@@ -60,6 +61,7 @@ class BulkIn(BaseModel):
     employee_id: int | None = None
     category_id: int | None = None
     status: ManualStatus | None = None
+    lease_contract_id: int | None = None  # привязать к договору лизинга (null — отвязать)
 
 
 class FileOut(BaseModel):
@@ -92,6 +94,8 @@ class ItemOut(BaseModel):
     purchase_price: Decimal | None
     upgraded_price: Decimal | None
     lease_remaining: Decimal | None
+    lease_contract_id: int | None = None
+    lease_contract_name: str = ""
     acquired_on: dt.date | None
     note: str
     fixed_asset_id: int | None
@@ -199,7 +203,8 @@ def _out(db: Session, items: list[AssetItem], scope: Scope) -> list[ItemOut]:
         warehouse_name=labels.warehouses.get(i.warehouse_id, ""), employee_id=i.employee_id,
         employee_name=labels.employees.get(i.employee_id, ""), status=i.status, status_title=ASSET_STATUSES[i.status],
         purchase_price=i.purchase_price, upgraded_price=i.upgraded_price,
-        lease_remaining=lease.get(i.id, i.lease_remaining),
+        lease_remaining=lease.get(i.id, i.lease_remaining), lease_contract_id=i.lease_contract_id,
+        lease_contract_name=labels.contracts.get(i.lease_contract_id, ""),
         acquired_on=i.acquired_on, note=i.note, fixed_asset_id=i.fixed_asset_id, files=files.get(i.id, []),
         mine=i.employee_id in scope.own, accounting=i.accounting,
         accounting_title=ACCOUNTING.get(i.accounting or "", ""), accounted_on=i.accounted_on,
@@ -230,7 +235,7 @@ def _validate(db: Session, item: AssetItem) -> None:
 
 
 def _query(db: Session, organization_id: int, scope: Scope, *, legal_entity_id=None, cfo_id=None, employee_id=None,
-           category_id=None, status_=None, ownership=None, search=None, mine=False):
+           category_id=None, status_=None, ownership=None, search=None, mine=False, lease_contract_id=None):
     query = select(AssetItem).where(AssetItem.organization_id == organization_id)
     condition = scope.condition()
     if condition is not None:
@@ -247,6 +252,8 @@ def _query(db: Session, organization_id: int, scope: Scope, *, legal_entity_id=N
         query = query.where(AssetItem.status.in_(status_.split(",")))
     if ownership:
         query = query.where(AssetItem.ownership == ownership)
+    if lease_contract_id is not None:
+        query = query.where(AssetItem.lease_contract_id == lease_contract_id)
     if search:
         query = query.where(service.search_condition(search))
     if mine:
@@ -257,9 +264,10 @@ def _query(db: Session, organization_id: int, scope: Scope, *, legal_entity_id=N
 def _filters(legal_entity_id: int | None = None, cfo_id: int | None = None, employee_id: int | None = None,
              category_id: int | None = None, status_: Annotated[str | None, Query(alias="status")] = None,
              ownership: Literal["own", "leasing", "rent"] | None = None, search: str | None = None,
-             mine: bool = False) -> dict:
+             mine: bool = False, lease_contract_id: int | None = None) -> dict:
     return {"legal_entity_id": legal_entity_id, "cfo_id": cfo_id, "employee_id": employee_id,
-            "category_id": category_id, "status_": status_, "ownership": ownership, "search": search, "mine": mine}
+            "category_id": category_id, "status_": status_, "ownership": ownership, "search": search, "mine": mine,
+            "lease_contract_id": lease_contract_id}
 
 
 @router.get("/organizations/{organization_id}/asset-items", response_model=list[ItemOut])
@@ -267,11 +275,12 @@ def list_items(organization_id: int, user: CurrentUser, db: DbSession, legal_ent
                cfo_id: int | None = None, employee_id: int | None = None, category_id: int | None = None,
                status_: Annotated[str | None, Query(alias="status")] = None,
                ownership: Literal["own", "leasing", "rent"] | None = None, search: str | None = None,
-               mine: bool = False):
+               mine: bool = False, lease_contract_id: int | None = None):
     scope = Scope(db, user, organization_id)
     if service.ensure(db, organization_id):  # новые карточки ОС → единицы
         db.commit()
-    filters = _filters(legal_entity_id, cfo_id, employee_id, category_id, status_, ownership, search, mine)
+    filters = _filters(legal_entity_id, cfo_id, employee_id, category_id, status_, ownership, search, mine,
+                       lease_contract_id)
     items = list(db.scalars(_query(db, organization_id, scope, **filters)))
     return _out(db, items, scope)
 
@@ -281,9 +290,10 @@ def download_registry(organization_id: int, user: CurrentUser, db: DbSession, le
                       cfo_id: int | None = None, employee_id: int | None = None, category_id: int | None = None,
                       status_: Annotated[str | None, Query(alias="status")] = None,
                       ownership: Literal["own", "leasing", "rent"] | None = None, search: str | None = None,
-                      mine: bool = False):
+                      mine: bool = False, lease_contract_id: int | None = None):
     scope = Scope(db, user, organization_id)
-    filters = _filters(legal_entity_id, cfo_id, employee_id, category_id, status_, ownership, search, mine)
+    filters = _filters(legal_entity_id, cfo_id, employee_id, category_id, status_, ownership, search, mine,
+                       lease_contract_id)
     items = list(db.scalars(_query(db, organization_id, scope, **filters)))
     content = service.registry_xlsx(db, items, organization_id)
     return Response(content, media_type=XLSX_TYPE, headers={"Content-Disposition": 'attachment; filename="assets.xlsx"'})
@@ -323,12 +333,15 @@ def update_item(item_id: int, body: ItemIn, user: CurrentUser, db: DbSession):
     if item.status == "disposed":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Единица выбыла — карточка не меняется")
     data = body.model_dump()
+    if "lease_contract_id" not in body.model_fields_set:
+        data.pop("lease_contract_id")
     if not data["number"]:
         data["number"] = item.number
     before = service.snapshot(item)
     for key, value in data.items():
         setattr(item, key, value)
     _validate(db, item)
+    data["ownership"] = item.ownership  # с договором лизинга — «лизинг»
     details = service.changes_text(service.Labels.load(db, item.organization_id), before, data)
     if details:
         service.event(db, item, user, "edited", details)
@@ -368,8 +381,8 @@ def bulk_update(organization_id: int, body: BulkIn, user: CurrentUser, db: DbSes
         before = service.snapshot(item)
         for key, value in changes.items():
             setattr(item, key, value)
-        _validate(db, item)
-        details = service.changes_text(labels, before, changes)
+        _validate(db, item)  # с договором лизинга владение становится «лизинг»
+        details = service.changes_text(labels, before, {**changes, "ownership": item.ownership})
         if details:
             service.event(db, item, user, "bulk_edited", details)
     _commit(db)

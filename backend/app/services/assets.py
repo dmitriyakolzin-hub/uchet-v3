@@ -14,6 +14,7 @@ from app.models import (
     AssetEvent,
     AssetItem,
     Cfo,
+    Contract,
     Employee,
     FixedAsset,
     LegalEntity,
@@ -43,7 +44,7 @@ FIELD_TITLES = {
     "number": "инв. №", "name": "наименование", "category_id": "категория", "ownership": "владение",
     "legal_entity_id": "юрлицо", "serial_number": "серийный №", "cfo_id": "место", "warehouse_id": "склад",
     "employee_id": "МОЛ", "status": "статус", "purchase_price": "цена приобретения", "acquired_on": "дата приобретения",
-    "note": "примечание",
+    "note": "примечание", "lease_contract_id": "договор лизинга",
 }
 
 
@@ -89,19 +90,23 @@ class Labels:
     cfos: dict[int, str]
     warehouses: dict[int, str]
     employees: dict[int, str]
+    contracts: dict[int, str] = field(default_factory=dict)  # договоры лизинга
 
     @classmethod
     def load(cls, db: Session, organization_id: int) -> "Labels":
         def names(model, attr="name"):
             return {x.id: getattr(x, attr) for x in db.scalars(select(model).where(model.organization_id == organization_id))}
+        contracts = {c.id: contract_label(c) for c in db.scalars(select(Contract).where(
+            Contract.organization_id == organization_id, Contract.kind == "leasing"))}
         return cls(names(AssetCategory), names(LegalEntity, "short_name"), cfo_labels(db, organization_id),
-                   names(Warehouse), names(Employee, "full_name"))
+                   names(Warehouse), names(Employee, "full_name"), contracts)
 
     def value(self, key: str, value) -> str:
         if value is None or value == "":
             return "—"
         lookup = {"category_id": self.categories, "legal_entity_id": self.entities, "cfo_id": self.cfos,
-                  "warehouse_id": self.warehouses, "employee_id": self.employees}.get(key)
+                  "warehouse_id": self.warehouses, "employee_id": self.employees,
+                  "lease_contract_id": self.contracts}.get(key)
         if lookup is not None:
             return lookup.get(value, str(value))
         if key == "status":
@@ -128,6 +133,10 @@ def snapshot(item: AssetItem) -> dict:
     return {key: getattr(item, key) for key in FIELD_TITLES}
 
 
+def contract_label(c: Contract) -> str:
+    return f"№ {c.number}" + (f" от {c.contract_date:%d.%m.%Y}" if c.contract_date else "") + (f" {c.name}" if c.name else "")
+
+
 # --- проверка ссылок ---
 
 
@@ -141,6 +150,13 @@ def validate(db: Session, item: AssetItem) -> None:
             record = db.get(model, value)
             if record is None or record.organization_id != org:
                 raise AssetError(f"{title}: не найдено в этой организации")
+    if item.lease_contract_id is not None:
+        contract = db.get(Contract, item.lease_contract_id)
+        if contract is None or contract.organization_id != org or contract.kind != "leasing":
+            raise AssetError("Договор лизинга: не найден в этой организации")
+        if item.legal_entity_id is not None and contract.legal_entity_id != item.legal_entity_id:
+            raise AssetError("Договор лизинга — другого юрлица")
+        item.ownership = "leasing"
     if item.ownership not in OWNERSHIP:
         raise AssetError("Владение: собственное, лизинг или аренда")
     if not item.name.strip():

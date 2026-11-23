@@ -73,6 +73,8 @@ class AssetItem(Base):
     purchase_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     upgraded_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))  # цена с удорожанием (19.4)
     lease_remaining: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))  # остаток лизинга (19.4)
+    # договор лизинга (docs/TZ.md, раздел 28, «Детали 21.2»): по нему видно всё имущество договора
+    lease_contract_id: Mapped[int | None] = mapped_column(ForeignKey("contracts.id", ondelete="SET NULL"), index=True)
     acquired_on: Mapped[date | None] = mapped_column(Date)
     note: Mapped[str] = mapped_column(String(2000), default="", server_default="")
     # карточка основного средства (амортизация, ввод, выбытие — шаги 4.4, 5.2)

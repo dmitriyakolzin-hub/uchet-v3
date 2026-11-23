@@ -65,9 +65,14 @@ def due_in(t: ContractPayment, month: dt.date) -> bool:
 
 
 def active_terms(terms: list[ContractPayment], month: dt.date) -> ContractPayment | None:
-    """Условия, действующие в день оплаты месяца (последние по «действует с»), если платёж приходится на этот месяц."""
+    """Условия, действующие в день оплаты месяца (последние по «действует с»), если платёж приходится на этот месяц.
+    Сравнивается число по договору, а не перенесённое с выходного: первый платёж 13-го в воскресенье не теряется,
+    хотя платится в пятницу 11-го."""
+    def nominal(t: ContractPayment) -> dt.date:
+        return month.replace(day=min(t.day, _month_end(month).day))
+
     found = [t for t in terms
-             if t.valid_from <= pay_day(month, t.day) and (t.valid_to is None or t.valid_to >= pay_day(month, t.day))]
+             if t.valid_from <= nominal(t) and (t.valid_to is None or t.valid_to >= nominal(t))]
     current = max(found, key=lambda t: t.valid_from) if found else None
     return current if current is not None and due_in(current, month) else None
 
