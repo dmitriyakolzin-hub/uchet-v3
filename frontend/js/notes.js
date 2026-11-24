@@ -234,6 +234,8 @@ export function notesButton({ getOrg, onGo }) {
   let labels = [];
 
   async function refresh() {
+    button.hidden = !getOrg().permissions.includes("view");  // сотрудник (22.2) примечаний не видит
+    if (button.hidden) return;
     try {
       const open = await api.get(`/api/organizations/${getOrg().id}/notes?status=open`);
       button.textContent = open.length ? `Примечания (${open.length})` : "Примечания";

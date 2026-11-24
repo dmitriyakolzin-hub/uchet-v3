@@ -24,6 +24,7 @@ from app.api.access import (
     executor_scope,
     get_organization_any,
     org_permissions,
+    own_only,
     role_in,
 )
 from app.api import assets as asset_files
@@ -287,7 +288,8 @@ class Scope:
         self.branch = branch_ids(db, root) if root is not None else None
         # руководитель ЦФУ видит только заявки, где закупает его ЦФУ; без права на имущество — больше никто
         self.executors = executor_scope(db, user, organization_id)
-        if Perm.ASSETS not in self.perms and self.executors is None:
+        self.employee = own_only(db, user, organization_id)  # сотрудник — только свои заявки (22.2)
+        if Perm.ASSETS not in self.perms and self.executors is None and not self.employee:
             raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
 
     def purchaser(self, req: AssetRequest) -> bool:
@@ -296,6 +298,8 @@ class Scope:
     def visible(self, req: AssetRequest) -> bool:
         if req.created_by == self.user.id:
             return True
+        if self.employee:
+            return False
         if self.executors is not None:
             return self.purchaser(req)
         if self.only_own:
@@ -305,7 +309,8 @@ class Scope:
         return True
 
     def can_receive(self, req: AssetRequest) -> bool:
-        return (Perm.ASSETS_EDIT in self.perms or Perm.ASSET_REQUEST in self.perms or self.purchaser(req)
+        return (Perm.ASSETS_EDIT in self.perms or (Perm.ASSET_REQUEST in self.perms and not self.employee)
+                or self.purchaser(req)
                 or (req.employee_id is not None and req.employee_id in self.own))
 
     def can_delivery(self, req: AssetRequest) -> bool:

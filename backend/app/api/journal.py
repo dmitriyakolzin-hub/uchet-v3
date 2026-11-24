@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, object_session
 
-from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions
+from app.api.access import branch_ids, cfo_scope, get_organization_any, get_organization_for, org_permissions, own_only
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.models import Account, Operation, OperationEvent, PayoutSheet, Posting, User
@@ -108,11 +108,16 @@ def _get_operation(db: Session, user: User, operation_id: int, perm: Perm) -> Op
     if op is None or op.budget_version_id is not None:  # плановые операции — только через бюджет
         raise not_found
     try:
-        get_organization_for(db, user, op.organization_id, perm)
+        if perm == Perm.VIEW:  # сотрудник (22.2) смотрит свои операции без права просмотра журнала
+            get_organization_any(db, user, op.organization_id, Perm.VIEW, Perm.DRAFT)
+        else:
+            get_organization_for(db, user, op.organization_id, perm)
     except HTTPException as exc:
         if exc.status_code == status.HTTP_404_NOT_FOUND:
             raise not_found from None
         raise
+    if own_only(db, user, op.organization_id) and op.created_by != user.id:
+        raise not_found
     branch = _branch(db, user, op.organization_id)
     if branch is not None:
         if not _operation_cfos(op) & branch:
@@ -147,6 +152,8 @@ FACETS = ("status", "legal_entity_id", "account_id", "counterparty_id", "article
 def _filtered(db: Session, user: User, organization_id: int, f: dict, skip: str | None = None):
     """Отбор операций журнала по фильтрам; skip — фильтр, который не применять (для списка его значений)."""
     query = select(Operation).where(Operation.organization_id == organization_id, Operation.budget_version_id.is_(None))
+    if own_only(db, user, organization_id):  # сотрудник — только свои операции (22.2)
+        query = query.where(Operation.created_by == user.id)
     scope = cfo_scope(db, user, organization_id)
     if scope is not None:
         in_branch = select_lines(organization_id, statuses=("draft", "posted", "cancelled"), cfo_branch=scope).subquery()
@@ -215,7 +222,7 @@ def list_operations(
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> OperationList:
-    get_organization_for(db, user, organization_id, Perm.VIEW)
+    get_organization_any(db, user, organization_id, Perm.VIEW, Perm.DRAFT)
     query = _filtered(db, user, organization_id, _filters(date_from, date_to, status_, legal_entity_id, account_id,
                                                           counterparty_id, article_id, q, opening))
     total = db.scalar(select(func.count()).select_from(query.subquery()))
@@ -240,7 +247,7 @@ def operation_facets(
 ) -> dict[str, list]:
     """Значения для фильтров журнала (docs/TZ.md, раздел 25): что есть у операций, отобранных остальными фильтрами
     (свой фильтр не применяется — в нём можно отметить ещё значения). Счета — вместе с их родителями."""
-    get_organization_for(db, user, organization_id, Perm.VIEW)
+    get_organization_any(db, user, organization_id, Perm.VIEW, Perm.DRAFT)
     f = _filters(date_from, date_to, status_, legal_entity_id, account_id, counterparty_id, article_id, q, opening)
     result: dict[str, list] = {}
     for facet in FACETS:
@@ -386,14 +393,16 @@ for _action in ACTION_PERMS:
 
 @router.post("/organizations/{organization_id}/operations/bulk", response_model=BulkOut)
 def bulk_action(organization_id: int, body: BulkIn, user: CurrentUser, db: DbSession) -> BulkOut:
-    get_organization_for(db, user, organization_id, Perm.VIEW)
+    get_organization_any(db, user, organization_id, Perm.VIEW, Perm.DRAFT)
     perms = org_permissions(db, user, organization_id)
     branch = _branch(db, user, organization_id)
+    own = own_only(db, user, organization_id)
     results = []
     for operation_id in dict.fromkeys(body.ids):  # без повторов, порядок сохраняется
         op = db.get(Operation, operation_id)
         if (op is None or op.organization_id != organization_id or op.budget_version_id is not None
-                or (branch is not None and not _operation_cfos(op) & branch)):
+                or (branch is not None and not _operation_cfos(op) & branch)
+                or (own and op.created_by != user.id)):
             results.append(BulkResult(id=operation_id, ok=False, error="Операция не найдена"))
             continue
         try:

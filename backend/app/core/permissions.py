@@ -18,6 +18,7 @@ class Role(StrEnum):
     ENGINEER = "engineer"
     AHO_OPERATOR = "aho_operator"
     MOL = "mol"
+    EMPLOYEE = "employee"  # только своё: свои операции и заявки (docs/TZ.md, раздел 30, «Детали 22.2»)
 
 
 class Perm(StrEnum):
@@ -49,6 +50,7 @@ ROLE_TITLES: dict[Role, str] = {
     Role.ENGINEER: "Инженер",
     Role.AHO_OPERATOR: "Оператор АХО",
     Role.MOL: "МОЛ",
+    Role.EMPLOYEE: "Сотрудник",
 }
 
 ROLE_PERMS: dict[Role, frozenset[Perm]] = {
@@ -69,6 +71,8 @@ ROLE_PERMS: dict[Role, frozenset[Perm]] = {
     Role.ENGINEER: frozenset({Perm.ASSETS, Perm.ASSET_REQUEST, Perm.ASSET_SERVICE}),
     Role.AHO_OPERATOR: frozenset({Perm.ASSETS, Perm.ASSETS_EDIT, Perm.ASSET_REQUEST, Perm.ASSET_SERVICE}),
     Role.MOL: frozenset({Perm.ASSETS}),
+    # сотрудник — только то, что завёл сам: черновики операций, заявки на оплату и на имущество (app/api/access.own_only)
+    Role.EMPLOYEE: frozenset({Perm.DRAFT, Perm.REQUEST, Perm.ASSET_REQUEST}),
 }
 
 ADMIN_PERMS: frozenset[Perm] = frozenset(Perm)

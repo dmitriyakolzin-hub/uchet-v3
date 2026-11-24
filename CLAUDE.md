@@ -929,3 +929,10 @@
   согласует), `step_title`, CEO — `can_act` на любом шаге, в событии «CEO за: …»; `asset_route.can_act` — CEO на любом
   шаге, кроме `fd`. Интерфейс: `me.can_manage` (app.js) — «Пользователи» и общие справочники для ФД; в форме
   пользователя у ФД нет «администратора», роли — только его организации; `stepShort` в календаре. Тестов 421.
+- 2026-11-24 — Шаг 22.2 (ветка `etap-22-2-employee`, поверх `etap-22-1-launch-rights`, PR 91 ещё не влит), `docs/TZ.md`,
+  раздел 30 «Детали 22.2». Миграция 0064: роль `employee` в `memberships` (Role.EMPLOYEE «Сотрудник»: DRAFT, REQUEST,
+  ASSET_REQUEST). `access.own_only` — фильтр «только своё» (`created_by`): журнал (`_filtered`, `_get_operation` с правом
+  VIEW или DRAFT, bulk), заявки на оплату (список, карточка, `_scoped` — без расчётного счёта), заявки на имущество
+  (`Scope.employee`: видит свои, не принимает). `approval.initiator_of`: сотрудник — «cfo» (цепочка ЦФО).
+  `OrganizationOut.own_only` (+ `restricted`). Интерфейс: меню сотрудника — журнал, календарь, имущество; без примечаний.
+  Тестов 423, ui_smoke дополнен (вход сотрудником).

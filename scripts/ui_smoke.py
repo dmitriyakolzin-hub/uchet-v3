@@ -1375,6 +1375,12 @@ with sync_playwright() as p:
     d.locator("button[type=submit]").click()
     expect(page.locator(".tabulator-row", has_text="Группа АВМВ: CEO")).to_be_visible()
     page.screenshot(path=f"{OUT}/3_users.png", full_page=True)
+    # сотрудник (шаг 22.2): только своё
+    page.click("text=Добавить пользователя")
+    d = dialog_fill(page, {"login": "emp", "full_name": "Кузнецова К.К.", "password": "emp-password-1"})
+    d.locator("select[aria-label='Роль в Группа АВМВ']").select_option("employee")
+    d.locator("button[type=submit]").click()
+    expect(page.locator(".tabulator-row", has_text="Группа АВМВ: Сотрудник")).to_be_visible()
 
     # руководитель ЦФО: роль с ЦФО «Торговля»
     page.click("text=Добавить пользователя")
@@ -1552,6 +1558,18 @@ with sync_playwright() as p:
     expect(page.locator("table.suppliers tr[data-invoice='Н-502']")).to_contain_text("1 000,00")  # 7 000 + 1 000 из 3 000
     page.screenshot(path=f"{OUT}/36_suppliers.png", full_page=True)
     page.click("button.tab:has-text('Заявки')")
+
+    # вход сотрудником (22.2): журнал, календарь, имущество; в журнале только свои операции (их нет)
+    page.click("#logout")
+    login(page, "emp", "emp-password-1")
+    expect(page.locator("#nav a")).to_have_count(4)  # журнал, календарь, имущество, смена пароля
+    expect(page.locator("#nav a.active")).to_have_text("Журнал операций")
+    expect(page.locator(".notes-button")).to_be_hidden()
+    expect(page.locator("text=Новая операция")).to_be_visible()
+    expect(page.locator(".tabulator-row")).to_have_count(0)
+    page.click("#nav a[data-page=assets]")
+    expect(page.locator("button.tab")).to_have_count(1)  # только «Заявки на имущество»
+    page.screenshot(path=f"{OUT}/4a_employee.png", full_page=True)
 
     # вход под CEO
     page.click("#logout")

@@ -158,7 +158,7 @@ def test_me_shows_roles(client, headers_for, make_user, make_org):
 def test_roles_list(client, headers_for, make_user):
     roles = client.get("/api/roles", headers=headers_for(make_user())).json()
     assert [r["code"] for r in roles] == ["finance_director", "finance_manager", "ceo", "cfo_head", "executor_head",
-                                          "accountant", "engineer", "aho_operator", "mol"]
+                                          "accountant", "engineer", "aho_operator", "mol", "employee"]
     assert roles[0]["title"] == "Финансовый директор / владелец"
 
 
