@@ -66,7 +66,7 @@ const limitedPages = () => {
   if (me.is_admin || !me.memberships?.length || !me.memberships.every((m) => LIMITED[m.role])) return null;
   return new Set(["password", ...me.memberships.flatMap((m) => LIMITED[m.role])]);
 };
-const allowed = (key, page) => (!page.adminOnly || me.is_admin) && (!limitedPages() || limitedPages().has(key));
+const allowed = (key, page) => (!page.adminOnly || me.can_manage) && (!limitedPages() || limitedPages().has(key));
 
 function buildNav() {
   nav.replaceChildren(
@@ -100,6 +100,8 @@ async function route() {
 async function showApp() {
   try {
     me = await api.get("/api/auth/me");
+    // финансовый директор — как администратор: пользователи, общие справочники, организации (22.1)
+    me.can_manage = me.is_admin || (me.memberships ?? []).some((m) => m.role === "finance_director");
   } catch {
     clearSession();
     showLogin();

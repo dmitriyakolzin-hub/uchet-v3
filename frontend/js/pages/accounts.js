@@ -50,7 +50,7 @@ export async function renderAccounts(view, { me }) {
       "div",
       { class: "page-head" },
       el("h1", {}, "План счетов"),
-      me.is_admin ? el("button", { type: "button", onclick: () => addAccount() }, "Добавить счёт или субсчёт") : null,
+      me.can_manage ? el("button", { type: "button", onclick: () => addAccount() }, "Добавить счёт или субсчёт") : null,
     ),
     el(
       "p",
@@ -80,7 +80,7 @@ export async function renderAccounts(view, { me }) {
       formatter: (c) => (c.getValue() ? "да" : "архив"),
     },
   ];
-  if (me.is_admin) {
+  if (me.can_manage) {
     columns.push({
       title: "", field: "_edit", width: 48, hozAlign: "center", headerSort: false,
       formatter: () => "✎", cellClick: (_e, cell) => editAccount(cell.getRow().getData()),

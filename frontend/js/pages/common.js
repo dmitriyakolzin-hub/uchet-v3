@@ -78,7 +78,7 @@ export async function renderCommon(view, { me }) {
       addText: tab.addText,
       listUrl: `/api/${tab.key}`,
       itemUrl: (id) => `/api/${tab.key}/${id}`,
-      canEdit: me.is_admin,
+      canEdit: me.can_manage,
       columns: tab.columns,
       fields: tab.fields,
     });

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.deps import AdminUser, CurrentUser, DbSession
+from app.api.deps import CurrentUser, DbSession, ManagerUser
 from app.core.money import BASE_CURRENCY
 from app.core.permissions import ROLE_PERMS, Perm, Role
 from app.models import Currency, ExchangeRate, Membership, User
@@ -81,7 +81,7 @@ def list_currencies(_: CurrentUser, db: DbSession) -> list[CurrencyOut]:
 
 
 @router.post("/currencies", response_model=CurrencyOut, status_code=201)
-def create_currency(body: CurrencyCreate, _: AdminUser, db: DbSession) -> CurrencyOut:
+def create_currency(body: CurrencyCreate, _: ManagerUser, db: DbSession) -> CurrencyOut:
     currency = Currency(**body.model_dump())
     db.add(currency)
     _commit(db, "Валюта с таким буквенным или цифровым кодом уже есть")
@@ -90,7 +90,7 @@ def create_currency(body: CurrencyCreate, _: AdminUser, db: DbSession) -> Curren
 
 @router.patch("/currencies/{currency_id}", response_model=CurrencyOut)
 def update_currency(
-    currency_id: int, body: CurrencyUpdate, _: AdminUser, db: DbSession
+    currency_id: int, body: CurrencyUpdate, _: ManagerUser, db: DbSession
 ) -> CurrencyOut:
     currency = _get_currency(db, currency_id)
     if body.is_active is False and currency.code == BASE_CURRENCY:

@@ -1,11 +1,13 @@
-"""Управление пользователями — только администратор."""
+"""Управление пользователями: администратор — все; финансовый директор (docs/TZ.md, раздел 30, «Детали 22.1») —
+пользователи своих организаций и ещё без ролей, роли только в своих организациях; администраторов не трогает
+и признак «администратор» не ставит."""
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.deps import AdminUser, CurrentUser, DbSession
+from app.api.deps import CurrentUser, DbSession, ManagerUser, director_org_ids
 from app.core.permissions import ROLE_PERMS, ROLE_TITLES, Role
 from app.core.security import hash_password
 from app.models import Cfo, Executor, Membership, Organization, User
@@ -53,11 +55,38 @@ def user_out(db: Session, user: User) -> UserOut:
     return out
 
 
-def _get_user(db: Session, user_id: int) -> User:
+def _visible(db: Session, manager: User, user: User) -> bool:
+    """Финансовый директор видит пользователей своих организаций и ещё без ролей (не администраторов)."""
+    if manager.is_admin:
+        return True
+    if user.is_admin:
+        return False
+    orgs = set(db.scalars(select(Membership.organization_id).where(Membership.user_id == user.id)))
+    return not orgs or bool(orgs & director_org_ids(db, manager))
+
+
+def _get_user(db: Session, user_id: int, manager: User | None = None) -> User:
     user = db.get(User, user_id)
-    if user is None:
+    if user is None or (manager is not None and not _visible(db, manager, user)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Пользователь не найден")
     return user
+
+
+def _scoped(db: Session, manager: User, user_id: int | None, items: list[MembershipIn]) -> list[MembershipIn]:
+    """Финансовый директор задаёт роли только в своих организациях; роли в чужих сохраняются как были."""
+    if manager.is_admin:
+        return items
+    own = director_org_ids(db, manager)
+    if any(m.organization_id not in own for m in items):
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            detail="Роли можно давать только в организациях, где вы финансовый директор")
+    if user_id is None:
+        return items
+    kept = [MembershipIn(organization_id=m.organization_id, role=Role(m.role), cfo_id=m.cfo_id,
+                         executor_id=m.executor_id)
+            for m in db.scalars(select(Membership).where(Membership.user_id == user_id,
+                                                         Membership.organization_id.not_in(own)))]
+    return kept + items
 
 
 def _set_memberships(db: Session, user_id: int, items: list[MembershipIn]) -> None:
@@ -105,12 +134,15 @@ def list_roles(_: CurrentUser) -> list[RoleOut]:
 
 
 @router.get("/users", response_model=list[UserOut])
-def list_users(_: AdminUser, db: DbSession) -> list[UserOut]:
-    return [user_out(db, u) for u in db.scalars(select(User).order_by(User.login))]
+def list_users(manager: ManagerUser, db: DbSession) -> list[UserOut]:
+    return [user_out(db, u) for u in db.scalars(select(User).order_by(User.login)) if _visible(db, manager, u)]
 
 
 @router.post("/users", response_model=UserOut, status_code=201)
-def create_user(body: UserCreate, _: AdminUser, db: DbSession) -> UserOut:
+def create_user(body: UserCreate, manager: ManagerUser, db: DbSession) -> UserOut:
+    if body.is_admin and not manager.is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Администратора назначает администратор")
+    memberships = _scoped(db, manager, None, body.memberships)
     user = User(
         login=body.login,
         full_name=body.full_name,
@@ -125,19 +157,21 @@ def create_user(body: UserCreate, _: AdminUser, db: DbSession) -> UserOut:
         raise HTTPException(
             status.HTTP_409_CONFLICT, detail="Пользователь с таким логином уже есть"
         ) from None
-    _set_memberships(db, user.id, body.memberships)
+    _set_memberships(db, user.id, memberships)
     db.commit()
     return user_out(db, user)
 
 
 @router.get("/users/{user_id}", response_model=UserOut)
-def get_user(user_id: int, _: AdminUser, db: DbSession) -> UserOut:
-    return user_out(db, _get_user(db, user_id))
+def get_user(user_id: int, manager: ManagerUser, db: DbSession) -> UserOut:
+    return user_out(db, _get_user(db, user_id, manager))
 
 
 @router.patch("/users/{user_id}", response_model=UserOut)
-def update_user(user_id: int, body: UserUpdate, admin: AdminUser, db: DbSession) -> UserOut:
-    user = _get_user(db, user_id)
+def update_user(user_id: int, body: UserUpdate, admin: ManagerUser, db: DbSession) -> UserOut:
+    user = _get_user(db, user_id, admin)
+    if body.is_admin is not None and body.is_admin != user.is_admin and not admin.is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Администратора назначает администратор")
     losing_admin = (body.is_admin is False or body.is_active is False) and user.is_admin
     if losing_admin and user.id == admin.id:
         raise HTTPException(
@@ -166,9 +200,9 @@ def update_user(user_id: int, body: UserUpdate, admin: AdminUser, db: DbSession)
 
 @router.put("/users/{user_id}/memberships", response_model=UserOut)
 def update_memberships(
-    user_id: int, body: MembershipsUpdate, _: AdminUser, db: DbSession
+    user_id: int, body: MembershipsUpdate, manager: ManagerUser, db: DbSession
 ) -> UserOut:
-    user = _get_user(db, user_id)
-    _set_memberships(db, user.id, body.memberships)
+    user = _get_user(db, user_id, manager)
+    _set_memberships(db, user.id, _scoped(db, manager, user.id, body.memberships))
     db.commit()
     return user_out(db, user)

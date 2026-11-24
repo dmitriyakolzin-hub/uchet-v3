@@ -71,14 +71,16 @@ function rolesEditor(organizations, roles, memberships) {
 }
 
 export async function renderUsers(view, { me }) {
-  if (!me.is_admin) {
-    view.replaceChildren(el("p", { class: "error" }, "Раздел доступен только администратору."));
+  if (!me.can_manage) {
+    view.replaceChildren(el("p", { class: "error" }, "Раздел доступен администратору и финансовому директору."));
     return;
   }
-  const [roles, organizations] = await Promise.all([
+  const [roles, allOrganizations] = await Promise.all([
     api.get("/api/roles"),
     api.get("/api/organizations"),
   ]);
+  // финансовый директор даёт роли только в своих организациях; роли в остальных у пользователя сохраняются
+  const organizations = allOrganizations.filter((o) => me.is_admin || o.role === "finance_director");
   const roleTitles = Object.fromEntries(roles.map((r) => [r.code, r.title]));
 
   const tableBox = el("div");
@@ -123,14 +125,14 @@ export async function renderUsers(view, { me }) {
       ? [
           { name: "full_name", label: "ФИО" },
           { name: "password", label: "Новый пароль", type: "password", hint: "Оставьте пустым, чтобы не менять. Не короче 10 символов." },
-          { name: "is_admin", label: "Администратор (все права во всех организациях)", type: "checkbox" },
+          ...(me.is_admin ? [{ name: "is_admin", label: "Администратор (все права во всех организациях)", type: "checkbox" }] : []),
           { name: "is_active", label: "Активен (может входить в систему)", type: "checkbox" },
         ]
       : [
           { name: "login", label: "Логин", required: true, hint: "Латинские буквы, цифры, точка, дефис" },
           { name: "full_name", label: "ФИО" },
           { name: "password", label: "Пароль", type: "password", required: true, hint: "Не короче 10 символов" },
-          { name: "is_admin", label: "Администратор (все права во всех организациях)", type: "checkbox" },
+          ...(me.is_admin ? [{ name: "is_admin", label: "Администратор (все права во всех организациях)", type: "checkbox" }] : []),
         ];
     openForm({
       title: user ? `Пользователь ${user.login}` : "Новый пользователь",
@@ -140,12 +142,13 @@ export async function renderUsers(view, { me }) {
       onSubmit: async (values) => {
         const memberships = editor.collect();
         if (user) {
-          const body = { full_name: values.full_name, is_admin: values.is_admin, is_active: values.is_active };
+          const body = { full_name: values.full_name, is_active: values.is_active };
+          if (me.is_admin) body.is_admin = values.is_admin;
           if (values.password) body.password = values.password;
           await api.patch(`/api/users/${user.id}`, body);
           await api.put(`/api/users/${user.id}/memberships`, { memberships });
         } else {
-          await api.post("/api/users", { ...values, memberships });
+          await api.post("/api/users", { ...values, is_admin: me.is_admin && Boolean(values.is_admin), memberships });
         }
         toast("Сохранено");
         await load();

@@ -34,11 +34,18 @@ def test_admin_creates_organization(client, headers_for, admin):
     assert resp.json()["is_active"] is True
 
 
-@pytest.mark.parametrize("who", ["fd", "ceo", "head"])
-def test_only_admin_creates_organization(client, headers_for, setup, who):
+@pytest.mark.parametrize("who", ["ceo", "head"])
+def test_only_manager_creates_organization(client, headers_for, setup, who):
     resp = client.post("/api/organizations", headers=headers_for(setup[who]),
                        json={"name": "Новая", "kind": "group"})
     assert resp.status_code == 403
+
+
+def test_director_creates_organization(client, headers_for, setup):
+    """Финансовый директор создаёт организацию и становится в ней финансовым директором (22.1)."""
+    resp = client.post("/api/organizations", headers=headers_for(setup["fd"]), json={"name": "Новая", "kind": "group"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["role"] == "finance_director"
 
 
 def test_duplicate_organization_name(client, headers_for, setup):

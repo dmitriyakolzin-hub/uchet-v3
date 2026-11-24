@@ -12,9 +12,9 @@ from app.api.access import (
     role_in,
     visible_organization_ids,
 )
-from app.api.deps import AdminUser, CurrentUser, DbSession
-from app.core.permissions import Perm
-from app.models import LegalEntity, Operation, Organization, User
+from app.api.deps import CurrentUser, DbSession, ManagerUser
+from app.core.permissions import Perm, Role
+from app.models import LegalEntity, Membership, Operation, Organization, User
 from app.schemas.organization import (
     LegalEntityCreate,
     LegalEntityOut,
@@ -66,9 +66,13 @@ def list_organizations(user: CurrentUser, db: DbSession) -> list[OrganizationOut
 
 
 @router.post("/organizations", response_model=OrganizationOut, status_code=201)
-def create_organization(body: OrganizationCreate, user: AdminUser, db: DbSession) -> OrganizationOut:
+def create_organization(body: OrganizationCreate, user: ManagerUser, db: DbSession) -> OrganizationOut:
+    """Администратор или финансовый директор; финансовый директор становится финансовым директором новой организации."""
     organization = Organization(**body.model_dump())
     db.add(organization)
+    if not user.is_admin:
+        db.flush()
+        db.add(Membership(user_id=user.id, organization_id=organization.id, role=Role.FINANCE_DIRECTOR.value))
     _commit(db, "Организация с таким наименованием уже есть")
     return _organization_out(db, user, organization)
 

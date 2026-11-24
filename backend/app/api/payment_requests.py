@@ -134,7 +134,7 @@ class RequestOut(BaseModel):
     budget: BudgetOut | None
     source: str = "request"
     initiator: str = "finance"
-    route: list[str] = []  # шаги маршрута: executor, cfo, fm, ceo, fd
+    route: list[str] = []  # шаги маршрута: executor, cfo:<id> (снизу вверх), fm, ceo, fd
     route_titles: list[str] = []
     step: int = 0
     step_title: str = ""  # у кого сейчас на согласовании
@@ -221,8 +221,8 @@ def _out(db: Session, requests: list[PaymentRequest], scoped: bool, user: User |
             confirmed_by_statement=r.confirmed_by_statement,
             budget=BudgetOut(**check.__dict__) if check else None,
             source=r.source, initiator=r.initiator, route=list(r.route or []),
-            route_titles=[approval.STEP_TITLES[x] for x in r.route or []], step=r.step,
-            step_title=approval.STEP_TITLES.get(approval.current_step(r) or "", ""),
+            route_titles=[approval.step_title(db, x) for x in r.route or []], step=r.step,
+            step_title=approval.step_title(db, approval.current_step(r)),
             can_act=user is not None and approval.can_act(db, user, r),
             files=files.get(r.id, []), sent_at=r.sent_at, linked_id=r.linked_id, linked_number=linked.get(r.linked_id),
             group_name=(g.short_name if (g := group_payments.receiver(db, r)) else ""),
@@ -308,7 +308,7 @@ def _not_linked(req: PaymentRequest) -> None:
 def _check_act(db: Session, user: User, req: PaymentRequest) -> None:
     _status(req, "pending")
     if not approval.can_act(db, user, req):
-        step = approval.STEP_TITLES.get(approval.current_step(req) or "", "")
+        step = approval.step_title(db, approval.current_step(req))
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail=f"Заявка ждёт согласования: {step}")
 
 
@@ -394,7 +394,7 @@ def request_events(request_id: int, user: CurrentUser, db: DbSession):
     rows = db.execute(select(PaymentRequestEvent, User).join(User, User.id == PaymentRequestEvent.user_id)
                       .where(PaymentRequestEvent.request_id == req.id).order_by(PaymentRequestEvent.id)).all()
     return [EventOut(at=e.at, user_name=u.full_name or u.login, action=e.action, step=e.step,
-                     step_title=approval.STEP_TITLES.get(e.step, ""), comment=e.comment) for e, u in rows]
+                     step_title=approval.step_title(db, e.step), comment=e.comment) for e, u in rows]
 
 
 EDIT_TITLES = {"direction": "вид", "pay_date": "дата оплаты", "legal_entity_id": "юрлицо", "bank_account_id": "счёт",

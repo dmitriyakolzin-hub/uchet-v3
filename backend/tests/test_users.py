@@ -30,15 +30,46 @@ def test_admin_creates_user_with_roles(client, headers_for, admin, make_org):
     assert login.status_code == 200
 
 
-def test_non_admin_cannot_manage_users(client, headers_for, make_user, make_org):
-    fd = make_user(login="fd")
-    make_org(members=[(fd, "finance_director")])
-    h = headers_for(fd)
+def test_non_manager_cannot_manage_users(client, headers_for, make_user, make_org):
+    ceo = make_user(login="ceo")
+    make_org(members=[(ceo, "ceo")])
+    h = headers_for(ceo)
     assert client.get("/api/users", headers=h).status_code == 403
     assert _create(client, h).status_code == 403
-    assert client.patch(f"/api/users/{fd.id}", headers=h, json={"is_admin": True}).status_code == 403
-    assert client.put(f"/api/users/{fd.id}/memberships", headers=h,
+    assert client.patch(f"/api/users/{ceo.id}", headers=h, json={"is_admin": True}).status_code == 403
+    assert client.put(f"/api/users/{ceo.id}/memberships", headers=h,
                       json={"memberships": []}).status_code == 403
+
+
+def test_director_manages_users_of_own_organizations(client, headers_for, admin, make_user, make_org):
+    """Финансовый директор (22.1): пользователи своих организаций и без ролей; роли — только в своих организациях;
+    роли в чужих сохраняются; администратора не назначает и администраторов не видит."""
+    fd = make_user(login="fd")
+    own = make_org("Группа А", members=[(fd, "finance_director")])
+    other = make_org("Клиент Б")
+    stranger = make_user(login="stranger")
+    both = make_user(login="both")
+    h = headers_for(fd)
+    client.put(f"/api/users/{stranger.id}/memberships", headers=headers_for(admin),
+               json={"memberships": [{"organization_id": other.id, "role": "ceo"}]})
+    client.put(f"/api/users/{both.id}/memberships", headers=headers_for(admin), json={"memberships": [
+        {"organization_id": other.id, "role": "ceo"}, {"organization_id": own.id, "role": "accountant"}]})
+
+    assert _create(client, h, is_admin=True).status_code == 403
+    assert _create(client, h, memberships=[{"organization_id": other.id, "role": "ceo"}]).status_code == 403
+    resp = _create(client, h, memberships=[{"organization_id": own.id, "role": "accountant"}])
+    assert resp.status_code == 201, resp.text
+    logins = {u["login"] for u in client.get("/api/users", headers=h).json()}
+    assert logins == {"fd", "petrov", "both"}  # без администратора и чужого пользователя
+    assert client.get(f"/api/users/{stranger.id}", headers=h).status_code == 404
+    assert client.get(f"/api/users/{admin.id}", headers=h).status_code == 404
+    assert client.patch(f"/api/users/{both.id}", headers=h, json={"is_admin": True}).status_code == 403
+
+    resp = client.put(f"/api/users/{both.id}/memberships", headers=h,
+                      json={"memberships": [{"organization_id": own.id, "role": "finance_manager"}]})
+    assert resp.status_code == 200, resp.text
+    assert sorted((m["organization_id"], m["role"]) for m in resp.json()["memberships"]) == \
+        sorted([(own.id, "finance_manager"), (other.id, "ceo")])  # роль в чужой организации осталась
 
 
 def test_duplicate_login(client, headers_for, admin):
