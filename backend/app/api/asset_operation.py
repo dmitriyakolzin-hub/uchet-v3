@@ -1,8 +1,9 @@
-"""Эксплуатация имущества (docs/TZ.md, раздел 28, «Детали 19.5»): перемещения с подтверждением, работы.
+"""Эксплуатация имущества (docs/TZ.md, раздел 28, «Детали 19.5»; раздел 30, «Детали 22.3»): перемещения, работы.
 
-Создать перемещение — оператор АХО, бухгалтер, ФД (право ASSETS_EDIT) или МОЛ своих единиц; подтвердить — получатель
-(сотрудник-МОЛ, связанный с пользователем) или АХО за него; отменить — автор или АХО. Работы — право ASSET_SERVICE
-(инженер, оператор АХО, бухгалтер, ФД).
+Создать перемещение — оператор АХО, бухгалтер, ФД (право ASSETS_EDIT), МОЛ своих единиц, руководитель ЦФО — единиц
+своей ветки, руководитель ЦФУ — единиц своего ЦФУ. Затем согласует АХО (оператор АХО или ФД; если в организации нет
+оператора АХО — не нужно). Подтвердить — получатель (МОЛ), руководитель ЦФО ветки, куда перемещают, руководитель ЦФУ
+нового МОЛ — или АХО за него; отменить — автор или АХО. Работы — право ASSET_SERVICE.
 """
 
 import datetime as dt
@@ -65,9 +66,12 @@ class TransferOut(BaseModel):
     reject_reason: str
     created_by_name: str
     decided_by_name: str
+    aho_approved: bool = True
+    aho_approved_by_name: str = ""
     items: list[TransferItemOut]
     can_accept: bool
     can_cancel: bool
+    can_approve: bool = False  # согласовать как АХО
 
 
 class WorkIn(BaseModel):
@@ -117,7 +121,15 @@ def _run(db: Session, action) -> None:
 def _can_accept(scope: Scope, transfer: AssetTransfer) -> bool:
     if transfer.status != "pending":
         return False
-    return (transfer.to_employee_id is not None and transfer.to_employee_id in scope.own) or scope.can_edit
+    if transfer.aho_approved_at is None:  # до согласования АХО принимает (и тем согласует) только АХО
+        return scope.is_aho
+    return scope.receives(transfer.to_cfo_id, transfer.to_employee_id) or scope.can_edit
+
+
+def _sees(db: Session, scope: Scope, transfer: AssetTransfer, user: User) -> bool:
+    """Свои, адресованные пользователю (в т. ч. в его ветку / его ЦФУ) или с единицами из его области."""
+    return (transfer.created_by == user.id or scope.receives(transfer.to_cfo_id, transfer.to_employee_id)
+            or any(scope.visible(i) for i in service.transfer_items(db, transfer)))
 
 
 def _transfers_out(db: Session, transfers: list[AssetTransfer], scope: Scope) -> list[TransferOut]:
@@ -125,7 +137,8 @@ def _transfers_out(db: Session, transfers: list[AssetTransfer], scope: Scope) ->
         return []
     labels = asset_service.Labels.load(db, transfers[0].organization_id)
     users = {u.id: u.full_name or u.login for u in db.scalars(select(User).where(User.id.in_(
-        {t.created_by for t in transfers} | {t.decided_by for t in transfers if t.decided_by})))}
+        {t.created_by for t in transfers} | {t.decided_by for t in transfers if t.decided_by}
+        | {t.aho_approved_by for t in transfers if t.aho_approved_by})))}
     rows = db.execute(select(AssetTransferItem, AssetItem).join(AssetItem, AssetItem.id == AssetTransferItem.item_id)
                       .where(AssetTransferItem.transfer_id.in_([t.id for t in transfers]))
                       .order_by(AssetItem.number)).all()
@@ -137,7 +150,11 @@ def _transfers_out(db: Session, transfers: list[AssetTransfer], scope: Scope) ->
                                               labels.warehouses.get(link.from_warehouse_id, "")) if x),
             from_employee=labels.employees.get(link.from_employee_id, "")))
     return [TransferOut(
-        id=t.id, number=t.number, on_date=t.on_date, status=t.status, status_title=TRANSFER_STATUSES[t.status],
+        id=t.id, number=t.number, on_date=t.on_date, status=t.status,
+        status_title=("Ждёт согласования АХО" if t.status == "pending" and t.aho_approved_at is None
+                      else TRANSFER_STATUSES[t.status]),
+        aho_approved=t.aho_approved_at is not None, aho_approved_by_name=users.get(t.aho_approved_by, ""),
+        can_approve=t.status == "pending" and t.aho_approved_at is None and scope.is_aho,
         to_place=labels.cfos.get(t.to_cfo_id, ""), to_warehouse=labels.warehouses.get(t.to_warehouse_id, ""),
         to_employee=labels.employees.get(t.to_employee_id, ""),
         to_status_title=ASSET_STATUSES.get(t.to_status or "", ""), reason=t.reason, reject_reason=t.reject_reason,
@@ -155,14 +172,11 @@ def list_transfers(organization_id: int, user: CurrentUser, db: DbSession,
     query = select(AssetTransfer).where(AssetTransfer.organization_id == organization_id)
     if status_:
         query = query.where(AssetTransfer.status.in_(status_.split(",")))
-    if to_me:
-        query = query.where(AssetTransfer.to_employee_id.in_(scope.own or [0]))
     transfers = list(db.scalars(query.order_by(AssetTransfer.number.desc()).limit(500)))
-    visible = []
-    for t in transfers:
-        if t.to_employee_id in scope.own or t.created_by == user.id or \
-                any(scope.visible(i) for i in service.transfer_items(db, t)):
-            visible.append(t)
+    visible = [t for t in transfers if _sees(db, scope, t, user)]
+    if to_me:  # «мне на подтверждение»: ждут моего согласования (АХО) или приёма
+        visible = [t for t in visible if _can_accept(scope, t) and (scope.receives(t.to_cfo_id, t.to_employee_id)
+                                                                   or (scope.is_aho and t.aho_approved_at is None))]
     return _transfers_out(db, visible, scope)
 
 
@@ -173,8 +187,9 @@ def create_transfer(organization_id: int, body: TransferIn, user: CurrentUser, d
                                                     AssetItem.id.in_(body.ids)).order_by(AssetItem.number)))
     if len(items) != len(set(body.ids)) or not all(scope.visible(i) for i in items):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Часть единиц не найдена")
-    if not scope.can_edit and not all(i.employee_id in scope.own for i in items):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Передать может АХО или МОЛ — только своё имущество")
+    if not all(scope.can_move(i) for i in items):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Передать может АХО, МОЛ — своё имущество, руководитель ЦФО "
+                                                              "— своей ветки, руководитель ЦФУ — своего ЦФУ")
     holder: list[AssetTransfer] = []
     _run(db, lambda: holder.append(service.create_transfer(
         db, organization_id, user, items, **body.model_dump(exclude={"ids"}))))
@@ -192,18 +207,28 @@ def _transfer(db: Session, user: User, transfer_id: int) -> tuple[AssetTransfer,
         if exc.status_code == status.HTTP_404_NOT_FOUND:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Перемещение не найдено") from None
         raise
-    if not (transfer.to_employee_id in scope.own or transfer.created_by == user.id
-            or any(scope.visible(i) for i in service.transfer_items(db, transfer))):
+    if not _sees(db, scope, transfer, user):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Перемещение не найдено")
     return transfer, scope
+
+
+@router.post("/asset-transfers/{transfer_id}/approve", response_model=TransferOut)
+def approve_transfer(transfer_id: int, user: CurrentUser, db: DbSession):
+    """Согласование АХО (22.3): оператор АХО или финансовый директор."""
+    transfer, scope = _transfer(db, user, transfer_id)
+    if not scope.is_aho:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Согласует АХО")
+    _run(db, lambda: service.approve_aho(db, transfer, user))
+    db.commit()
+    return _transfers_out(db, [transfer], scope)[0]
 
 
 @router.post("/asset-transfers/{transfer_id}/accept", response_model=TransferOut)
 def accept_transfer(transfer_id: int, user: CurrentUser, db: DbSession):
     transfer, scope = _transfer(db, user, transfer_id)
     if not _can_accept(scope, transfer):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Подтверждает получатель (МОЛ) или АХО")
-    on_behalf = not (transfer.to_employee_id is not None and transfer.to_employee_id in scope.own)
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Подтверждает получатель (после согласования АХО) или АХО")
+    on_behalf = not scope.receives(transfer.to_cfo_id, transfer.to_employee_id)
     _run(db, lambda: service.accept(db, transfer, user, on_behalf))
     db.commit()
     return _transfers_out(db, [transfer], scope)[0]
@@ -212,8 +237,9 @@ def accept_transfer(transfer_id: int, user: CurrentUser, db: DbSession):
 @router.post("/asset-transfers/{transfer_id}/reject", response_model=TransferOut)
 def reject_transfer(transfer_id: int, body: ReasonIn, user: CurrentUser, db: DbSession):
     transfer, scope = _transfer(db, user, transfer_id)
-    if not _can_accept(scope, transfer):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Отказаться может получатель (МОЛ) или АХО")
+    if not (transfer.status == "pending" and (scope.receives(transfer.to_cfo_id, transfer.to_employee_id)
+                                              or scope.can_edit or scope.is_aho)):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Отказаться может получатель или АХО")
     _run(db, lambda: service.close(db, transfer, user, "rejected", body.reason))
     db.commit()
     return _transfers_out(db, [transfer], scope)[0]

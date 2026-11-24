@@ -16,7 +16,8 @@ const OWNERSHIP = [["own", "Собственное"], ["leasing", "Лизинг"
 const ACTIONS = { created: "завёл(а)", edited: "изменил(а)", bulk_edited: "изменил(а) группой", imported: "загрузил(а)",
   file: "приложил(а) файл", file_removed: "убрал(а) файл", received: "принял(а)", accounted: "поставил(а) на учёт",
   unaccounted: "снял(а) с учёта", transfer_created: "отправил(а) в перемещение", transferred: "переместил(а)",
-  transfer_rejected: "— получатель отказался", transfer_cancelled: "отменил(а) перемещение", work: "внёс(ла) работу",
+  transfer_rejected: "— получатель отказался", transfer_approved: "согласовал(а) перемещение (АХО)",
+  disposal_approved: "согласовал(а) выбытие (АХО)", transfer_cancelled: "отменил(а) перемещение", work: "внёс(ла) работу",
   work_finished: "завершил(а) работу", work_removed: "удалил(а) работу", disposal_created: "предложил(а) выбытие",
   disposed: "— выбыла", disposal_rejected: "— выбытие отклонено", disposal_cancelled: "отменил(а) выбытие",
   disposal_undone: "— выбытие отменено", inventory_moved: "перенёс(ла) по инвентаризации",
@@ -73,6 +74,8 @@ export async function renderAssets(view) {
   let ref = null;
   const filters = { search: "", legal_entity_id: "", cfo_id: "", employee_id: "", category_id: "", status: "", ownership: "", lease_contract_id: "", mine: false };
   const canEdit = () => org.permissions.includes("assets_edit");
+  // руководитель ЦФО и ЦФУ передают имущество своей ветки / своего ЦФУ (docs/TZ.md, «Детали 22.3»)
+  const isHead = () => ["cfo_head", "executor_head"].includes(org.role);
 
   const table = makeTable(tableBox, {
     index: "id",
@@ -348,7 +351,7 @@ export async function renderAssets(view) {
       el("div", { class: "form-actions" },
         canEdit() && item.status !== "disposed" ? el("button", { type: "button", onclick: () => { close(); editItem(item); } }, "Изменить") : "",
         el("button", { type: "button", class: "secondary", onclick: () => printLabels([item]) }, "Этикетка QR"),
-        (canEdit() || item.mine) && item.status !== "disposed" && !item.in_transfer
+        (canEdit() || item.mine || isHead()) && item.status !== "disposed" && !item.in_transfer
           ? el("button", { type: "button", class: "secondary", onclick: () => { close(); transferForm({ org, ref, items: [item], onDone: load }); } }, "Переместить") : "",
         canAccount() && !item.accounting && item.status !== "disposed"
           ? el("button", { type: "button", class: "secondary", onclick: () => { close(); accountItems([item]); } }, "Поставить на учёт") : "",
@@ -392,7 +395,7 @@ export async function renderAssets(view) {
       canEdit() ? el("button", { type: "button", onclick: () => bulkEdit(selected) }, "Изменить выбранные") : "",
       canAccount() && selected.some((r) => !r.accounting)
         ? el("button", { type: "button", class: "secondary", onclick: () => accountItems(selected.filter((r) => !r.accounting)) }, "Поставить на учёт") : "",
-      canEdit() || selected.every((r) => r.mine)
+      canEdit() || isHead() || selected.every((r) => r.mine)
         ? el("button", { type: "button", class: "secondary", onclick: () => transferForm({ org, ref, items: selected, onDone: async () => { table.deselectRow(); await load(); } }) }, "Переместить / передать") : "",
       canDispose() && selected.every((r) => r.status !== "disposed")
         ? el("button", { type: "button", class: "secondary", onclick: () => disposalForm({ org, ref, items: selected, onDone: async () => { table.deselectRow(); await load(); } }) }, "Выбытие…") : "",

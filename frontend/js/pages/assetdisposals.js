@@ -75,7 +75,8 @@ export function assetDisposalsTab(box, ctx) {
     status.addEventListener("change", () => { filter = status.value; load(); });
     box.replaceChildren(
       instruction("Выбытие: отметьте единицы в «Реестре» → «Выбытие…» — продажа, списание или гибель / утрата. "
-        + "Предлагают инженер, оператор АХО, бухгалтер; согласует финансовый директор — тогда единицы выбывают и создаются "
+        + "Предлагают инженер, оператор АХО, бухгалтер; сначала согласует АХО («Согласовать (АХО)»; если в организации нет "
+        + "оператора АХО — не нужно), затем решает финансовый директор — тогда единицы выбывают и создаются "
         + "проводки. Основное средство — как в «Основных средствах»: амортизация закрывается (02 → 01), остаток — в прочие "
         + "расходы (91.02), при продаже — выручка (62.01 → 91.01) и НДС. Малоценка и имущество без учёта: продажа — только "
         + "выручка, списание и утрата — без проводок. Ошибочное выбытие ФД может отменить — проводки удалятся."),
@@ -120,6 +121,10 @@ export function assetDisposalsTab(box, ctx) {
         el("td", {}, d.reason, d.reject_reason ? el("div", { class: "muted small" }, `Причина отказа: ${d.reject_reason}`) : ""),
         el("td", {}, el("span", { class: `badge disposal-${d.status}` }, d.status_title)),
         el("td", { class: "req-actions" },
+          d.can_aho_approve ? el("button", { type: "button", onclick: () => act(d, "aho-approve") }, "Согласовать (АХО)") : "",
+          d.can_aho_approve ? el("button", { type: "button", class: "link", onclick: () => openForm({
+            title: `Не согласовать акт № ${d.number}`, fields: [{ name: "reason", label: "Причина", type: "textarea" }],
+            submitText: "Отклонить", onSubmit: async (v) => act(d, "reject", { reason: v.reason ?? "" }) }) }, "Отклонить") : "",
           d.can_decide ? el("button", { type: "button", onclick: () => act(d, "approve") }, "Согласовать") : "",
           d.can_decide ? el("button", { type: "button", class: "link", onclick: () => openForm({
             title: `Отклонить акт № ${d.number}`, fields: [{ name: "reason", label: "Причина", type: "textarea" }],
