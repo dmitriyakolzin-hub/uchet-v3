@@ -14,10 +14,10 @@ from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions, role_in
+from app.api.access import branch_ids, cfo_scope, executor_scope, get_organization_for, org_permissions, role_in
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import ROLE_TITLES, Perm, Role
-from app.models import AssetEvent, AssetItem, AssetItemFile, Membership, Operation, User
+from app.models import AssetEvent, AssetItem, AssetItemFile, Executor, Membership, Operation, User
 from app.models.asset import ACCOUNTING, ASSET_STATUSES, OWNERSHIP, AssetRequest
 from app.services import asset_accounting as accounting
 from app.services import asset_disposal, asset_operation
@@ -132,7 +132,10 @@ class MemberOut(BaseModel):
 
 
 class Scope:
-    """Что пользователь видит в организации: всё, ветку ЦФО или только своё (МОЛ)."""
+    """Что пользователь видит в организации: всё, ветку ЦФО, имущество своего ЦФУ или только своё (МОЛ).
+
+    Имущество ЦФУ (docs/TZ.md, раздел 30, «Детали 22.3») — единицы, у которых МОЛ — сотрудник, закреплённый за ЦФУ
+    руководителя или его исполнителями (поле «Сотрудник» у ЦФУ)."""
 
     def __init__(self, db: Session, user: User, organization_id: int):
         get_organization_for(db, user, organization_id, Perm.ASSETS)
@@ -142,13 +145,19 @@ class Scope:
         self.only_own = not user.is_admin and membership is not None and membership.role == Role.MOL
         root = cfo_scope(db, user, organization_id)
         self.branch = branch_ids(db, root) if root is not None else None
+        executors = executor_scope(db, user, organization_id)
+        self.executor_employees = None if executors is None else set(db.scalars(
+            select(Executor.employee_id).where(Executor.id.in_(executors), Executor.employee_id.is_not(None))))
         self.can_edit = Perm.ASSETS_EDIT in org_permissions(db, user, organization_id)
+        self.is_aho = service.is_aho(db, user, organization_id)
 
     def visible(self, item: AssetItem) -> bool:
         if self.only_own:
             return item.employee_id in self.own
         if self.branch is not None:
             return item.cfo_id in self.branch or item.employee_id in self.own
+        if self.executor_employees is not None:
+            return item.employee_id in self.executor_employees or item.employee_id in self.own
         return True
 
     def condition(self):
@@ -156,7 +165,22 @@ class Scope:
             return AssetItem.employee_id.in_(self.own or [0])
         if self.branch is not None:
             return AssetItem.cfo_id.in_(self.branch) | AssetItem.employee_id.in_(self.own or [0])
+        if self.executor_employees is not None:
+            return AssetItem.employee_id.in_((self.executor_employees | set(self.own)) or [0])
         return None
+
+    def can_move(self, item: AssetItem) -> bool:
+        """Передать: АХО (право правки), МОЛ — своё, руководитель ЦФО — своей ветки, руководитель ЦФУ — своего ЦФУ."""
+        return (self.can_edit or item.employee_id in self.own
+                or (self.branch is not None and item.cfo_id in self.branch)
+                or (self.executor_employees is not None and item.employee_id in self.executor_employees))
+
+    def receives(self, to_cfo_id: int | None, to_employee_id: int | None) -> bool:
+        """Принять перемещение: получатель-МОЛ, руководитель ЦФО (место — в его ветке), руководитель ЦФУ
+        (новый МОЛ — сотрудник его ЦФУ)."""
+        return ((to_employee_id is not None and to_employee_id in self.own)
+                or (self.branch is not None and to_cfo_id in self.branch)
+                or (self.executor_employees is not None and to_employee_id in self.executor_employees))
 
 
 def _item(db: Session, user: User, item_id: int, edit: bool = False) -> tuple[AssetItem, Scope]:

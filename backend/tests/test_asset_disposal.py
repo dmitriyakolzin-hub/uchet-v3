@@ -40,6 +40,12 @@ def test_disposal(client, env, db, make_user, headers_for):  # noqa: F811
     assert client.get(f"/api/asset-items/{chairs[0]['id']}", headers=aho).json()["in_disposal"] is True
     assert client.post(url, headers=aho, json={**body, "reason": "ещё раз"}).status_code == 422  # уже на согласовании
     assert client.post(f"/api/asset-disposals/{act['id']}/approve", headers=engineer).status_code == 403
+    # сначала АХО (22.3): до согласования ФД не решает
+    assert act["status_title"] == "Ждёт согласования АХО"
+    assert client.post(f"/api/asset-disposals/{act['id']}/approve", headers=env["h"]).status_code == 422
+    assert client.post(f"/api/asset-disposals/{act['id']}/aho-approve", headers=engineer).status_code == 403
+    act = client.post(f"/api/asset-disposals/{act['id']}/aho-approve", headers=aho).json()
+    assert (act["aho_approved"], act["status_title"]) == (True, "На согласовании ФД")
     act = client.post(f"/api/asset-disposals/{act['id']}/approve", headers=env["h"]).json()
     assert act["status"] == "done" and act["items"][0]["operation_number"] is None  # без проводок
     item = client.get(f"/api/asset-items/{chairs[0]['id']}", headers=aho).json()

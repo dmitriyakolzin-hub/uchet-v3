@@ -133,6 +133,24 @@ def snapshot(item: AssetItem) -> dict:
     return {key: getattr(item, key) for key in FIELD_TITLES}
 
 
+AHO_ROLES = ("aho_operator", "finance_director")  # согласуют перемещения и выбытия (22.3); ФД — полный доступ
+
+
+def aho_required(db: Session, organization_id: int) -> bool:
+    """Согласование АХО нужно, если в организации есть оператор АХО."""
+    from app.models import Membership
+
+    return db.scalar(select(Membership.user_id).where(Membership.organization_id == organization_id,
+                                                 Membership.role == "aho_operator").limit(1)) is not None
+
+
+def is_aho(db: Session, user: User, organization_id: int) -> bool:
+    from app.models import Membership
+
+    return user.is_admin or db.scalar(select(Membership.role).where(
+        Membership.user_id == user.id, Membership.organization_id == organization_id)) in AHO_ROLES
+
+
 def contract_label(c: Contract) -> str:
     return f"№ {c.number}" + (f" от {c.contract_date:%d.%m.%Y}" if c.contract_date else "") + (f" {c.name}" if c.name else "")
 

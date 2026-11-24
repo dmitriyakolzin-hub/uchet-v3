@@ -58,6 +58,9 @@ def create_transfer(db: Session, organization_id: int, user: User, items: list[A
     transfer = AssetTransfer(organization_id=organization_id, number=number, on_date=on_date, to_cfo_id=to_cfo_id,
                              to_warehouse_id=to_warehouse_id, to_employee_id=to_employee_id, to_status=to_status,
                              reason=reason, created_by=user.id)
+    # согласование АХО (22.3): создал АХО (или ФД) или в организации нет оператора АХО — уже согласовано
+    if asset_service.is_aho(db, user, organization_id) or not asset_service.aho_required(db, organization_id):
+        transfer.aho_approved_by, transfer.aho_approved_at = user.id, dt.datetime.now(dt.UTC)
     db.add(transfer)
     db.flush()
     for item in items:
@@ -73,10 +76,27 @@ def transfer_items(db: Session, transfer: AssetTransfer) -> list[AssetItem]:
                            .where(AssetTransferItem.transfer_id == transfer.id).order_by(AssetItem.number)))
 
 
-def accept(db: Session, transfer: AssetTransfer, user: User, on_behalf: bool) -> None:
-    """Получатель подтвердил (или АХО за него): единицы — на новом месте, у нового МОЛ."""
+def approve_aho(db: Session, transfer: AssetTransfer, user: User) -> None:
+    """АХО согласовал перемещение (22.3) — теперь его может принять получатель."""
     if transfer.status != "pending":
         raise OperationError("Перемещение уже закрыто")
+    if transfer.aho_approved_at is not None:
+        raise OperationError("Перемещение уже согласовано АХО")
+    transfer.aho_approved_by, transfer.aho_approved_at = user.id, dt.datetime.now(dt.UTC)
+    for item in transfer_items(db, transfer):
+        asset_service.event(db, item, user, "transfer_approved", f"перемещение № {transfer.number}: согласовано АХО")
+    db.flush()
+
+
+def accept(db: Session, transfer: AssetTransfer, user: User, on_behalf: bool) -> None:
+    """Получатель подтвердил (или АХО за него): единицы — на новом месте, у нового МОЛ. До согласования АХО принять
+    нельзя; АХО, принимая за получателя, согласует заодно."""
+    if transfer.status != "pending":
+        raise OperationError("Перемещение уже закрыто")
+    if transfer.aho_approved_at is None:
+        if not asset_service.is_aho(db, user, transfer.organization_id):
+            raise OperationError("Перемещение ещё не согласовано АХО")
+        transfer.aho_approved_by, transfer.aho_approved_at = user.id, dt.datetime.now(dt.UTC)
     labels = asset_service.Labels.load(db, transfer.organization_id)
     changes: dict = {}
     if transfer.to_cfo_id is not None:

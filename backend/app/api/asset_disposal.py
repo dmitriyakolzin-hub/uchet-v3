@@ -72,6 +72,9 @@ class DisposalOut(BaseModel):
     decided_by_name: str
     total: Decimal
     items: list[DisposalItemOut]
+    aho_approved: bool = True
+    aho_approved_by_name: str = ""
+    can_aho_approve: bool = False  # согласовать как АХО (22.3)
     can_decide: bool
     can_cancel: bool
     can_undo: bool
@@ -95,8 +98,8 @@ def _out(db: Session, disposals: list[AssetDisposal], scope: Scope, perms: froze
     cps = _names(db, Counterparty, [d.counterparty_id for d in disposals], lambda c: c.name)
     contracts = _names(db, Contract, [d.contract_id for d in disposals], lambda c: c.name or f"№ {c.number}")
     emps = _names(db, Employee, [d.employee_id for d in disposals], lambda e: e.full_name)
-    users = _names(db, User, [d.created_by for d in disposals] + [d.decided_by for d in disposals],
-                   lambda u: u.full_name or u.login)
+    users = _names(db, User, [d.created_by for d in disposals] + [d.decided_by for d in disposals]
+                   + [d.aho_approved_by for d in disposals], lambda u: u.full_name or u.login)
     supervise = Perm.SUPERVISE in perms
     for d in disposals:
         rows = service.lines(db, d)
@@ -108,11 +111,15 @@ def _out(db: Session, disposals: list[AssetDisposal], scope: Scope, perms: froze
             id=d.id, number=d.number, kind=d.kind, kind_title=DISPOSAL_KINDS[d.kind], on_date=d.on_date,
             reason=d.reason, counterparty_name=cps.get(d.counterparty_id, ""),
             contract_name=contracts.get(d.contract_id, ""), vat_rate=d.vat_rate,
-            employee_name=emps.get(d.employee_id, ""), status=d.status, status_title=DISPOSAL_STATUSES[d.status],
+            employee_name=emps.get(d.employee_id, ""), status=d.status,
+            status_title=("Ждёт согласования АХО" if d.status == "pending" and d.aho_approved_at is None
+                          else DISPOSAL_STATUSES[d.status]),
+            aho_approved=d.aho_approved_at is not None, aho_approved_by_name=users.get(d.aho_approved_by, ""),
+            can_aho_approve=d.status == "pending" and d.aho_approved_at is None and scope.is_aho,
             reject_reason=d.reject_reason, created_by_name=users.get(d.created_by, ""),
             decided_by_name=users.get(d.decided_by, ""),
             total=sum((link.price or Decimal("0.00") for link, _ in rows), Decimal("0.00")), items=items,
-            can_decide=d.status == "pending" and supervise,
+            can_decide=d.status == "pending" and supervise and d.aho_approved_at is not None,
             can_cancel=d.status == "pending" and (d.created_by == scope.user_id or supervise),
             can_undo=d.status == "done" and supervise,
         ))
@@ -172,6 +179,17 @@ def _supervise(perms: frozenset) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Решение по выбытию принимает финансовый директор")
 
 
+@router.post("/asset-disposals/{disposal_id}/aho-approve", response_model=DisposalOut)
+def aho_approve_disposal(disposal_id: int, user: CurrentUser, db: DbSession):
+    """Согласование АХО (22.3): оператор АХО или финансовый директор; дальше решает финансовый директор."""
+    disposal, scope, perms = _disposal(db, user, disposal_id)
+    if not scope.is_aho:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Согласует АХО")
+    _run(db, lambda: service.approve_aho(db, disposal, user))
+    db.commit()
+    return _out(db, [disposal], scope, perms)[0]
+
+
 @router.post("/asset-disposals/{disposal_id}/approve", response_model=DisposalOut)
 def approve_disposal(disposal_id: int, user: CurrentUser, db: DbSession):
     disposal, scope, perms = _disposal(db, user, disposal_id)
@@ -184,7 +202,8 @@ def approve_disposal(disposal_id: int, user: CurrentUser, db: DbSession):
 @router.post("/asset-disposals/{disposal_id}/reject", response_model=DisposalOut)
 def reject_disposal(disposal_id: int, body: ReasonIn, user: CurrentUser, db: DbSession):
     disposal, scope, perms = _disposal(db, user, disposal_id)
-    _supervise(perms)
+    if not (scope.is_aho and disposal.aho_approved_at is None):  # АХО может не согласовать (22.3)
+        _supervise(perms)
     _run(db, lambda: service.close(db, disposal, user, "rejected", body.reason))
     db.commit()
     return _out(db, [disposal], scope, perms)[0]

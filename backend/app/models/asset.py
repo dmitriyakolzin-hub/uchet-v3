@@ -285,6 +285,9 @@ class AssetTransfer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     decided_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # согласование АХО (docs/TZ.md, раздел 30, «Детали 22.3»): до него перемещение не принимают, выбытие не решают
+    aho_approved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    aho_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AssetTransferItem(Base):
@@ -356,6 +359,9 @@ class AssetDisposal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     decided_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # согласование АХО (docs/TZ.md, раздел 30, «Детали 22.3»): до него перемещение не принимают, выбытие не решают
+    aho_approved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    aho_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AssetDisposalItem(Base):

@@ -41,6 +41,14 @@ def test_transfer_flow(client, env, db, make_user, headers_for):  # noqa: F811
     assert client.post(url, headers=aho, json=body).status_code == 422  # уже перемещаются
     assert all(i["in_transfer"] for i in client.get(f"{env['o']}/asset-items", headers=aho).json())
 
+    # согласование АХО (22.3): до него получатель не принимает
+    assert (t["status_title"], t["aho_approved"]) == ("Ждёт согласования АХО", False)
+    assert client.get(url, headers=new_mol, params={"to_me": True}).json() == []
+    assert client.post(f"/api/asset-transfers/{t['id']}/accept", headers=new_mol).status_code == 403
+    assert client.post(f"/api/asset-transfers/{t['id']}/approve", headers=old_mol).status_code == 403
+    resp = client.post(f"/api/asset-transfers/{t['id']}/approve", headers=aho)
+    assert resp.status_code == 200 and resp.json()["aho_approved_by_name"] == "Aho"
+
     # получатель видит «ждут меня», до подтверждения единицы у старого МОЛ
     mine = client.get(url, headers=new_mol, params={"to_me": True}).json()
     assert [x["number"] for x in mine] == [1] and mine[0]["can_accept"] is True
@@ -100,3 +108,38 @@ def test_works(client, env, db, make_user, headers_for):  # noqa: F811
     assert len(client.get(url, headers=mol).json()["works"]) == 2  # МОЛ видит работы по своему
     assert client.delete(f"/api/asset-works/{repair['id']}", headers=engineer).status_code == 204
     assert client.get(url, headers=env["other"]).status_code == 404
+
+
+def test_heads_transfer_and_receive(client, env, db, make_user, headers_for):  # noqa: F811
+    """22.3: руководитель ЦФО передаёт имущество своей ветки; руководитель ЦФУ видит имущество своего ЦФУ (МОЛ —
+    сотрудник ЦФУ) и принимает перемещение к нему; без оператора АХО в организации согласование не нужно."""
+    from app.models import Membership
+
+    # руководитель ЦФО офиса — env["head"]; ЦФУ «Склад» с закреплённым сотрудником
+    keeper = env["post"]("employees", {"full_name": "Кладовщиков Карл"})
+    stock = env["post"]("executors", {"name": "Склад", "employee_id": keeper["id"]})
+    boss = make_user(login="stockboss")
+    db.add(Membership(user_id=boss.id, organization_id=env["org"].id, role="executor_head", executor_id=stock["id"]))
+    db.commit()
+    h_boss = headers_for(boss)
+    items = make_items(client, env, env["h"], count=1)  # в офисе, без МОЛ
+    shop_items = make_items(client, env, env["h"], count=1, cfo_id=env["shop"]["id"])
+    url = f"{env['o']}/asset-transfers"
+    body = {"on_date": TODAY.isoformat(), "to_employee_id": keeper["id"], "to_status": "stock"}
+    assert client.post(url, headers=env["head"], json={**body, "ids": [shop_items[0]["id"]]}).status_code == 404
+    resp = client.post(url, headers=env["head"], json={**body, "ids": [items[0]["id"]]})
+    assert resp.status_code == 201, resp.text
+    t = resp.json()
+    assert (t["aho_approved"], t["status_title"]) == (True, "Ждёт подтверждения")  # оператора АХО нет
+
+    # руководитель ЦФУ: до приёма имущества у него нет, перемещение к нему видит и принимает
+    assert client.get(f"{env['o']}/asset-items", headers=h_boss).json() == []
+    mine = client.get(url, headers=h_boss, params={"to_me": True}).json()
+    assert [x["id"] for x in mine] == [t["id"]] and mine[0]["can_accept"] is True
+    assert client.post(f"/api/asset-transfers/{t['id']}/accept", headers=h_boss).json()["status"] == "accepted"
+    rows = client.get(f"{env['o']}/asset-items", headers=h_boss).json()
+    assert [(r["employee_name"], r["status"]) for r in rows] == [("Кладовщиков Карл", "stock")]
+    # и передаёт дальше — в магазин
+    t2 = client.post(url, headers=h_boss, json={"ids": [rows[0]["id"]], "on_date": TODAY.isoformat(),
+                                                "to_cfo_id": env["shop"]["id"]})
+    assert t2.status_code == 201, t2.text

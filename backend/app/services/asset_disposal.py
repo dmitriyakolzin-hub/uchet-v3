@@ -73,6 +73,9 @@ def create(db: Session, organization_id: int, user: User, items: list[AssetItem]
     disposal = AssetDisposal(organization_id=organization_id, number=number, kind=kind, on_date=on_date,
                              reason=reason, counterparty_id=counterparty_id, contract_id=contract_id,
                              vat_rate=vat_rate, employee_id=employee_id, created_by=user.id)
+    # согласование АХО (22.3): предложил АХО (или ФД) или в организации нет оператора АХО — уже согласовано
+    if asset_service.is_aho(db, user, organization_id) or not asset_service.aho_required(db, organization_id):
+        disposal.aho_approved_by, disposal.aho_approved_at = user.id, dt.datetime.now(dt.UTC)
     db.add(disposal)
     db.flush()
     for item in items:
@@ -117,10 +120,24 @@ def _sale_operation(db: Session, disposal: AssetDisposal, item: AssetItem, price
         raise DisposalError(f"{item.number}: проводки не прошли проверку журнала: {exc}") from None
 
 
-def approve(db: Session, disposal: AssetDisposal, user: User) -> None:
-    """Согласование ФД: единицы выбывают, проводки создаются."""
+def approve_aho(db: Session, disposal: AssetDisposal, user: User) -> None:
+    """АХО согласовал выбытие (22.3) — дальше решение финансового директора."""
     if disposal.status != "pending":
         raise DisposalError("Выбытие уже не на согласовании")
+    if disposal.aho_approved_at is not None:
+        raise DisposalError("Выбытие уже согласовано АХО")
+    disposal.aho_approved_by, disposal.aho_approved_at = user.id, dt.datetime.now(dt.UTC)
+    for _, item in lines(db, disposal):
+        asset_service.event(db, item, user, "disposal_approved", f"выбытие № {disposal.number}: согласовано АХО")
+    db.flush()
+
+
+def approve(db: Session, disposal: AssetDisposal, user: User) -> None:
+    """Согласование ФД: единицы выбывают, проводки создаются. Сначала — согласование АХО (22.3)."""
+    if disposal.status != "pending":
+        raise DisposalError("Выбытие уже не на согласовании")
+    if disposal.aho_approved_at is None:
+        raise DisposalError("Выбытие ещё не согласовано АХО")
     fa_kind = "sale" if disposal.kind == "sale" else "writeoff"
     for link, item in lines(db, disposal):
         if item.status == "disposed":

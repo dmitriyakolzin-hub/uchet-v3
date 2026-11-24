@@ -49,8 +49,11 @@ export function assetTransfersTab(box, ctx) {
     const me = el("input", { type: "checkbox", checked: toMe, "aria-label": "Мне на подтверждение" });
     me.addEventListener("change", () => { toMe = me.checked; load(); });
     box.replaceChildren(
-      instruction("Перемещение: отметьте единицы в «Реестре» → «Переместить / передать». Единицы переходят на новое место "
-        + "и к новому МОЛ, когда получатель подтвердит у себя на этой вкладке («Принять») — или АХО за него. Получатель "
+      instruction("Перемещение: отметьте единицы в «Реестре» → «Переместить / передать». Передают АХО, МОЛ — своё, "
+        + "руководитель ЦФО — имущество своей ветки, руководитель ЦФУ — своего ЦФУ. Сначала перемещение согласует АХО "
+        + "(«Согласовать (АХО)»; если в организации нет оператора АХО — не нужно). Единицы переходят на новое место "
+        + "и к новому МОЛ, когда получатель подтвердит у себя на этой вкладке («Принять»): МОЛ, руководитель ЦФО ветки, "
+        + "куда перемещают, руководитель ЦФУ нового МОЛ — или АХО за него. Получатель "
         + "может отказаться, автор или АХО — отменить; тогда единицы остаются, где были. Так же оформляется передача "
         + "в эксплуатацию (статус «В эксплуатацию») и возврат на склад."),
       el("div", { class: "filters" }, el("label", { class: "inline" }, "Показать ", status),
@@ -99,8 +102,10 @@ export function assetTransfersTab(box, ctx) {
           t.reason ? el("div", { class: "muted small" }, t.reason) : "",
           t.reject_reason ? el("div", { class: "muted small" }, `Причина: ${t.reject_reason}`) : ""),
         el("td", { class: "req-actions" },
-          t.can_accept ? el("button", { type: "button", onclick: () => act(t, "accept") }, "Принять") : "",
-          t.can_accept ? el("button", { type: "button", class: "link", onclick: () => openForm({
+          t.can_approve ? el("button", { type: "button", onclick: () => act(t, "approve") }, "Согласовать (АХО)") : "",
+          t.can_accept ? el("button", { type: "button", class: t.can_approve ? "secondary" : "", onclick: () => act(t, "accept") },
+            t.can_approve ? "Согласовать и принять" : "Принять") : "",
+          t.can_accept || t.can_approve ? el("button", { type: "button", class: "link", onclick: () => openForm({
             title: `Отказаться от перемещения № ${t.number}`, fields: [{ name: "reason", label: "Причина", type: "textarea" }],
             submitText: "Отказаться", onSubmit: async (v) => act(t, "reject", { reason: v.reason ?? "" }) }) }, "Отказаться") : "",
           t.can_cancel ? el("button", { type: "button", class: "link", onclick: () => act(t, "cancel") }, "Отменить") : ""))))));
