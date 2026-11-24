@@ -39,6 +39,7 @@ from app.models import (
     Executor,
     InvestmentProject,
     LegalEntity,
+    Membership,
     User,
 )
 from app.models.asset import (
@@ -490,14 +491,34 @@ def list_requests(organization_id: int, user: CurrentUser, db: DbSession,
     return _out(db, requests, scope)
 
 
+def _place(db: Session, scope: Scope, organization_id: int, data: dict) -> dict:
+    """ЦФО обязателен (docs/TZ.md, раздел 30, «Детали 22.4»): не выбран — вся компания (верхний ЦФО организации);
+    руководитель ЦФО — только своей ветки. Руководитель ЦФУ: «кто закупает» — его ЦФУ (по умолчанию) или исполнитель."""
+    if data["cfo_id"] is None and scope.branch is None:
+        roots = list(db.scalars(select(Cfo.id).where(Cfo.organization_id == organization_id, Cfo.level == 1,
+                                                     Cfo.is_active)))
+        if len(roots) != 1:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                detail="Укажите ЦФО" if roots else "В организации нет ЦФО — заведите «Компанию»")
+        data["cfo_id"] = roots[0]
+    if scope.branch is not None and data["cfo_id"] not in scope.branch:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Укажите ЦФО своей ветки")
+    if scope.executors is not None:
+        if data["executor_id"] is None:
+            data["executor_id"] = db.scalar(select(Membership.executor_id).where(
+                Membership.user_id == scope.user.id, Membership.organization_id == organization_id))
+        elif data["executor_id"] not in scope.executors:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Кто закупает — ваш ЦФУ или его исполнитель")
+    return data
+
+
 @router.post("/organizations/{organization_id}/asset-requests", response_model=RequestOut, status_code=201)
 def create_request(organization_id: int, body: RequestIn, user: CurrentUser, db: DbSession):
     scope = Scope(db, user, organization_id)
     _need(scope, Perm.ASSET_REQUEST)
-    if scope.branch is not None and body.cfo_id not in scope.branch:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Укажите ЦФО своей ветки")
+    data = _place(db, scope, organization_id, body.model_dump())
     req = AssetRequest(organization_id=organization_id, number=service.next_number(db, organization_id),
-                       created_by=user.id, **body.model_dump())
+                       created_by=user.id, **data)
     db.add(req)
     db.flush()
     service.event(db, req, user, "created")
@@ -516,7 +537,7 @@ def update_request(request_id: int, body: RequestIn, user: CurrentUser, db: DbSe
     if not scope.can_edit(req):
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Править заявку может её автор или финансовый директор")
     _status(req, *service.EDITABLE)
-    for key, value in body.model_dump().items():
+    for key, value in _place(db, scope, req.organization_id, body.model_dump()).items():
         setattr(req, key, value)
     req.status = "draft"
     service.event(db, req, user, "edited")

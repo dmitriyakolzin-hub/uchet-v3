@@ -36,8 +36,9 @@ export function assetRequestsTab(box, ctx) {
     const mineBox = el("input", { type: "checkbox", checked: mine, "aria-label": "Мои заявки" });
     mineBox.addEventListener("change", () => { mine = mineBox.checked; load(); });
     box.replaceChildren(
-      instruction("Заявка на имущество: что нужно, сколько, для какого ЦФО, когда нужно, ориентир цены и кто закупает "
-        + "(ЦФУ или сам ЦФО). Подают руководитель ЦФО, инженер, оператор АХО, финансовый директор. Согласование: "
+      instruction("Заявка на имущество: что нужно, сколько, для какого ЦФО (не выбран — вся компания), когда нужно, "
+        + "ориентир цены и кто закупает (ЦФУ или сам ЦФО). Подают руководитель ЦФО, руководитель ЦФУ (закупает его ЦФУ), "
+        + "сотрудник, инженер, оператор АХО, финансовый директор. Согласование: "
         + "руководители ЦФО снизу вверх — от ЦФО заявки (руководитель ЦФО сам себя не согласует — сразу вышестоящий) "
         + "до верха; ЦФО без руководителя пропускается. Затем система ставит отметку о бюджете: план ДДС ветки ЦФО "
         + "по статье «Покупка основных средств» на месяц «когда нужно» минус другие заявки на имущество ветки этого "
@@ -378,11 +379,14 @@ export function assetRequestsTab(box, ctx) {
         { name: "name", label: "Что нужно", required: true, placeholder: "Холодильник для магазина" },
         { name: "quantity", label: "Количество", type: "number", required: true },
         { name: "category_id", label: "Категория", type: "select", options: options(ref.categories, (c) => c.name) },
-        { name: "cfo_id", label: "Для какого ЦФО", type: "select", options: options(ref.cfos, (c) => ref.cfoLabel.get(c.id)),
+        // ЦФО обязателен: не выбран — вся компания (22.4); руководитель ЦФО выбирает ЦФО своей ветки
+        { name: "cfo_id", label: "Для какого ЦФО", type: "select",
+          options: options(ref.cfos, (c) => ref.cfoLabel.get(c.id), ctx.org().cfo_scope ? "— выберите —" : "— вся компания —"),
           required: Boolean(ctx.org().cfo_scope) },
         { name: "legal_entity_id", label: "Юрлицо", type: "select", options: options(ref.entities, (e) => e.short_name) },
         { name: "needed_on", label: "Когда нужно (по бюджету этого месяца проверяется заявка)", type: "date" },
-        { name: "executor_id", label: "Кто закупает", type: "select", options: options(ref.executors ?? [], (e) => e.name, "— сам ЦФО —") },
+        { name: "executor_id", label: "Кто закупает", type: "select",
+          options: options(ref.executors ?? [], (e) => e.name, ctx.org().role === "executor_head" ? "— мой ЦФУ —" : "— сам ЦФО —") },
         { name: "estimated_price", label: "Ориентир цены за единицу, ₽", placeholder: "0,00" },
         ...costFields(opts),
         { name: "justification", label: "Зачем (обоснование)", type: "textarea" },

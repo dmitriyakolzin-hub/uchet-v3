@@ -200,3 +200,24 @@ def test_fd_edits_approved_request_and_steps(client, env):
     act(client, env, "fd", edited, "unapprove")
     back = client.get(f"/api/payment-requests/{req['id']}", headers=env["h"]["fd"]).json()
     assert back["status"] == "pending" and back["approved_steps"] == ["executor", "fm", "fd"]
+
+
+def test_executor_head_asset_request(client, env):
+    """22.4: руководитель ЦФУ подаёт заявку на имущество; ЦФО не выбран — вся компания; закупает его ЦФУ;
+    цепочка — руководитель ЦФО (вся компания без руководителя — сразу ФД)."""
+    import datetime as dt
+
+    opex = next(a["id"] for a in client.get(f"{env['o']}/articles", headers=env["h"]["fd"]).json()
+                if a["name"] == "Прочие управленческие расходы")
+    body = {"name": "Стеллаж", "estimated_price": "5000", "needed_on": dt.date.today().isoformat(),
+            "cost_kind": "opex", "budget_article_id": opex}
+    url = f"{env['o']}/asset-requests"
+    assert client.post(url, headers=env["h"]["exec"], json={**body, "executor_id": env["it"]["id"]}).status_code == 422
+    resp = client.post(url, headers=env["h"]["exec"], json=body)
+    assert resp.status_code == 201, resp.text
+    req = resp.json()
+    assert (req["cfo_name"].split(" / ")[-1], req["executor_name"]) == ("Компания", "Хозотдел")
+    req = client.post(f"/api/asset-requests/{req['id']}/submit", headers=env["h"]["exec"]).json()
+    assert req["status"] == "pending" and req["route"][-1]["key"] == "fd"
+    # видит свою заявку
+    assert [r["id"] for r in client.get(url, headers=env["h"]["exec"]).json()] == [req["id"]]

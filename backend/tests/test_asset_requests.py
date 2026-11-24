@@ -132,7 +132,9 @@ def test_leasing_and_reject(client, env, db, make_user, headers_for):  # noqa: F
                 if t["name"] == "Лизинг: договор № Л-1"]
     # черновик можно удалить, отменённую — нет
     assert client.delete(f"/api/asset-requests/{req['id']}", headers=env["h"]).status_code == 422
-    draft = client.post(url, headers=aho, json={"name": "Стол"}).json()
+    nowhere = client.post(url, headers=aho, json={"name": "Стол"})  # два верхних ЦФО — «вся компания» неоднозначна
+    assert nowhere.status_code == 422 and nowhere.json()["detail"] == "Укажите ЦФО"
+    draft = client.post(url, headers=aho, json={"name": "Стол", "cfo_id": env["office"]["id"]}).json()
     assert client.delete(f"/api/asset-requests/{draft['id']}", headers=aho).status_code == 204
 
 
