@@ -13,11 +13,11 @@ from pydantic import BaseModel, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions
+from app.api.access import branch_ids, cfo_scope, executor_scope, get_organization_viewer, org_permissions
 from app.api.deps import CurrentUser, DbSession
-from app.api.journal import _get_operation, _operation_cfos
+from app.api.journal import _get_operation, _operation_cfos, _operation_executors
 from app.core.permissions import Perm
-from app.models import Cfo, Executor, LegalEntity, Note, NoteLabel, Operation, User
+from app.models import Cfo, Executor, LegalEntity, Membership, Note, NoteLabel, Operation, User
 
 router = APIRouter(prefix="/api", tags=["Примечания"])
 
@@ -82,7 +82,12 @@ def _not_found() -> HTTPException:
     return HTTPException(status.HTTP_404_NOT_FOUND, detail="Примечание не найдено")
 
 
-def _visible(db: Session, note: Note, branch: set[int] | None) -> bool:
+def _visible(db: Session, note: Note, branch: set[int] | None, executors: set[int] | None = None) -> bool:
+    if executors is not None:  # руководитель ЦФУ (22.5): операции и отчёты его ЦФУ
+        if note.operation_id is not None:
+            op = db.get(Operation, note.operation_id)
+            return op is not None and bool(_operation_executors(op) & executors)
+        return note.executor_id is not None and note.executor_id in executors
     if branch is None:
         return True
     if note.operation_id is not None:
@@ -116,7 +121,7 @@ def list_notes(organization_id: int, user: CurrentUser, db: DbSession, report: s
                label_id: int | None = None,
                mine: bool = False):
     """Примечания организации (новые — сверху); фильтры: отчёт и вариант, операция, статус, метка, «мои»."""
-    get_organization_for(db, user, organization_id, Perm.VIEW)
+    get_organization_viewer(db, user, organization_id)
     query = select(Note).where(Note.organization_id == organization_id)
     if report is not None:
         query = query.where(Note.report == report)
@@ -131,9 +136,10 @@ def list_notes(organization_id: int, user: CurrentUser, db: DbSession, report: s
     if mine:
         query = query.where(Note.created_by == user.id)
     branch = _branch(db, user, organization_id)
+    executors = executor_scope(db, user, organization_id)
     supervisor = _supervisor(db, user, organization_id)
     notes = db.scalars(query.order_by(Note.created_at.desc(), Note.id.desc()).limit(2000))
-    return [_out(db, user, n, supervisor) for n in notes if _visible(db, n, branch)]
+    return [_out(db, user, n, supervisor) for n in notes if _visible(db, n, branch, executors)]
 
 
 def _check_refs(db: Session, organization_id: int, body: NoteCreate | NoteUpdate) -> None:
@@ -147,7 +153,7 @@ def _check_refs(db: Session, organization_id: int, body: NoteCreate | NoteUpdate
 
 @router.post("/organizations/{organization_id}/notes", response_model=NoteOut, status_code=201)
 def create_note(organization_id: int, body: NoteCreate, user: CurrentUser, db: DbSession):
-    get_organization_for(db, user, organization_id, Perm.VIEW)
+    get_organization_viewer(db, user, organization_id)
     _check_refs(db, organization_id, body)
     data = body.model_dump()
     branch = _branch(db, user, organization_id)
@@ -160,6 +166,13 @@ def create_note(organization_id: int, body: NoteCreate, user: CurrentUser, db: D
         data.update(row_key=f"op:{op.id}", row_title=f"Операция № {op.number}")
     else:
         data["operation_id"] = None
+        executors = executor_scope(db, user, organization_id)
+        if executors is not None:  # руководитель ЦФУ: отчёт всегда по его ЦФУ (22.5)
+            if data["executor_id"] is None:
+                data["executor_id"] = db.scalar(select(Membership.executor_id).where(
+                    Membership.user_id == user.id, Membership.organization_id == organization_id))
+            elif data["executor_id"] not in executors:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="ЦФУ не найден среди ваших")
         if branch is not None:  # руководитель ЦФО: отчёт всегда по его ветке
             if data["cfo_id"] is None:
                 data["cfo_id"] = cfo_scope(db, user, organization_id)
@@ -177,12 +190,13 @@ def _get_note(db: Session, user: User, note_id: int) -> Note:
     if note is None:
         raise _not_found()
     try:
-        get_organization_for(db, user, note.organization_id, Perm.VIEW)
+        get_organization_viewer(db, user, note.organization_id)
     except HTTPException as exc:
         if exc.status_code == status.HTTP_404_NOT_FOUND:
             raise _not_found() from None
         raise
-    if not _visible(db, note, _branch(db, user, note.organization_id)):
+    if not _visible(db, note, _branch(db, user, note.organization_id),
+                    executor_scope(db, user, note.organization_id)):
         raise _not_found()
     return note
 

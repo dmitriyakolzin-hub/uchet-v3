@@ -90,9 +90,11 @@ def branch_ids(db: Session, root_id: int) -> set[int]:
 
 
 def forbid_scoped(db: Session, user: User, organization_id: int) -> None:
-    """Раздел только для пользователей без ограничения веткой ЦФО (расчётные счета, остатки, выписки)."""
+    """Раздел только для пользователей без ограничения веткой ЦФО или ЦФУ (расчётные счета, остатки, выписки)."""
     if cfo_scope(db, user, organization_id) is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Раздел недоступен руководителю ЦФО")
+    if executor_scope(db, user, organization_id) is not None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Раздел недоступен руководителю ЦФУ")
 
 
 def own_only(db: Session, user: User, organization_id: int) -> bool:
@@ -101,3 +103,11 @@ def own_only(db: Session, user: User, organization_id: int) -> bool:
         return False
     membership = role_in(db, user, organization_id)
     return membership is not None and membership.role == Role.EMPLOYEE
+
+
+def get_organization_viewer(db: Session, user: User, organization_id: int) -> Organization:
+    """Просмотр журнала, отчётов и примечаний: право просмотра или руководитель ЦФУ — по своему ЦФУ
+    (docs/TZ.md, раздел 30, «Детали 22.5»; отбор по ЦФУ — у вызывающего)."""
+    if executor_scope(db, user, organization_id) is not None:
+        return get_organization_any(db, user, organization_id, Perm.REQUEST)
+    return get_organization_for(db, user, organization_id, Perm.VIEW)

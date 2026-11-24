@@ -85,7 +85,7 @@ def test_route_from_executor_with_ceo_and_revision(client, env):
     other = create(client, env, "fd", executor_id=env["it"]["id"])
     listed = client.get(f"{env['o']}/payment-requests", headers=env["h"]["exec"]).json()["rows"]
     assert [r["id"] for r in listed] == [req["id"]]
-    assert client.get(f"{env['o']}/operations", headers=env["h"]["exec"]).status_code == 403
+    assert client.get(f"{env['o']}/operations", headers=env["h"]["exec"]).json()["items"] == []  # 22.5: только с его ЦФУ
     assert client.get(f"/api/payment-requests/{other['id']}", headers=env["h"]["exec"]).status_code == 404
 
     req = act(client, env, "exec", req, "submit").json()
@@ -221,3 +221,50 @@ def test_executor_head_asset_request(client, env):
     assert req["status"] == "pending" and req["route"][-1]["key"] == "fd"
     # видит свою заявку
     assert [r["id"] for r in client.get(url, headers=env["h"]["exec"]).json()] == [req["id"]]
+
+
+def test_executor_head_journal_reports_notes(client, env):
+    """22.5: руководитель ЦФУ видит в журнале только операции со своим ЦФУ, отчёты — по своему ЦФУ,
+    ставит примечания к своим операциям и к цифрам отчётов; денег и инвестиций не видит."""
+    o, h = env["o"], env["h"]
+    acc = {a["code"]: a["id"] for a in client.get("/api/accounts", headers=h["fd"]).json()}
+    arts = {a["name"]: a["id"] for a in client.get(f"{o}/articles", headers=h["fd"]).json()}
+    cp = client.post(f"{o}/counterparties", headers=h["fd"], json={"name": "Хозмаг", "kind": "legal",
+                                                                   "inn": "7704444444"}).json()
+
+    def op(executor, amount):
+        resp = client.post(f"{o}/operations?post=true", headers=h["fd"], json={
+            "legal_entity_id": env["le"].id, "op_date": "2026-12-05", "description": f"Расходы {amount}",
+            "postings": [{"debit_account_id": acc["26"], "credit_account_id": acc["60.01"], "amount": amount,
+                          "debit": {"cfo": env["shop"]["id"], "pl_item": arts["Прочие управленческие расходы"],
+                                    "executor": executor},
+                          "credit": {"counterparty": cp["id"]}}]})
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    mine = op(env["member"]["id"], "1000")  # исполнитель его отдела
+    other = op(env["it"]["id"], "2000")
+    rows = client.get(f"{o}/operations", headers=h["exec"], params={"date_from": "2026-12-01"}).json()["items"]
+    assert [r["id"] for r in rows] == [mine["id"]]
+    assert client.get(f"/api/operations/{other['id']}", headers=h["exec"]).status_code == 404
+    assert client.post(f"/api/operations/{mine['id']}/unpost", headers=h["exec"]).status_code == 403  # только просмотр
+
+    period = {"date_from": "2026-12-01", "date_to": "2026-12-31"}
+    pl = client.get(f"{o}/reports/pl", headers=h["exec"], params=period)
+    assert pl.status_code == 200, pl.text
+    expense = next(r for r in pl.json()["rows"] if r["title"] == "Прочие управленческие расходы")
+    assert list(expense["values"].values())[-1] == "-1000.00"  # только его ЦФУ
+    assert client.get(f"{o}/reports/pl", headers=h["exec"],
+                      params={**period, "executor_id": env["it"]["id"]}).status_code == 404
+    assert client.get(f"{o}/reports/investments", headers=h["exec"], params=period).status_code == 403
+
+    # примечания: к своей операции и к цифре отчёта (ЦФУ подставляется сам)
+    resp = client.post(f"{o}/notes", headers=h["exec"], json={"report": "operation", "operation_id": mine["id"],
+                                                             "text": "проверить счёт"})
+    assert resp.status_code == 201, resp.text
+    assert client.post(f"{o}/notes", headers=h["exec"], json={"report": "operation", "operation_id": other["id"],
+                                                             "text": "x"}).status_code == 404
+    resp = client.post(f"{o}/notes", headers=h["exec"], json={"report": "pl", "row_key": "x", "text": "много"})
+    assert resp.status_code == 201 and resp.json()["executor_id"] == env["dept"]["id"]
+    client.post(f"{o}/notes", headers=h["fd"], json={"report": "pl", "row_key": "y", "text": "чужое"})
+    assert sorted(n["text"] for n in client.get(f"{o}/notes", headers=h["exec"]).json()) == ["много", "проверить счёт"]
