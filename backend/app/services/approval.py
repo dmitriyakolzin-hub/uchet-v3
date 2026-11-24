@@ -38,7 +38,8 @@ def initiator_of(db: Session, user: User, organization_id: int) -> str:
         return "finance"
     role = db.scalar(select(Membership.role).where(Membership.user_id == user.id,
                                                    Membership.organization_id == organization_id))
-    return {Role.CFO_HEAD: "cfo", Role.EXECUTOR_HEAD: "executor"}.get(role, "finance")
+    # сотрудник (22.2) — как руководитель ЦФО: заявка идёт по цепочке руководителей ЦФО от ЦФО заявки
+    return {Role.CFO_HEAD: "cfo", Role.EXECUTOR_HEAD: "executor", Role.EMPLOYEE: "cfo"}.get(role, "finance")
 
 
 def _executor_ids(db: Session, executor_id: int) -> set[int]:

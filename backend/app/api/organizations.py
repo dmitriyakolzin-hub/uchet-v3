@@ -9,6 +9,7 @@ from app.api.access import (
     get_organization_any,
     get_organization_for,
     org_permissions,
+    own_only,
     role_in,
     visible_organization_ids,
 )
@@ -45,6 +46,8 @@ def _organization_out(db: Session, user: User, organization: Organization) -> Or
         out.restricted = True  # руководитель ЦФО без назначенного ЦФО: данных не видит
     membership = role_in(db, user, organization.id)
     out.role = membership.role if membership else None
+    if own_only(db, user, organization.id):  # сотрудник: как ограниченный — без счетов, выписок, отчётов
+        out.own_only, out.restricted = True, True
     try:
         scope = executor_scope(db, user, organization.id)
         out.executor_scope = sorted(scope) if scope is not None else None

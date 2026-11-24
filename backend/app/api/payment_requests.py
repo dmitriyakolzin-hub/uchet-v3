@@ -17,7 +17,15 @@ from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.access import branch_ids, cfo_scope, executor_scope, get_organization_any, get_organization_for, org_permissions
+from app.api.access import (
+    branch_ids,
+    cfo_scope,
+    executor_scope,
+    get_organization_any,
+    get_organization_for,
+    org_permissions,
+    own_only,
+)
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.models import (
@@ -257,14 +265,17 @@ def _request(db: Session, user: User, request_id: int, *perms: Perm) -> tuple[Pa
     branch = _branch(db, user, req.organization_id)
     if not _visible(req, user, branch, executor_scope(db, user, req.organization_id)):
         raise not_found
+    if own_only(db, user, req.organization_id) and req.created_by != user.id:  # сотрудник — только свои (22.2)
+        raise not_found
     if perms:
         get_organization_any(db, user, req.organization_id, *perms)
     return req, branch
 
 
 def _scoped(db: Session, user: User, organization_id: int) -> bool:
-    """Ограничен веткой ЦФО или своим ЦФУ: расчётный счёт не видит и не выбирает."""
-    return _branch(db, user, organization_id) is not None or executor_scope(db, user, organization_id) is not None
+    """Ограничен веткой ЦФО, своим ЦФУ или своими заявками: расчётный счёт не видит и не выбирает."""
+    return (_branch(db, user, organization_id) is not None or executor_scope(db, user, organization_id) is not None
+            or own_only(db, user, organization_id))
 
 
 def _status(req: PaymentRequest, *allowed: str) -> None:
@@ -275,7 +286,7 @@ def _status(req: PaymentRequest, *allowed: str) -> None:
 
 def _save(db: Session, req: PaymentRequest, branch: set[int] | None, user: User) -> RequestOut:
     executors = executor_scope(db, user, req.organization_id)
-    scoped = branch is not None or executors is not None
+    scoped = branch is not None or executors is not None or own_only(db, user, req.organization_id)
     try:
         if scoped and req.bank_account_id is not None:
             raise RequestError("Расчётный счёт выбирает финансовая служба")
@@ -339,7 +350,8 @@ def list_requests(organization_id: int, user: CurrentUser, db: DbSession, date_f
         query = query.where((PaymentRequest.executor_id.in_(executors)) | (PaymentRequest.created_by == user.id))
     if to_approve:
         query = query.where(PaymentRequest.status == "pending")
-    if mine:
+    own = own_only(db, user, organization_id)
+    if mine or own:  # сотрудник — только свои заявки (22.2)
         query = query.where(PaymentRequest.created_by == user.id)
     if channel == "cash":  # кассовые заявки
         query = query.where(PaymentRequest.cash_cfo_id.is_not(None))
@@ -348,7 +360,7 @@ def list_requests(organization_id: int, user: CurrentUser, db: DbSession, date_f
     requests = list(db.scalars(query.order_by(PaymentRequest.pay_date, PaymentRequest.number)))
     if to_approve:
         requests = [r for r in requests if approval.can_act(db, user, r)]
-    rows = _out(db, requests, branch is not None or executors is not None, user)
+    rows = _out(db, requests, branch is not None or executors is not None or own, user)
     total = {d: sum((r.amount for r in requests if r.direction == d), Decimal("0.00")) for d in ("out", "in")}
     return ListOut(rows=rows, total_out=total["out"], total_in=total["in"])
 

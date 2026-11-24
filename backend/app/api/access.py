@@ -93,3 +93,11 @@ def forbid_scoped(db: Session, user: User, organization_id: int) -> None:
     """Раздел только для пользователей без ограничения веткой ЦФО (расчётные счета, остатки, выписки)."""
     if cfo_scope(db, user, organization_id) is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Раздел недоступен руководителю ЦФО")
+
+
+def own_only(db: Session, user: User, organization_id: int) -> bool:
+    """Роль «Сотрудник» (docs/TZ.md, раздел 30, «Детали 22.2»): видит только то, что завёл сам."""
+    if user.is_admin:
+        return False
+    membership = role_in(db, user, organization_id)
+    return membership is not None and membership.role == Role.EMPLOYEE

@@ -32,7 +32,7 @@ const escape = (text) => String(text ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "
 
 export async function renderAssets(view) {
   // руководитель ЦФУ — только заявки на имущество, которые закупает его ЦФУ (docs/TZ.md, «Детали 21.1»)
-  const orgs = (await api.get("/api/organizations")).filter((o) => o.permissions.includes("assets") || o.role === "executor_head");
+  const orgs = (await api.get("/api/organizations")).filter((o) => o.permissions.includes("assets") || ["executor_head", "employee"].includes(o.role));
   const onlyRequests = () => !org.permissions.includes("assets");
   if (!orgs.length) {
     view.replaceChildren(el("h1", {}, "Имущество"), el("p", { class: "muted" }, "У вас нет доступа к имуществу ни в одной организации."));
