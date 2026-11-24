@@ -48,6 +48,8 @@ def _organization_out(db: Session, user: User, organization: Organization) -> Or
     out.role = membership.role if membership else None
     if own_only(db, user, organization.id):  # сотрудник: как ограниченный — без счетов, выписок, отчётов
         out.own_only, out.restricted = True, True
+    if membership is not None and membership.role == "executor_head":  # руководитель ЦФУ: только по своему ЦФУ
+        out.restricted = True
     try:
         scope = executor_scope(db, user, organization.id)
         out.executor_scope = sorted(scope) if scope is not None else None

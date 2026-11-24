@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.access import branch_ids, cfo_scope, forbid_scoped, get_organization_for
+from app.api.access import branch_ids, cfo_scope, executor_scope, forbid_scoped, get_organization_viewer
 from app.api.deps import CurrentUser, DbSession
 from app.core.analytics import ANALYTIC_TITLES, AnalyticKind
 from app.core.permissions import Perm
@@ -49,8 +49,9 @@ def report_filter(
     executor_id: int | None = None,
     view: Literal["cfo", "ceo"] = "cfo",
 ) -> ReportFilter:
-    """Общие фильтры отчётов + проверка права просмотра и принадлежности юрлица и ЦФО организации."""
-    get_organization_for(db, user, organization_id, Perm.VIEW)
+    """Общие фильтры отчётов + проверка права просмотра и принадлежности юрлица и ЦФО организации.
+    Руководитель ЦФО — отчёты по своей ветке, руководитель ЦФУ — по своему ЦФУ (docs/TZ.md, «Детали 22.5»)."""
+    get_organization_viewer(db, user, organization_id)
     if date_from > date_to:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Начало периода позже его конца")
     for model, value, title in ((LegalEntity, legal_entity_id, "Юрлицо"), (Cfo, cfo_id, "ЦФО")):
@@ -71,6 +72,12 @@ def report_filter(
         if executor is None or executor.organization_id != organization_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="ЦФУ не найден в этой организации")
         executor_ids = (executor.id, *db.scalars(select(Executor.id).where(Executor.parent_id == executor.id)))
+    own_executors = executor_scope(db, user, organization_id)
+    if own_executors is not None:
+        if executor_ids is None:
+            executor_ids = tuple(sorted(own_executors))
+        elif not set(executor_ids) <= own_executors:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="ЦФУ не найден среди ваших")
     return ReportFilter(organization_id, date_from, date_to, legal_entity_id, cfo_id, drafts,
                         executor_ids=executor_ids, ceo=view == "ceo")
 

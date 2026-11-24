@@ -62,7 +62,7 @@ function showLogin() {
 // роли с узким меню: сотрудник — свои операции и заявки (раздел 30); руководитель ЦФУ — только заявки на оплату
 // и на имущество (docs/TZ.md, разделы 24, 28); инженер, оператор АХО, МОЛ —
 // только имущество (раздел 28). Если во всех организациях у пользователя такие роли — меню из их разделов.
-const LIMITED = { employee: ["journal", "calendar", "assets"], executor_head: ["calendar", "assets"], engineer: ["assets"], aho_operator: ["assets"], mol: ["assets"] };
+const LIMITED = { employee: ["journal", "calendar", "assets"], executor_head: ["journal", "reports", "calendar", "assets"], engineer: ["assets"], aho_operator: ["assets"], mol: ["assets"] };
 const limitedPages = () => {
   if (me.is_admin || !me.memberships?.length || !me.memberships.every((m) => LIMITED[m.role])) return null;
   return new Set(["password", ...me.memberships.flatMap((m) => LIMITED[m.role])]);
