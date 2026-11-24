@@ -34,10 +34,10 @@ const RATE_FIELDS = [
 
 export async function renderCurrencies(view, { me }) {
   const canEditRates =
-    me.is_admin || me.memberships.some((m) => m.permissions.includes("edit_reference"));
+    me.can_manage || me.memberships.some((m) => m.permissions.includes("edit_reference"));
   let selected = null;
 
-  const addCurrency = me.is_admin
+  const addCurrency = me.can_manage
     ? el("button", { type: "button", onclick: () => editCurrency(null) }, "Добавить валюту")
     : null;
   const addRate = el("button", { type: "button", hidden: true, onclick: () => editRate(null) }, "Добавить курс");
@@ -60,7 +60,7 @@ export async function renderCurrencies(view, { me }) {
     { title: "Наименование", field: "name", widthGrow: 3 },
     { title: "Активна", field: "is_active", formatter: yesNo, width: 100 },
   ];
-  if (me.is_admin) {
+  if (me.can_manage) {
     currencyColumns.push({
       title: "", field: "_edit", width: 48, hozAlign: "center", headerSort: false,
       formatter: () => "✎", cellClick: (_e, cell) => editCurrency(cell.getRow().getData()),

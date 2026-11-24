@@ -168,8 +168,9 @@ export async function renderCalendar(view) {
 
   // статус: у черновика пусто; на согласовании — кто уже согласовал и у кого сейчас; согласована — кем
   const STEP_SHORT = { executor: "ЦФУ", cfo: "ЦФО", fm: "ФМ", ceo: "CEO", fd: "ФД" };
+  const stepShort = (st) => STEP_SHORT[st] ?? (st.startsWith("cfo:") ? "ЦФО" : st);
   function statusCell(r) {
-    const who = (r.approved_steps ?? []).map((st) => STEP_SHORT[st] ?? st).join(", ");
+    const who = (r.approved_steps ?? []).map(stepShort).join(", ");
     let main = null;
     let note = null;
     if (r.status === "pending") {

@@ -28,7 +28,7 @@ const can = (org, perm) => org?.permissions.includes(perm);
 export async function renderOrganizations(view, { me }) {
   let selected = null;
 
-  const addOrgButton = me.is_admin
+  const addOrgButton = me.can_manage
     ? el("button", { type: "button", onclick: () => editOrganization(null) }, "Добавить организацию")
     : null;
   const addEntityButton = el(

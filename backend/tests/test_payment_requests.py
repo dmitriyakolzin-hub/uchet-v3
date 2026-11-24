@@ -57,7 +57,6 @@ def test_workflow_and_access(client, env):
     req = act(client, env, req, "submit", h=env["head"]).json()
     assert req["status"] == "pending"
     assert act(client, env, req, "approve", h=env["head"]).status_code == 403
-    assert act(client, env, req, "approve", h=env["ceo"]).status_code == 403
     assert client.put(f"/api/payment-requests/{req['id']}", headers=env["head"], json={
         "pay_date": "2026-03-11", "legal_entity_id": env["le"].id, "amount": "1",
         "cfo_id": env["office"]["id"]}).status_code == 403  # на согласовании правит только финансовый директор
@@ -199,3 +198,31 @@ def test_cash_advance(client, env, db):
     assert req["status"] == "approved" and req["operation_id"] is None
     db.expire_all()
     assert db.query(Operation).filter_by(id=op_id).count() == 0
+
+
+def test_cfo_chain_and_ceo_any_step(client, env, db, make_user, headers_for):
+    """22.1: заявка руководителя ЦФО идёт по цепочке руководителей ЦФО снизу вверх (сам себя не согласует);
+    CEO может согласовать на любом шаге — «за» участника шага, это видно в истории."""
+    from app.models import Membership
+
+    company = env["post"]("cfos", {"name": "Компания"})
+    branch = env["post"]("cfos", {"name": "Филиал Юг", "parent_id": company["id"]})
+    shop = env["post"]("cfos", {"name": "Магазин 3", "parent_id": branch["id"]})
+    heads = {}
+    for login, cfo in (("h_company", company), ("h_branch", branch), ("h_shop", shop)):
+        user = make_user(login=login)
+        db.add(Membership(user_id=user.id, organization_id=env["org"].id, role="cfo_head", cfo_id=cfo["id"]))
+        heads[login] = headers_for(user)
+    db.commit()
+    req = create(client, env, h=heads["h_shop"], cfo_id=shop["id"]).json()
+    req = act(client, env, req, "submit", h=heads["h_shop"]).json()
+    assert req["route"] == [f"cfo:{branch['id']}", f"cfo:{company['id']}", "fd"]
+    assert req["step_title"] == "Руководитель ЦФО «Филиал Юг»"
+    assert act(client, env, req, "approve", h=heads["h_company"]).status_code == 403  # не его шаг
+    req = act(client, env, req, "approve", h=heads["h_branch"]).json()
+    assert req["step_title"] == "Руководитель ЦФО «Компания»"
+    req = act(client, env, req, "approve", h=env["ceo"]).json()  # CEO — за руководителя компании
+    assert (req["status"], req["step_title"]) == ("pending", "Финансовый директор")
+    events = client.get(f"/api/payment-requests/{req['id']}/events", headers=env["h"]).json()
+    assert events[-1]["comment"] == "CEO за: Руководитель ЦФО «Компания»"
+    assert act(client, env, req, "approve", h=env["ceo"]).json()["status"] == "approved"  # и за ФД

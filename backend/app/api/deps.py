@@ -57,3 +57,24 @@ def get_admin_user(user: CurrentUser) -> User:
 
 
 AdminUser = Annotated[User, Depends(get_admin_user)]
+
+
+def director_org_ids(db: Session, user: User) -> set[int]:
+    """Организации, где пользователь — финансовый директор (docs/TZ.md, раздел 30, «Детали 22.1»)."""
+    from sqlalchemy import select
+
+    from app.models import Membership
+
+    return set(db.scalars(select(Membership.organization_id).where(Membership.user_id == user.id,
+                                                                   Membership.role == "finance_director")))
+
+
+def get_manager_user(user: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> User:
+    """Администратор или финансовый директор хотя бы одной организации: пользователи (в своих организациях),
+    общие справочники (план счетов, валюты, банки, единицы), новые организации."""
+    if user.is_admin or director_org_ids(db, user):
+        return user
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
+
+
+ManagerUser = Annotated[User, Depends(get_manager_user)]

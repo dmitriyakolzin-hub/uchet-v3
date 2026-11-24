@@ -324,8 +324,10 @@ def can_act(db: Session, user: User, req: AssetRequest, perms: frozenset) -> boo
                                                     Membership.organization_id == req.organization_id))
     if membership is None:
         return False
+    if membership.role == Role.CEO:  # CEO — на любом шаге, кроме решения ФД о закупке (22.1)
+        return True
     if step == "ceo":
-        return membership.role == Role.CEO
+        return False
     return membership.role == Role.CFO_HEAD and membership.cfo_id == cfo_of(step)
 
 

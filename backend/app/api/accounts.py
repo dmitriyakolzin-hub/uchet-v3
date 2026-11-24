@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.deps import AdminUser, CurrentUser, DbSession
+from app.api.deps import CurrentUser, DbSession, ManagerUser
 from app.core.analytics import ANALYTIC_TITLES, AnalyticKind
 from app.models import Account, AccountAnalytic
 from app.schemas.account import AccountCreate, AccountOut, AccountUpdate, AnalyticKindOut
@@ -61,7 +61,7 @@ def list_accounts(_: CurrentUser, db: DbSession) -> list[AccountOut]:
 
 
 @router.post("/accounts", response_model=AccountOut, status_code=201)
-def create_account(body: AccountCreate, _: AdminUser, db: DbSession) -> AccountOut:
+def create_account(body: AccountCreate, _: ManagerUser, db: DbSession) -> AccountOut:
     parent = None
     if "." in body.code:
         parent_code = body.code.rsplit(".", 1)[0]
@@ -101,7 +101,7 @@ def create_account(body: AccountCreate, _: AdminUser, db: DbSession) -> AccountO
 
 
 @router.patch("/accounts/{account_id}", response_model=AccountOut)
-def update_account(account_id: int, body: AccountUpdate, _: AdminUser, db: DbSession) -> AccountOut:
+def update_account(account_id: int, body: AccountUpdate, _: ManagerUser, db: DbSession) -> AccountOut:
     account = db.get(Account, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Счёт не найден")

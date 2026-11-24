@@ -240,8 +240,9 @@ def test_approval_route_and_budget(client, env, db, make_user, headers_for):  # 
                purchase_kind="prepay", price="30000", pay_date=target.isoformat()).status_code == 422  # не дошла до ФД
     first = act(client, h_branch, first, "approve-step", comment="нужна").json()
     assert act(client, h_branch, first, "approve-step").status_code == 403
-    first = act(client, h_dir, first, "approve-step").json()
+    first = act(client, env["ceo"], first, "approve-step").json()  # CEO — за руководителя направления (22.1)
     assert (first["step_title"], first["route"][-1]["state"]) == ("Финансовый директор", "current")
+    assert act(client, env["ceo"], first, "approve-step").status_code == 403  # решение о закупке — только ФД
     # руководитель ЦФУ видит заявку своего ЦФУ, но не согласует
     view = client.get(f"/api/asset-requests/{first['id']}", headers=h_buyer).json()
     assert (view["executor_name"], view["can_act"]) == ("Отдел закупок", False)

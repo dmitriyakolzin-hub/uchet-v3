@@ -116,11 +116,13 @@ def test_code_cannot_be_changed(client, headers_for, admin):
     assert _accounts(client, h)["76.10"]["id"] == sub["id"]
 
 
-def test_only_admin_changes_chart(client, headers_for, fd):
-    h = headers_for(fd)
-    assert client.post("/api/accounts", headers=h, json={"code": "76.12", "name": "x"}).status_code == 403
-    acc = _accounts(client, h)["51"]
-    assert client.patch(f"/api/accounts/{acc['id']}", headers=h, json={"name": "x"}).status_code == 403
+def test_chart_changes_by_manager(client, headers_for, fd, make_user, make_org):
+    """План счетов правят администратор и финансовый директор (22.1); CEO — нет."""
+    ceo = make_user(login="ceo")
+    make_org("Клиент", members=[(ceo, "ceo")])
+    assert client.post("/api/accounts", headers=headers_for(ceo), json={"code": "76.12", "name": "x"}).status_code == 403
+    resp = client.post("/api/accounts", headers=headers_for(fd), json={"code": "76.12", "name": "Прочие расчёты"})
+    assert resp.status_code == 201, resp.text
 
 
 def test_analytic_kinds(client, headers_for, fd):

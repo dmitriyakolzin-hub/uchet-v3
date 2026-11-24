@@ -1,14 +1,18 @@
 """Маршрут согласования заявок на оплату (docs/TZ.md, раздел 24, «Детали 14.1»).
 
 Шаги по порядку:
-- встречная сторона: счёт принёс ЦФО — согласует руководитель ЦФУ заявки; принёс ЦФУ — руководитель ЦФО;
-  нет второй стороны или её руководителя — шаг пропускается;
+- встречная сторона: счёт принёс ЦФО — согласует руководитель ЦФУ заявки; нет ЦФУ или его руководителя — пропуск;
+- руководители ЦФО снизу вверх (docs/TZ.md, раздел 30, «Детали 22.1»): «cfo:<id>» — от ЦФО заявки до верха; если
+  заявку подал руководитель ЦФО этой ветки — начиная с ЦФО над его собственным; ЦФО без руководителя пропускается.
+  Для заявок руководителя ЦФО и руководителя ЦФУ; заявки финансовой службы — без цепочки ЦФО (как раньше).
+  Прежние заявки с шагом «cfo» (любой руководитель вышестоящего ЦФО) согласуются по-старому;
 - финансовый менеджер (если он есть в организации);
 - CEO — по правилу: все инвестиционные заявки и суммы больше 1 000 000 ₽, кроме оплат поставщикам
   (поставщики идут из реестра накладных);
 - финансовый директор — последним; после него заявка «согласована» и попадает в реестр на оплату.
 Периодические платежи согласует только финансовый директор; платёж внутри группы — без согласования
-(app/services/group_payments.py). Администратор может действовать на любом шаге.
+(app/services/group_payments.py). Администратор и CEO могут согласовать на любом шаге (CEO — «за» участника шага,
+это пишется в историю).
 """
 
 import datetime as dt
@@ -53,6 +57,32 @@ def _members(db: Session, organization_id: int, role: Role):
                                                Membership.role == role.value))
 
 
+def cfo_of(step: str) -> int | None:
+    return int(step[4:]) if step.startswith("cfo:") else None
+
+
+def step_title(db: Session, step: str | None) -> str:
+    cfo_id = cfo_of(step or "")
+    if cfo_id is not None:
+        cfo = db.get(Cfo, cfo_id)
+        return f"Руководитель ЦФО «{cfo.name if cfo else cfo_id}»"
+    return STEP_TITLES.get(step or "", "")
+
+
+def cfo_chain(db: Session, req: PaymentRequest) -> list[str]:
+    """Руководители ЦФО снизу вверх: от ЦФО заявки; автор-руководитель ЦФО сам себя не согласует."""
+    if req.cfo_id is None:
+        return []
+    cfo = db.get(Cfo, req.cfo_id)
+    path = [int(i) for i in str(cfo.path).split(".")][::-1] if cfo else []
+    author = db.scalar(select(Membership).where(Membership.user_id == req.created_by,
+                                                Membership.organization_id == req.organization_id))
+    if author is not None and author.role == Role.CFO_HEAD and author.cfo_id in path:
+        path = path[path.index(author.cfo_id) + 1:]
+    heads = {m.cfo_id for m in _members(db, req.organization_id, Role.CFO_HEAD)}
+    return [f"cfo:{c}" for c in path if c in heads]
+
+
 def _has_approver(db: Session, req: PaymentRequest, step: str) -> bool:
     members = list(_members(db, req.organization_id, STEP_ROLES[step]))
     if step == "executor":
@@ -77,8 +107,8 @@ def build_route(db: Session, req: PaymentRequest) -> list[str]:
     steps = []
     if req.initiator == "cfo" and req.executor_id and _has_approver(db, req, "executor"):
         steps.append("executor")
-    if req.initiator == "executor" and req.cfo_id and _has_approver(db, req, "cfo"):
-        steps.append("cfo")
+    if req.initiator in ("cfo", "executor"):
+        steps += cfo_chain(db, req)
     if _has_approver(db, req, "fm"):
         steps.append("fm")
     if ceo_required(db, req) and _has_approver(db, req, "ceo"):
@@ -102,7 +132,13 @@ def can_act(db: Session, user: User, req: PaymentRequest) -> bool:
         return True
     membership = db.scalar(select(Membership).where(Membership.user_id == user.id,
                                                     Membership.organization_id == req.organization_id))
-    if membership is None or membership.role != STEP_ROLES[step].value:
+    if membership is None:
+        return False
+    if membership.role == Role.CEO:  # CEO — на любом шаге (22.1)
+        return True
+    if cfo_of(step) is not None:
+        return membership.role == Role.CFO_HEAD and membership.cfo_id == cfo_of(step)
+    if membership.role != STEP_ROLES[step].value:
         return False
     if step == "executor":
         return membership.executor_id in _executor_ids(db, req.executor_id)
@@ -130,6 +166,9 @@ def submit(db: Session, req: PaymentRequest, user: User) -> None:
 def approve(db: Session, req: PaymentRequest, user: User, comment: str = "") -> None:
     """Шаг согласован: следующий шаг или, после последнего, «согласована» (в реестр на оплату)."""
     step = current_step(req)
+    if step != "ceo" and not user.is_admin and db.scalar(select(Membership.role).where(
+            Membership.user_id == user.id, Membership.organization_id == req.organization_id)) == Role.CEO:
+        comment = f"CEO за: {step_title(db, step)}" + (f"; {comment}" if comment else "")
     event(db, req, user, "approved", comment, step or "")
     req.step += 1
     if req.step >= len(req.route):

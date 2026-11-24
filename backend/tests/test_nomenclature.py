@@ -19,10 +19,10 @@ def test_units_seeded(client, env):
     assert {"кг", "л", "м²", "ч", "упак"} <= set(env["units"])
 
 
-def test_units_admin_only(client, env):
+def test_units_by_manager(client, env):
+    """Единицы измерения — администратор и финансовый директор (22.1)."""
     body = {"okei": "999", "short_name": "x", "name": "Икс"}
-    assert client.post("/api/units", headers=env["h"](env["fd"]), json=body).status_code == 403
-    assert client.post("/api/units", headers=env["h"](env["admin"]), json=body).status_code == 201
+    assert client.post("/api/units", headers=env["h"](env["fd"]), json=body).status_code == 201
     assert client.post("/api/units", headers=env["h"](env["admin"]), json=body).status_code == 409
     assert client.post("/api/units", headers=env["h"](env["admin"]),
                        json={**body, "okei": "12"}).status_code == 422

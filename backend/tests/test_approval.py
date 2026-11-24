@@ -89,7 +89,8 @@ def test_route_from_executor_with_ceo_and_revision(client, env):
     assert client.get(f"/api/payment-requests/{other['id']}", headers=env["h"]["exec"]).status_code == 404
 
     req = act(client, env, "exec", req, "submit").json()
-    assert req["route"] == ["cfo", "fm", "ceo", "fd"]  # больше 1 000 000 — CEO
+    assert req["route"][1:] == ["fm", "ceo", "fd"]  # больше 1 000 000 — CEO
+    assert req["route_titles"][0] == "Руководитель ЦФО «Торговля»"  # цепочка ЦФО снизу вверх (22.1)
     # руководитель ЦФО возвращает на доработку → автор правит и подаёт снова, маршрут сначала
     assert act(client, env, "cfo", req, "revise").status_code == 422  # причина обязательна
     req = act(client, env, "cfo", req, "revise", reason="приложите счёт").json()
@@ -99,7 +100,7 @@ def test_route_from_executor_with_ceo_and_revision(client, env):
         "cfo_id": env["shop"]["id"], "executor_id": env["dept"]["id"], "amount": "1500000"})
     assert resp.status_code == 200 and resp.json()["status"] == "draft"
     req = act(client, env, "exec", req, "submit").json()
-    assert (req["step"], req["step_title"]) == (0, "Руководитель ЦФО")
+    assert (req["step"], req["step_title"]) == (0, "Руководитель ЦФО «Торговля»")
     for who in ("cfo", "fm", "ceo"):
         req = act(client, env, who, req, "approve").json()
     assert req["step_title"] == "Финансовый директор"

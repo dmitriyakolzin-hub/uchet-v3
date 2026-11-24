@@ -5,7 +5,7 @@ from sqlalchemy import inspect, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.deps import AdminUser, CurrentUser, DbSession
+from app.api.deps import CurrentUser, DbSession, ManagerUser
 from app.api.org_resources import OrgResource, Ref, register
 from app.core.permissions import Perm
 from app.models import (
@@ -46,7 +46,7 @@ def list_banks(_: CurrentUser, db: DbSession) -> list[Bank]:
 
 
 @router.post("/banks", response_model=s.BankOut, status_code=201)
-def create_bank(body: s.BankCreate, _: AdminUser, db: DbSession) -> Bank:
+def create_bank(body: s.BankCreate, _: ManagerUser, db: DbSession) -> Bank:
     bank = Bank(**body.model_dump())
     db.add(bank)
     try:
@@ -58,7 +58,7 @@ def create_bank(body: s.BankCreate, _: AdminUser, db: DbSession) -> Bank:
 
 
 @router.patch("/banks/{bank_id}", response_model=s.BankOut)
-def update_bank(bank_id: int, body: s.BankUpdate, _: AdminUser, db: DbSession) -> Bank:
+def update_bank(bank_id: int, body: s.BankUpdate, _: ManagerUser, db: DbSession) -> Bank:
     bank = db.get(Bank, bank_id)
     if bank is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Банк не найден")
@@ -78,7 +78,7 @@ def list_units(_: CurrentUser, db: DbSession) -> list[Unit]:
 
 
 @router.post("/units", response_model=s.UnitOut, status_code=201)
-def create_unit(body: s.UnitCreate, _: AdminUser, db: DbSession) -> Unit:
+def create_unit(body: s.UnitCreate, _: ManagerUser, db: DbSession) -> Unit:
     unit = Unit(**body.model_dump())
     db.add(unit)
     try:
@@ -90,7 +90,7 @@ def create_unit(body: s.UnitCreate, _: AdminUser, db: DbSession) -> Unit:
 
 
 @router.patch("/units/{unit_id}", response_model=s.UnitOut)
-def update_unit(unit_id: int, body: s.UnitUpdate, _: AdminUser, db: DbSession) -> Unit:
+def update_unit(unit_id: int, body: s.UnitUpdate, _: ManagerUser, db: DbSession) -> Unit:
     unit = db.get(Unit, unit_id)
     if unit is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Единица измерения не найдена")

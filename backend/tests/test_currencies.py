@@ -37,11 +37,17 @@ def test_admin_adds_currency(client, headers_for, admin, usd):
     assert codes == ["RUB", "USD"]
 
 
-@pytest.mark.parametrize("who", ["fd", "ceo", "nobody"])
-def test_only_admin_adds_currency(client, headers_for, people, who):
+@pytest.mark.parametrize("who", ["ceo", "nobody"])
+def test_only_manager_adds_currency(client, headers_for, people, who):
     resp = client.post("/api/currencies", headers=headers_for(people[who]),
                        json={"code": "EUR", "numeric_code": "978", "name": "Евро"})
     assert resp.status_code == 403
+
+
+def test_director_adds_currency(client, headers_for, people):
+    resp = client.post("/api/currencies", headers=headers_for(people["fd"]),
+                       json={"code": "EUR", "numeric_code": "978", "name": "Евро"})
+    assert resp.status_code == 201, resp.text
 
 
 @pytest.mark.parametrize("body", [

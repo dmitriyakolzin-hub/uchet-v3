@@ -30,11 +30,12 @@ def _url(env, path, org=None):
 # --- Банки ---
 
 
-def test_banks_admin_only(client, env):
+def test_banks_by_manager(client, env):
+    """Банки — администратор и финансовый директор (22.1)."""
     h_fd = env["h"](env["fd"])
     assert client.get("/api/banks", headers=h_fd).json()[0]["bic"] == "044525225"
-    assert client.post("/api/banks", headers=h_fd, json={**SBER, "bic": "044525974"}).status_code == 403
-    assert client.patch(f"/api/banks/{env['bank']['id']}", headers=h_fd, json={"name": "x"}).status_code == 403
+    assert client.post("/api/banks", headers=h_fd, json={**SBER, "bic": "044525974"}).status_code == 201
+    assert client.patch(f"/api/banks/{env['bank']['id']}", headers=h_fd, json={"name": "Сбер"}).status_code == 200
 
 
 def test_bank_validation_and_duplicate(client, env):
