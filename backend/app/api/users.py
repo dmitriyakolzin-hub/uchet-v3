@@ -27,7 +27,7 @@ router = APIRouter(prefix="/api", tags=["Пользователи"])
 def memberships_of(db: Session, user_id: int) -> list[MembershipOut]:
     rows = db.execute(
         select(Membership.organization_id, Organization.name, Membership.role, Membership.cfo_id, Cfo.name,
-               Membership.executor_id, Executor.name)
+               Membership.executor_id, Executor.name, Membership.see_all_requests, Membership.see_all_assets)
         .join(Organization, Organization.id == Membership.organization_id)
         .outerjoin(Cfo, Cfo.id == Membership.cfo_id)
         .outerjoin(Executor, Executor.id == Membership.executor_id)
@@ -43,9 +43,11 @@ def memberships_of(db: Session, user_id: int) -> list[MembershipOut]:
             cfo_name=cfo_name,
             executor_id=executor_id,
             executor_name=executor_name,
+            see_all_requests=all_requests,
+            see_all_assets=all_assets,
             permissions=sorted(ROLE_PERMS[Role(role)]),
         )
-        for org_id, name, role, cfo_id, cfo_name, executor_id, executor_name in rows
+        for org_id, name, role, cfo_id, cfo_name, executor_id, executor_name, all_requests, all_assets in rows
     ]
 
 
@@ -83,7 +85,8 @@ def _scoped(db: Session, manager: User, user_id: int | None, items: list[Members
     if user_id is None:
         return items
     kept = [MembershipIn(organization_id=m.organization_id, role=Role(m.role), cfo_id=m.cfo_id,
-                         executor_id=m.executor_id)
+                         executor_id=m.executor_id, see_all_requests=m.see_all_requests,
+                         see_all_assets=m.see_all_assets)
             for m in db.scalars(select(Membership).where(Membership.user_id == user_id,
                                                          Membership.organization_id.not_in(own)))]
     return kept + items
@@ -112,7 +115,7 @@ def _set_memberships(db: Session, user_id: int, items: list[MembershipIn]) -> No
     db.query(Membership).filter(Membership.user_id == user_id).delete()
     db.add_all(
         Membership(user_id=user_id, organization_id=m.organization_id, role=m.role.value, cfo_id=m.cfo_id,
-                   executor_id=m.executor_id)
+                   executor_id=m.executor_id, see_all_requests=m.see_all_requests, see_all_assets=m.see_all_assets)
         for m in items
     )
 

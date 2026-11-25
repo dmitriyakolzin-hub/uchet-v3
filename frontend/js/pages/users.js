@@ -45,7 +45,18 @@ function rolesEditor(organizations, roles, memberships) {
     select.addEventListener("change", syncExecutor);
     syncCfo();
     syncExecutor();
-    return el("tr", {}, el("td", {}, org.name, org.is_active ? "" : " (архив)"), el("td", {}, select, cfoSelect, executorSelect));
+    // дополнительный просмотр поверх роли (22.6): все заявки, всё имущество — только смотреть
+    const grant = (key, title) => {
+      const box = el("input", { type: "checkbox", "data-grant": key, "data-org-grant": org.id, checked: Boolean(current[org.id]?.[key]),
+        "aria-label": `${title} в ${org.name}` });
+      return el("label", { class: "check small" }, box, ` ${title}`);
+    };
+    const grants = el("div", { class: "grants" }, grant("see_all_requests", "Видит все заявки"),
+      grant("see_all_assets", "Видит всё имущество"));
+    const syncGrants = () => { grants.hidden = !select.value; };
+    select.addEventListener("change", syncGrants);
+    syncGrants();
+    return el("tr", {}, el("td", {}, org.name, org.is_active ? "" : " (архив)"), el("td", {}, select, cfoSelect, executorSelect, grants));
   });
   const box = el(
     "fieldset",
@@ -56,7 +67,9 @@ function rolesEditor(organizations, roles, memberships) {
       : el("p", { class: "muted" }, "Организаций пока нет."),
     instruction("Руководитель ЦФО видит и вводит данные только по выбранному ЦФО и его подчинённым. "
       + "Руководитель ЦФУ видит только заявки своего ЦФУ. Финансовый менеджер — деньги, заявки и календарь, "
-      + "без справочников, бюджета и пользователей."),
+      + "без справочников, бюджета и пользователей. Отметки «Видит все заявки» и «Видит всё имущество» дают "
+      + "просмотр всех заявок на оплату и на имущество / всего реестра имущества, перемещений и выбытия организации "
+      + "сверх роли — без права согласовывать и править. Кому какую роль — памятка docs/ROLES.md."),
   );
   box.collect = () =>
     [...box.querySelectorAll("select[data-org]")]
@@ -64,8 +77,10 @@ function rolesEditor(organizations, roles, memberships) {
       .map((s) => {
         const cfo = box.querySelector(`select[data-cfo="${s.dataset.org}"]`).value;
         const executor = box.querySelector(`select[data-executor="${s.dataset.org}"]`).value;
+        const grant = (key) => box.querySelector(`input[data-grant="${key}"][data-org-grant="${s.dataset.org}"]`).checked;
         return { organization_id: Number(s.dataset.org), role: s.value, cfo_id: s.value === "cfo_head" && cfo ? Number(cfo) : null,
-          executor_id: s.value === "executor_head" && executor ? Number(executor) : null };
+          executor_id: s.value === "executor_head" && executor ? Number(executor) : null,
+          see_all_requests: grant("see_all_requests"), see_all_assets: grant("see_all_assets") };
       });
   return box;
 }
@@ -107,7 +122,8 @@ export async function renderUsers(view, { me }) {
         formatter: (cell) =>
           cell
             .getValue()
-            .map((m) => `${m.organization_name}: ${roleTitles[m.role]}${m.cfo_name ? ` (${m.cfo_name})` : ""}`)
+            .map((m) => `${m.organization_name}: ${roleTitles[m.role]}${m.cfo_name ? ` (${m.cfo_name})` : ""}`
+              + (m.see_all_requests ? " + все заявки" : "") + (m.see_all_assets ? " + всё имущество" : ""))
             .join("; ")
             .replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]),
       },

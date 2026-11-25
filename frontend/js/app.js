@@ -65,7 +65,9 @@ function showLogin() {
 const LIMITED = { employee: ["journal", "calendar", "assets"], executor_head: ["journal", "reports", "calendar", "assets"], engineer: ["assets"], aho_operator: ["assets"], mol: ["assets"] };
 const limitedPages = () => {
   if (me.is_admin || !me.memberships?.length || !me.memberships.every((m) => LIMITED[m.role])) return null;
-  return new Set(["password", ...me.memberships.flatMap((m) => LIMITED[m.role])]);
+  // «видит все заявки / всё имущество» (22.6) добавляет календарь и имущество в узкое меню
+  return new Set(["password", ...me.memberships.flatMap((m) => [...LIMITED[m.role],
+    ...(m.see_all_requests ? ["calendar", "assets"] : []), ...(m.see_all_assets ? ["assets"] : [])])]);
 };
 const allowed = (key, page) => (!page.adminOnly || me.can_manage) && (!limitedPages() || limitedPages().has(key));
 

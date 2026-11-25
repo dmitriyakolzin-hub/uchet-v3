@@ -97,12 +97,15 @@ export async function renderCalendar(view) {
   const sheetBox = el("div");
   let tab = ["requests", "periodic", "registry", "suppliers"].includes(recall(TAB_KEY)) ? recall(TAB_KEY) : "sheet";
   // руководитель ЦФУ и руководитель ЦФО видят только заявки
-  const onlyRequests = () => org.restricted || org.role === "executor_head";
+  // без права просмотра — только заявки (в т. ч. по отметке «видит все заявки», 22.6)
+  const onlyRequests = () => org.restricted || org.role === "executor_head" || !can("view");
+  const canPeriodic = () => can("view") || can("request");
   function openTab(key) {
     tab = onlyRequests() && !["requests", "periodic"].includes(key) ? "requests" : key;
+    if (tab === "periodic" && !canPeriodic()) tab = "requests";
     if (["registry", "suppliers"].includes(tab) && !can("post")) tab = "sheet";
     remember(TAB_KEY, tab);
-    const list = onlyRequests() ? [["requests", "Заявки"], ["periodic", "Периодические платежи"]]
+    const list = onlyRequests() ? [["requests", "Заявки"], ...(canPeriodic() ? [["periodic", "Периодические платежи"]] : [])]
       : [["sheet", "Календарь"], ["requests", "Заявки"],
         ...(can("post") ? [["suppliers", "Накладные поставщиков"], ["registry", "Реестр на оплату"]] : []),
         ["periodic", "Периодические платежи"]];

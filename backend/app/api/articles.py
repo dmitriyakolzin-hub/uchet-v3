@@ -93,7 +93,7 @@ def _article(db: Session, user: User, article_id: int, perm: Perm) -> Article:
 
 @router.get("/organizations/{organization_id}/articles", response_model=list[ArticleTreeOut])
 def list_articles(organization_id: int, user: CurrentUser, db: DbSession):
-    get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST)
+    get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST, Perm.ASSETS)  # названия статей для форм
     rows = _out(db, organization_id)
     return sorted(rows, key=lambda a: (a.sort_order, a.name.lower()))
 
