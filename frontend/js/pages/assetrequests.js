@@ -3,6 +3,7 @@
 // ответственный, вариант закупки) → оплаты в платёжном календаре → поставка (АХО или ЦФУ, который закупает).
 import { api } from "../api.js";
 import { date as ruDate, money, parseNumber, sumMoney } from "../format.js";
+import { openManualStatus } from "../manualstatus.js";
 import { el, instruction, openForm, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
 
@@ -17,6 +18,7 @@ const ACTIONS = { created: "создал(а)", edited: "изменил(а)", sub
   step_approved: "согласовал(а)", revised: "вернул(а) на доработку", budget: "поставил(а) отметку о бюджете",
   lease: "заполнил(а) лизинг", lease_removed: "снял(а) сведения о лизинге", cost: "указал(а) вид затрат",
   approved: "принял(а) решение", rejected: "отклонил(а)", unapproved: "вернул(а) на решение", cancelled: "отменил(а)",
+  status: "сменил(а) статус вручную:",
   delivery: "отметил(а) поставку", received: "принял(а)", receipt_undone: "отменил(а) приёмку",
   file: "приложил(а) файл", file_removed: "убрал(а) файл" };
 const idOrNull = (v) => (v ? Number(v) : null);
@@ -204,6 +206,7 @@ export function assetRequestsTab(box, ctx) {
     if (["pending", "approved", "ordered", "shipped", "delivered"].includes(r.status) && can("supervise") && !r.received_quantity) {
       list.push(["cancel", "Отменить закупку"]);
     }
+    if (can("supervise")) list.push(["status", "Сменить статус вручную…"]);
     if (!list.length) return "";
     const menu = el("select", { class: "action-menu", "aria-label": `Действие с заявкой ${r.number}` },
       el("option", { value: "" }, "Действие…"), ...list.map(([v, t]) => el("option", { value: v }, t)));
@@ -222,6 +225,7 @@ export function assetRequestsTab(box, ctx) {
 
   function run(r, action) {
     if (action === "edit") editRequest(r);
+    else if (action === "status") openManualStatus("asset-requests", r, load);
     else if (action === "delete") {
       if (confirm(`Удалить заявку № ${r.number}?`)) api.delete(`/api/asset-requests/${r.id}`).then(load).catch((err) => toast(err.message, "error"));
     } else if (["submit", "recall", "unapprove", "ordered", "shipped"].includes(action)) {

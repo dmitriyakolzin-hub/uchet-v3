@@ -635,6 +635,110 @@ def unpay_request(request_id: int, user: CurrentUser, db: DbSession):
     return _save(db, req, branch, user)
 
 
+# --- Ручная смена статуса (docs/TZ.md, раздел 30, «Детали 22.7») ---
+
+
+class RouteStepOut(BaseModel):
+    index: int
+    title: str
+
+
+class StatusOptionsOut(BaseModel):
+    statuses: dict[str, str]
+    route: list[RouteStepOut]  # маршрут, по которому пойдёт заявка «на согласовании» (перестраивается заново)
+    route_note: str = ""
+
+
+class StatusIn(BaseModel):
+    status: Literal["draft", "pending", "revision", "approved", "rejected", "paid"]
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
+    step: int = Field(0, ge=0)  # с какого шага маршрута (для «на согласовании»)
+    paid_on: dt.date | None = None  # для «оплачена»
+    operation_number: int | None = Field(None, ge=1)
+
+
+def _route_preview(db: Session, req: PaymentRequest) -> tuple[list[str], str]:
+    if req.direction == "in":
+        return [], "Ожидаемое поступление согласования не требует"
+    if group_payments.receiver(db, req) is not None:
+        return [], "Платёж внутри группы согласования не требует"
+    return approval.build_route(db, req), ""
+
+
+@router.get("/payment-requests/{request_id}/status-options", response_model=StatusOptionsOut)
+def status_options(request_id: int, user: CurrentUser, db: DbSession):
+    req, _ = _request(db, user, request_id, Perm.SUPERVISE)
+    route, note = _route_preview(db, req)
+    return StatusOptionsOut(statuses=STATUS_TITLES, route=[RouteStepOut(index=i, title=approval.step_title(db, s))
+                                                           for i, s in enumerate(route)], route_note=note)
+
+
+@router.post("/payment-requests/{request_id}/status", response_model=RequestOut)
+def set_status(request_id: int, body: StatusIn, user: CurrentUser, db: DbSession):
+    """Сменить статус вручную (администратор и финансовый директор) с причиной в истории и той же автоматикой, что
+    у обычного действия: снятие оплаты удаляет операцию, созданную заявкой; отклонение освобождает накладные;
+    «на согласовании» — маршрут строится заново, шаг выбирается; «оплачена» — как «Отметить оплату»."""
+    req, branch = _request(db, user, request_id, Perm.SUPERVISE)
+    _not_linked(req)
+    before = req.status
+    if body.status == before and body.status != "pending":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Заявка уже в этом статусе")
+
+    def fail(text: str):
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=text)
+
+    if req.source == "supplier" and before == "rejected":
+        fail("Отклонённая оплата поставщику не возвращается — запланируйте оплату в реестре накладных")
+    operation_id = None
+    if body.status == "paid" and body.operation_number is not None:
+        operation_id = db.scalar(select(Operation.id).where(
+            Operation.organization_id == req.organization_id, Operation.number == body.operation_number,
+            Operation.budget_version_id.is_(None)))
+        if operation_id is None:
+            fail(f"Операция № {body.operation_number} не найдена в журнале")
+    route: list[str] = []
+    if body.status == "pending":
+        route, note = _route_preview(db, req)
+        if note:
+            fail(note)
+        if body.step >= len(route):
+            fail("Выберите шаг маршрута")
+    if before == "paid":  # как «Снять оплату»
+        if req.operation_created and req.operation_id is not None and (op := db.get(Operation, req.operation_id)):
+            db.delete(op)
+        req.operation_created = False
+        req.paid_on, req.operation_id, req.confirmed_by_statement = None, None, False
+    if body.status != "approved" and body.status != "paid":
+        req.approved_by = req.approved_at = req.sent_at = req.sent_by = None
+    step_text = ""
+    if body.status == "draft":
+        req.status, req.step = "draft", 0
+    elif body.status == "pending":
+        req.route, req.step, req.status, req.reject_reason = route, body.step, "pending", ""
+        step_text = f", с шага «{approval.step_title(db, route[body.step])}»"
+    elif body.status in ("revision", "rejected"):
+        req.status, req.reject_reason = body.status, body.reason
+        if body.status == "rejected" and req.source == "supplier":
+            suppliers.release(db, req)
+    else:  # approved или paid
+        if before != "approved" or req.approved_by is None:
+            req.approved_by, req.approved_at = user.id, dt.datetime.now(dt.UTC)
+        req.status, req.reject_reason = "approved", ""
+        req.step = len(req.route or [])
+        if body.status == "paid":
+            try:
+                if operation_id is None and req.employee_id is not None and req.cash_cfo_id is not None:
+                    service.pay_advance(db, req, user, body.paid_on or dt.date.today())
+                else:
+                    service.mark_paid(db, req, body.paid_on or dt.date.today(), operation_id)
+            except RequestError as exc:
+                fail(str(exc))
+    approval.event(db, req, user, "status",
+                   f"{STATUS_TITLES[before]} → {STATUS_TITLES[req.status]}{step_text}; причина: {body.reason}")
+    return _save(db, req, branch, user)
+
+
 # --- Файлы заявки: счёт, договор, акт (docs/TZ.md, раздел 24, «Детали 14.2») ---
 
 MAX_FILE_BYTES = 10 * 1024 * 1024

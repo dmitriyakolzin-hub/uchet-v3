@@ -700,6 +700,118 @@ def cancel_request(request_id: int, body: ReasonIn, user: CurrentUser, db: DbSes
     return _save(db, req, scope)
 
 
+# --- Ручная смена статуса (docs/TZ.md, раздел 30, «Детали 22.7») ---
+
+
+class RouteStepOut(BaseModel):
+    index: int
+    title: str
+
+
+class StatusOptionsOut(BaseModel):
+    statuses: dict[str, str]
+    route: list[RouteStepOut]
+    route_note: str = ""
+
+
+class StatusIn(BaseModel):
+    status: Literal["draft", "pending", "revision", "rejected", "approved", "ordered", "shipped", "delivered",
+                    "received", "cancelled"]
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
+    step: int = Field(0, ge=0)
+    on: dt.date | None = None  # дата доставки для «доставлено»
+
+
+def _resubmit(db: Session, req: AssetRequest) -> str:
+    """Маршрут, как при подаче (от имени автора): цепочка ЦФО, отметка о бюджете, CEO и ФД."""
+    author = db.get(User, req.created_by) if req.created_by else None
+    return route.submit(db, req, author)
+
+
+def _step_titles(db: Session, steps: list[str]) -> list[RouteStepOut]:
+    names = dict(db.execute(select(Cfo.id, Cfo.name).where(Cfo.id.in_(
+        [c for c in (route.cfo_of(s) for s in steps) if c is not None]))).all())
+    return [RouteStepOut(index=i, title=route.step_title(s, names)) for i, s in enumerate(steps)]
+
+
+@router.get("/asset-requests/{request_id}/status-options", response_model=StatusOptionsOut)
+def status_options(request_id: int, user: CurrentUser, db: DbSession):
+    req, scope = _request(db, user, request_id)
+    _need(scope, Perm.SUPERVISE)
+    note, steps = "", []
+    try:
+        _resubmit(db, req)  # только посмотреть маршрут — изменения откатываются
+        steps = list(req.route or [])
+    except (route.RouteError, AssetRequestError) as exc:
+        note = str(exc)
+    result = StatusOptionsOut(statuses=ASSET_REQUEST_STATUSES, route=_step_titles(db, steps), route_note=note)
+    db.rollback()
+    return result
+
+
+@router.post("/asset-requests/{request_id}/status", response_model=RequestOut)
+def set_status(request_id: int, body: StatusIn, user: CurrentUser, db: DbSession):
+    """Сменить статус вручную (администратор и финансовый директор) с причиной и той же автоматикой, что у обычных
+    действий: уход из решения убирает оплаты (если ничего не оплачено), переход к решению без решения ФД невозможен,
+    «на согласовании» — маршрут заново и выбранный шаг; статусы приёмки меняются только приёмкой."""
+    req, scope = _request(db, user, request_id)
+    _need(scope, Perm.SUPERVISE)
+    before, target = req.status, body.status
+    if target == before and target != "pending":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Заявка уже в этом статусе")
+
+    def change() -> str:
+        received = service.received_quantity(db, req)
+        if received:
+            raise AssetRequestError("По заявке есть приёмки — статус меняет приёмка; чтобы вернуть заявку, сначала "
+                                    "«Отменить приёмку»")
+        if target == "received":
+            raise AssetRequestError("«Принято» ставит приёмка: «Принять…» создаёт единицы имущества")
+        decided = before in service.DELIVERY
+        extra = ""
+        if target in service.DELIVERY:
+            if not decided:
+                if req.purchase_kind is None:
+                    raise AssetRequestError("Решения финансового директора ещё нет — переведите заявку «на "
+                                            "согласовании» на шаг «Финансовый директор» и примите решение")
+                service.validate_decision(db, req)
+                req.decided_by, req.decided_at, req.reject_reason = user.id, dt.datetime.now(dt.UTC), ""
+                if "fd" in (req.route or []):
+                    req.step = req.route.index("fd")
+                req.status = target
+                db.flush()
+                service.create_payments(db, req, user)
+                extra = "; оплаты — в платёжном календаре"
+            req.status = target
+            req.delivered_on = (body.on or req.delivered_on or dt.date.today()) if target == "delivered" else None
+            return extra
+        if decided:
+            service.remove_payments(db, req)
+            extra = "; оплаты убраны из календаря"
+        req.decided_by = req.decided_at = None
+        req.delivered_on = None
+        if target == "draft":
+            req.status, req.step = "draft", 0
+        elif target == "pending":
+            budget_text = _resubmit(db, req)
+            if body.step >= len(req.route or []):
+                raise AssetRequestError("Выберите шаг маршрута")
+            req.step = body.step
+            extra += f", с шага «{_step_titles(db, [req.route[body.step]])[0].title}»; {budget_text}"
+        elif target in ("revision", "rejected"):
+            req.status, req.reject_reason = target, body.reason
+            if target == "rejected":
+                req.decided_by, req.decided_at = user.id, dt.datetime.now(dt.UTC)
+        else:
+            req.status = "cancelled"
+        return extra
+
+    extra = _run(db, change)
+    service.event(db, req, user, "status", f"{ASSET_REQUEST_STATUSES[before]} → {ASSET_REQUEST_STATUSES[req.status]}"
+                  f"{extra}; причина: {body.reason}")
+    return _save(db, req, scope)
+
+
 @router.post("/asset-requests/{request_id}/lease", response_model=RequestOut)
 def fill_lease(request_id: int, body: LeaseIn, user: CurrentUser, db: DbSession):
     """Финансовый директор заполняет лизинг, когда появился договор: договор и платёж → периодический платёж."""

@@ -1,6 +1,7 @@
 // «Платёжный календарь»: заявки на оплату и ожидаемые поступления — подача, согласование, оплата (docs/TZ.md, раздел 18).
 import { api } from "../api.js";
 import { date, money, monthBounds, parseNumber } from "../format.js";
+import { openManualStatus } from "../manualstatus.js";
 import { openOperation } from "../opform.js";
 import { el, instruction, openForm, toast } from "../ui.js";
 import { loadReferences } from "./journal.js";
@@ -11,7 +12,7 @@ const STATUS = { draft: "Черновик", pending: "На согласован�
   rejected: "Отклонена", paid: "Оплачена" };
 const EVENT_TITLES = { created: "создал(а)", submitted: "подал(а) на согласование", approved: "согласовал(а)",
   rejected: "отклонил(а)", revision: "вернул(а) на доработку", recalled: "отозвал(а)", unapproved: "вернул(а) на согласование",
-  moved: "перенёс(ла) на", amount: "изменил(а) сумму", paid: "отметил(а) оплату", unpaid: "снял(а) оплату", file: "приложил(а) файл",
+  moved: "перенёс(ла) на", amount: "изменил(а) сумму", paid: "отметил(а) оплату", unpaid: "снял(а) оплату", status: "сменил(а) статус вручную:", file: "приложил(а) файл",
   file_removed: "убрал(а) файл", edited: "изменил(а)", periodic_updated: "обновлено по договору", sent: "отправил(а) в банк",
   unsent: "снял(а) отметку «отправлено в банк»" };
 const DIRECTION = { out: "Выплата", in: "Поступление" };
@@ -158,6 +159,7 @@ export async function renderCalendar(view) {
       }
     }
     if (r.status === "paid" && can("post")) list.push(button("Снять оплату", () => run("unpay")));
+    if (can("supervise") && !r.linked_id) list.push(button("Сменить статус вручную…", () => openManualStatus("payment-requests", r, load)));
     list.push(button("История", () => history(r)));
     const menu = el("select", { class: "action-menu", "aria-label": `Действие по заявке № ${r.number}` },
       el("option", { value: "" }, "Действие…"), ...list.map((a, i) => el("option", { value: String(i) }, a.text)));
@@ -942,6 +944,10 @@ export async function renderCalendar(view) {
           ? el("button", { type: "button", class: "secondary", onclick: () => { dialog.close(); edit(r, r.direction); } }, "Изменить")
           : "",
         el("button", { type: "button", class: "secondary", onclick: () => history(r) }, "История"),
+        can("supervise") && !r.linked_id ? el("button", { type: "button", class: "secondary", onclick: () => {
+          dialog.close();
+          openManualStatus("payment-requests", r, loadSheet);
+        } }, "Сменить статус…") : "",
         r.operation_id ? el("button", { type: "button", class: "secondary", onclick: async () => {
           dialog.close();
           openOperation({ ref, org, op: await api.get(`/api/operations/${r.operation_id}`), perms: viewOnly(), onChanged: loadSheet });
