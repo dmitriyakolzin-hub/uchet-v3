@@ -1,4 +1,4 @@
-from sqlalchemy import CheckConstraint, ForeignKey, String
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -26,3 +26,6 @@ class Membership(Base):
     cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="RESTRICT"), index=True)
     # Руководитель ЦФУ: его ЦФУ (отдел — вместе с исполнителями), docs/TZ.md, раздел 24
     executor_id: Mapped[int | None] = mapped_column(ForeignKey("executors.id", ondelete="RESTRICT"), index=True)
+    # дополнительный просмотр (docs/TZ.md, раздел 30, «Детали 22.6»): поверх роли — без права действовать
+    see_all_requests: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    see_all_assets: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")

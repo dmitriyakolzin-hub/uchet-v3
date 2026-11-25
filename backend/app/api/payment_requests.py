@@ -25,6 +25,8 @@ from app.api.access import (
     get_organization_for,
     org_permissions,
     own_only,
+    role_in,
+    view_grants,
 )
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
@@ -253,23 +255,34 @@ def _visible(req: PaymentRequest, user: User, branch: set[int] | None, executors
     return True
 
 
-def _request(db: Session, user: User, request_id: int, *perms: Perm) -> tuple[PaymentRequest, set[int] | None]:
+def _request(db: Session, user: User, request_id: int, *perms: Perm,
+             viewing: bool = False) -> tuple[PaymentRequest, set[int] | None]:
+    """viewing — только просмотр: отметка «видит все заявки» (22.6) снимает ограничение веткой / ЦФУ / своими;
+    для действий видимость — как у роли."""
     req = db.get(PaymentRequest, request_id)
     not_found = HTTPException(status.HTTP_404_NOT_FOUND, detail="Заявка не найдена")
     if req is None:
         raise not_found
     try:
-        get_organization_any(db, user, req.organization_id, Perm.VIEW, Perm.REQUEST)
+        _viewer(db, user, req.organization_id)
     except HTTPException:
         raise not_found from None
     branch = _branch(db, user, req.organization_id)
-    if not _visible(req, user, branch, executor_scope(db, user, req.organization_id)):
+    sees_all = viewing and view_grants(db, user, req.organization_id)[0]  # «видит все заявки» (22.6)
+    if not sees_all and not _visible(req, user, branch, executor_scope(db, user, req.organization_id)):
         raise not_found
-    if own_only(db, user, req.organization_id) and req.created_by != user.id:  # сотрудник — только свои (22.2)
+    if not sees_all and own_only(db, user, req.organization_id) and req.created_by != user.id:  # сотрудник (22.2)
         raise not_found
     if perms:
         get_organization_any(db, user, req.organization_id, *perms)
     return req, branch
+
+
+def _viewer(db: Session, user: User, organization_id: int) -> None:
+    """Смотреть заявки: право просмотра или заявок, либо отметка «видит все заявки» у роли (22.6)."""
+    if view_grants(db, user, organization_id)[0] and role_in(db, user, organization_id) is not None:
+        return
+    get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST)
 
 
 def _scoped(db: Session, user: User, organization_id: int) -> bool:
@@ -329,12 +342,17 @@ def list_requests(organization_id: int, user: CurrentUser, db: DbSession, date_f
                   direction: Literal["out", "in"] | None = None, to_approve: bool = False, mine: bool = False,
                   channel: Literal["bank", "cash"] | None = None):
     """Заявки организации (руководителю ЦФО — его ветки, руководителю ЦФУ — его ЦФУ и поданные им);
-    to_approve — только те, что ждут согласования текущего пользователя."""
-    get_organization_any(db, user, organization_id, Perm.VIEW, Perm.REQUEST)
+    to_approve — только те, что ждут согласования текущего пользователя; «видит все заявки» (22.6) — без ограничений."""
+    _viewer(db, user, organization_id)
     if periodic.ensure(db, organization_id):  # заявки периодических платежей на текущий и два следующих месяца
         db.commit()
     branch = _branch(db, user, organization_id)
     executors = executor_scope(db, user, organization_id)
+    sees_all = view_grants(db, user, organization_id)[0]
+    if sees_all:
+        branch_filter, executors_filter = None, None
+    else:
+        branch_filter, executors_filter = branch, executors
     query = select(PaymentRequest).where(PaymentRequest.organization_id == organization_id)
     if date_from is not None:
         query = query.where(PaymentRequest.pay_date >= date_from)
@@ -344,13 +362,13 @@ def list_requests(organization_id: int, user: CurrentUser, db: DbSession, date_f
         query = query.where(PaymentRequest.status.in_(status_.split(",")))
     if direction is not None:
         query = query.where(PaymentRequest.direction == direction)
-    if branch is not None:
-        query = query.where(PaymentRequest.cfo_id.in_(branch))
-    if executors is not None:
-        query = query.where((PaymentRequest.executor_id.in_(executors)) | (PaymentRequest.created_by == user.id))
+    if branch_filter is not None:
+        query = query.where(PaymentRequest.cfo_id.in_(branch_filter))
+    if executors_filter is not None:
+        query = query.where((PaymentRequest.executor_id.in_(executors_filter)) | (PaymentRequest.created_by == user.id))
     if to_approve:
         query = query.where(PaymentRequest.status == "pending")
-    own = own_only(db, user, organization_id)
+    own = own_only(db, user, organization_id) and not sees_all
     if mine or own:  # сотрудник — только свои заявки (22.2)
         query = query.where(PaymentRequest.created_by == user.id)
     if channel == "cash":  # кассовые заявки
@@ -386,7 +404,7 @@ def create_request(organization_id: int, body: RequestIn, user: CurrentUser, db:
 
 @router.get("/payment-requests/{request_id}", response_model=RequestOut)
 def get_request(request_id: int, user: CurrentUser, db: DbSession):
-    req, _ = _request(db, user, request_id)
+    req, _ = _request(db, user, request_id, viewing=True)
     return _out(db, [req], _scoped(db, user, req.organization_id), user)[0]
 
 
@@ -402,7 +420,7 @@ class EventOut(BaseModel):
 @router.get("/payment-requests/{request_id}/events", response_model=list[EventOut])
 def request_events(request_id: int, user: CurrentUser, db: DbSession):
     """История заявки: подана, согласована (кем и на каком шаге), отклонена, на доработку, оплачена."""
-    req, _ = _request(db, user, request_id)
+    req, _ = _request(db, user, request_id, viewing=True)
     rows = db.execute(select(PaymentRequestEvent, User).join(User, User.id == PaymentRequestEvent.user_id)
                       .where(PaymentRequestEvent.request_id == req.id).order_by(PaymentRequestEvent.id)).all()
     return [EventOut(at=e.at, user_name=u.full_name or u.login, action=e.action, step=e.step,
@@ -659,17 +677,17 @@ async def upload_file(request_id: int, filename: Annotated[str, Query(max_length
     return FileOut(id=file.id, filename=file.filename, size=file.size, uploaded_at=file.uploaded_at)
 
 
-def _file(db: Session, user: User, file_id: int) -> tuple[PaymentRequestFile, PaymentRequest]:
+def _file(db: Session, user: User, file_id: int, viewing: bool = False) -> tuple[PaymentRequestFile, PaymentRequest]:
     file = db.get(PaymentRequestFile, file_id)
     if file is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Файл не найден")
-    req, _ = _request(db, user, file.request_id)  # видимость — как у заявки
+    req, _ = _request(db, user, file.request_id, viewing=viewing)  # видимость — как у заявки
     return file, req
 
 
 @router.get("/payment-request-files/{file_id}")
 def download_file(file_id: int, user: CurrentUser, db: DbSession):
-    file, _ = _file(db, user, file_id)
+    file, _ = _file(db, user, file_id, viewing=True)
     quoted = quote(file.filename)
     return Response(file.data, media_type=file.content_type,
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"})

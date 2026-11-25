@@ -14,7 +14,15 @@ from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.access import branch_ids, cfo_scope, executor_scope, get_organization_for, org_permissions, role_in
+from app.api.access import (
+    branch_ids,
+    cfo_scope,
+    executor_scope,
+    get_organization_for,
+    org_permissions,
+    role_in,
+    view_grants,
+)
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import ROLE_TITLES, Perm, Role
 from app.models import AssetEvent, AssetItem, AssetItemFile, Executor, Membership, Operation, User
@@ -138,7 +146,9 @@ class Scope:
     руководителя или его исполнителями (поле «Сотрудник» у ЦФУ)."""
 
     def __init__(self, db: Session, user: User, organization_id: int):
-        get_organization_for(db, user, organization_id, Perm.ASSETS)
+        self.all_assets = view_grants(db, user, organization_id)[1]  # «видит всё имущество» (22.6)
+        if not (self.all_assets and role_in(db, user, organization_id) is not None):
+            get_organization_for(db, user, organization_id, Perm.ASSETS)
         self.user_id = user.id
         self.own = service.own_employee_ids(db, user, organization_id)
         membership = role_in(db, user, organization_id)
@@ -152,6 +162,8 @@ class Scope:
         self.is_aho = service.is_aho(db, user, organization_id)
 
     def visible(self, item: AssetItem) -> bool:
+        if self.all_assets:
+            return True
         if self.only_own:
             return item.employee_id in self.own
         if self.branch is not None:
@@ -161,6 +173,8 @@ class Scope:
         return True
 
     def condition(self):
+        if self.all_assets:
+            return None
         if self.only_own:
             return AssetItem.employee_id.in_(self.own or [0])
         if self.branch is not None:

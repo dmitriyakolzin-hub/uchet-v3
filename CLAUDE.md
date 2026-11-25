@@ -955,3 +955,10 @@
   в `_filtered`, `_get_operation` — только операции с его ЦФУ. Отчёты: `report_filter` — viewer, `executor_ids` = его ЦФУ
   (чужой — 404). Примечания: viewer, `_visible(..., executors)`, у отчётных — `executor_id` его ЦФУ. `OrganizationOut.restricted`
   у руководителя ЦФУ. Интерфейс: меню ЦФУ — журнал, отчёты, календарь, имущество; примечания для него. Тестов 425.
+- 2026-11-25 — 22.5 влита (PR 95). Шаг 22.6 (ветка `etap-22-6-view-grants`), `docs/TZ.md`, раздел 30 «Детали 22.6».
+  Миграция 0066: `memberships.see_all_requests`, `see_all_assets`. `access.view_grants` (администратор — обе). Заявки на оплату:
+  `_request(..., viewing=True)` только у просмотра (карточка, история, файлы), список без фильтров ветки/ЦФУ/своего;
+  заявки на имущество: `Scope.role_visible` (по роли) и `visible` (+ отметка), действия (`can_receive`) — только по роли;
+  имущество: `Scope.all_assets` — `visible`/`condition` без ограничений, действия — по правам роли. Список статей —
+  и с правом ASSETS. Интерфейс: отметки в окне пользователя, меню (`limitedPages`), памятка `docs/ROLES.md`. Тестов 426,
+  ui_smoke дополнен.

@@ -26,6 +26,7 @@ from app.api.access import (
     org_permissions,
     own_only,
     role_in,
+    view_grants,
 )
 from app.api import assets as asset_files
 from app.api.deps import CurrentUser, DbSession
@@ -278,7 +279,9 @@ class EventOut(BaseModel):
 
 class Scope:
     def __init__(self, db: Session, user: User, organization_id: int):
-        get_organization_any(db, user, organization_id, Perm.ASSETS, Perm.REQUEST)
+        self.all_requests = view_grants(db, user, organization_id)[0]  # «видит все заявки» (22.6)
+        if not (self.all_requests and role_in(db, user, organization_id) is not None):
+            get_organization_any(db, user, organization_id, Perm.ASSETS, Perm.REQUEST)
         self.db = db
         self.user = user
         self.perms = org_permissions(db, user, organization_id)
@@ -290,13 +293,17 @@ class Scope:
         # руководитель ЦФУ видит только заявки, где закупает его ЦФУ; без права на имущество — больше никто
         self.executors = executor_scope(db, user, organization_id)
         self.employee = own_only(db, user, organization_id)  # сотрудник — только свои заявки (22.2)
-        if Perm.ASSETS not in self.perms and self.executors is None and not self.employee:
+        if Perm.ASSETS not in self.perms and self.executors is None and not self.employee and not self.all_requests:
             raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
 
     def purchaser(self, req: AssetRequest) -> bool:
         return self.executors is not None and req.executor_id in self.executors
 
     def visible(self, req: AssetRequest) -> bool:
+        """Видит заявку: по роли или по отметке «видит все заявки» (только просмотр, 22.6)."""
+        return self.all_requests or self.role_visible(req)
+
+    def role_visible(self, req: AssetRequest) -> bool:
         if req.created_by == self.user.id:
             return True
         if self.employee:
@@ -310,6 +317,8 @@ class Scope:
         return True
 
     def can_receive(self, req: AssetRequest) -> bool:
+        if not self.role_visible(req):  # видна только по отметке «видит все заявки» — без действий
+            return False
         return (Perm.ASSETS_EDIT in self.perms or (Perm.ASSET_REQUEST in self.perms and not self.employee)
                 or self.purchaser(req)
                 or (req.employee_id is not None and req.employee_id in self.own))

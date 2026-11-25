@@ -1371,9 +1371,10 @@ with sync_playwright() as p:
     d = dialog_fill(page, {"login": "ceo", "full_name": "Сидоров С.С.", "password": "ceo-password-1"})
     d.locator("select[aria-label='Роль в Группа АВМВ']").select_option("ceo")
     expect(d).not_to_contain_text("null")
+    d.locator("input[aria-label='Видит все заявки в Группа АВМВ']").check()  # шаг 22.6
     page.screenshot(path=f"{OUT}/2_user_form.png")
     d.locator("button[type=submit]").click()
-    expect(page.locator(".tabulator-row", has_text="Группа АВМВ: CEO")).to_be_visible()
+    expect(page.locator(".tabulator-row", has_text="Группа АВМВ: CEO + все заявки")).to_be_visible()
     page.screenshot(path=f"{OUT}/3_users.png", full_page=True)
     # сотрудник (шаг 22.2): только своё
     page.click("text=Добавить пользователя")

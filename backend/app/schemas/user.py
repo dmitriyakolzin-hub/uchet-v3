@@ -19,6 +19,8 @@ class MembershipIn(BaseModel):
     role: Role
     cfo_id: int | None = None  # обязателен для руководителя ЦФО: корень его ветки
     executor_id: int | None = None  # обязателен для руководителя ЦФУ: его ЦФУ
+    see_all_requests: bool = False  # дополнительно: просмотр всех заявок организации (22.6)
+    see_all_assets: bool = False  # дополнительно: просмотр всего имущества организации (22.6)
 
     @model_validator(mode="after")
     def _cfo_for_cfo_head(self):
@@ -41,6 +43,8 @@ class MembershipOut(BaseModel):
     cfo_name: str | None = None
     executor_id: int | None = None
     executor_name: str | None = None
+    see_all_requests: bool = False
+    see_all_assets: bool = False
     permissions: list[Perm]
 
 

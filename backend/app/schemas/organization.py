@@ -43,6 +43,8 @@ class OrganizationOut(BaseModel):
     role: str | None = None  # роль пользователя в организации (администратор — None)
     executor_scope: list[int] | None = None  # руководитель ЦФУ: его ЦФУ (с исполнителями)
     own_only: bool = False  # сотрудник: только своё (docs/TZ.md, раздел 30, «Детали 22.2»)
+    see_all_requests: bool = False  # дополнительно видит все заявки (22.6)
+    see_all_assets: bool = False  # дополнительно видит всё имущество (22.6)
 
 
 InsuranceTariff = Literal["sme", "general"]  # тариф страховых взносов: МСП или общий

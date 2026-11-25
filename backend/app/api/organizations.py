@@ -46,6 +46,8 @@ def _organization_out(db: Session, user: User, organization: Organization) -> Or
         out.restricted = True  # руководитель ЦФО без назначенного ЦФО: данных не видит
     membership = role_in(db, user, organization.id)
     out.role = membership.role if membership else None
+    if membership is not None:
+        out.see_all_requests, out.see_all_assets = membership.see_all_requests, membership.see_all_assets
     if own_only(db, user, organization.id):  # сотрудник: как ограниченный — без счетов, выписок, отчётов
         out.own_only, out.restricted = True, True
     if membership is not None and membership.role == "executor_head":  # руководитель ЦФУ: только по своему ЦФУ

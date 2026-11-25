@@ -111,3 +111,13 @@ def get_organization_viewer(db: Session, user: User, organization_id: int) -> Or
     if executor_scope(db, user, organization_id) is not None:
         return get_organization_any(db, user, organization_id, Perm.REQUEST)
     return get_organization_for(db, user, organization_id, Perm.VIEW)
+
+
+def view_grants(db: Session, user: User, organization_id: int) -> tuple[bool, bool]:
+    """Дополнительный просмотр у роли (docs/TZ.md, раздел 30, «Детали 22.6»): (все заявки, всё имущество)."""
+    if user.is_admin:
+        return True, True
+    membership = role_in(db, user, organization_id)
+    if membership is None:
+        return False, False
+    return bool(membership.see_all_requests), bool(membership.see_all_assets)
