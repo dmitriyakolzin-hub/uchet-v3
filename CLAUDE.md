@@ -962,3 +962,11 @@
   имущество: `Scope.all_assets` — `visible`/`condition` без ограничений, действия — по правам роли. Список статей —
   и с правом ASSETS. Интерфейс: отметки в окне пользователя, меню (`limitedPages`), памятка `docs/ROLES.md`. Тестов 426,
   ui_smoke дополнен.
+- 2026-11-25 — 22.6 влита (PR 96). Шаг 22.7 (ветка `etap-22-7-manual-status`), `docs/TZ.md`, раздел 30 «Детали 22.7»
+  (ответы «1 а, 2 б, 3 б, 4 б»). Миграций нет. Ручная смена статуса (SUPERVISE): `GET/POST /payment-requests/{id}/status-options`
+  и `/status` (уход из paid — как unpay, paid — `mark_paid`/`pay_advance`, rejected — `suppliers.release`, pending —
+  `approval.build_route` + выбранный шаг; зеркала внутри группы — нельзя), то же для `/asset-requests/` (переход к решению —
+  `validate_decision` + `create_payments`, уход — `remove_payments`, pending — `route.submit` от имени автора + шаг, после
+  приёмок — 422; в `status-options` маршрут считается и откатывается). Событие `status` с «было → стало» и причиной.
+  Интерфейс: `js/manualstatus.js: openManualStatus` (поля по выбранному статусу, подсказки), пункт «Сменить статус
+  вручную…» в заявках на оплату и на имущество, кнопка в карточке заявки календаря. Тестов 428, ui_smoke дополнен.
