@@ -979,3 +979,11 @@
   передано), `ArticleTreeOut.effective_plan_method`, `app/api/plan_norms.py` (SUPERVISE), `GET .../report-form-rows`.
   Интерфейс: колонка «Метод планирования» в статьях, `js/articles.js: PLAN_METHODS`, вкладка «Нормативы» в «Бюджетах»
   (`js/pages/plannorms.js`). Тестов 431, ui_smoke дополнен.
+- 2026-11-27 — 23.1 влита (PR 98). Шаг 23.2 (ветка `etap-23-2-method-plan`), `docs/TZ.md`, раздел 31 «Детали 23.2».
+  Миграций нет. `app/services/method_plan.py: build(db, f, version_id, month, today)` — `Leaf` (статья без подстатей: значение
+  своего метода, пояснение, план без ЦФУ / с ЦФУ), `_plan_cells` (план версии за месяц, разделение по
+  `Operation.plan_executor_id`), `_norm_values` (оклады `salary_on`), `_avg_values` (`plan_methods.base_window`, `_sums`),
+  `_fact_values` (образцы `RoutineRule.template` + `norms_on(fact)`), расчётный — рекурсия по базе с проверкой цикла,
+  строки формы и формулы по ИТОГ и бюджету. API `/reports/method-plan` и `.xlsx` (месяц входит в бюджет версии).
+  Интерфейс: режим «План по методам» в «Управленческом» (`js/reports/methodplan.js`: месяц, версия, таблица; стили
+  `.method-plan`). Тестов 433, ui_smoke дополнен.

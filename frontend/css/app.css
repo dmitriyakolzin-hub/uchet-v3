@@ -433,3 +433,12 @@ table.asset-requests tbody tr { cursor: pointer; }
 .lease-contracts .lease-row:hover { background: var(--row-hover, rgba(0, 0, 0, 0.03)); }
 .lease-box { padding: 0.5rem 0 0.5rem 1rem; }
 .lease-box h4 { margin: 0.5rem 0 0.25rem; }
+
+/* «План по методам» (шаг 23.2) */
+.method-plan th, .method-plan td { white-space: nowrap; }
+.method-plan td.own-method { background: #eaf2ff; font-weight: 600; }
+.method-plan .itog { background: #fff7df; font-weight: 700; }
+.method-plan td.good { color: #067647; }
+.method-plan td.bad { color: #b42318; }
+.method-plan .tag { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: #e7ecf5; color: #33415c; }
+.table-scroll { overflow-x: auto; }
