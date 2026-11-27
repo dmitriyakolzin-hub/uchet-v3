@@ -2,9 +2,9 @@
 // методов (у статьи — только колонка её метода), «Сверху ИТОГ», бюджет версии по ЦФО и «Бюджет − ИТОГ».
 import { api } from "../api.js";
 import { PLAN_METHODS } from "../articles.js";
-import { money } from "../format.js";
+import { money, parseNumber } from "../format.js";
 import { openPlanCells } from "../plancells.js";
-import { el, toast } from "../ui.js";
+import { el, openForm, toast } from "../ui.js";
 
 const MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь",
   "Ноябрь", "Декабрь"];
@@ -24,11 +24,16 @@ export function methodPlan({ box, ctx }) {
   const monthInput = el("input", { type: "month", value: month, "aria-label": "Месяц плана" });
   const versionSelect = el("select", { "aria-label": "Версия бюджета" });
   const hint = el("p", { class: "muted" });
+  // «Сверху ИТОГ» (шаг 23.4): фиксация плана, история
+  const fixInfo = el("span", { class: "muted" });
+  const fixButton = el("button", { type: "button", onclick: () => fixPlan() }, "Зафиксировать план");
+  const historyButton = el("button", { type: "button", class: "secondary", onclick: () => showHistory() }, "История ИТОГ");
   const tableBox = el("div", { class: "method-plan-box" });
   box.replaceChildren(
     el("div", { class: "filters" },
       el("label", { class: "inline" }, "Месяц ", monthInput),
-      el("label", { class: "inline" }, "Версия бюджета ", versionSelect)),
+      el("label", { class: "inline" }, "Версия бюджета ", versionSelect),
+      fixInfo, fixButton, historyButton),
     hint, tableBox);
 
   monthInput.addEventListener("change", async () => {
@@ -55,10 +60,66 @@ export function methodPlan({ box, ctx }) {
       : [el("option", { value: "" }, "— нет бюджета на этот месяц —")]));
   }
 
+  const canSupervise = () => ctx.org().permissions.includes("supervise");
+  const cfoId = () => (ctx.filters.scope().cfo_id ? Number(ctx.filters.scope().cfo_id) : null);
+  const itogEditable = () => canSupervise() && data?.itog_scope && data.version_status !== "archived";
+
+  function editItog(r) {
+    openForm({
+      title: `Сверху ИТОГ: ${`${r.code ?? ""} ${r.title}`.trim()}`,
+      fields: [{ name: "amount", label: "ИТОГ на месяц, ₽", placeholder: "пусто — по методу" }],
+      values: { amount: r.itog_manual ? money(r.values.itog) : "" },
+      extra: el("p", { class: "muted small" }, `По методу: ${money(r.values[r.method] ?? 0)}. `
+        + "Пустое поле — ИТОГ снова равен методу. ИТОГ — утверждённая цифра статьи, вниз по ЦФО не делится."),
+      submitText: "Сохранить",
+      onSubmit: async (v) => {
+        await api.put(`/api/budget-versions/${data.version_id}/itog`, { month: data.month, cfo_id: cfoId(),
+          article_id: r.itog_article_id, amount: v.amount ? parseNumber(v.amount) : null });
+        await load();
+      },
+    });
+  }
+
+  async function fixPlan() {
+    if (!data) return;
+    if (!confirm("Зафиксировать план месяца? Суммы методов 1–4 (нормативный, средний, фактический, расчётный) "
+      + "запишутся в бюджет на свои ЦФО вместо прежних, ИТОГ статей сохранится как утверждённые цифры.")) return;
+    try {
+      const r = await api.post(`/api/budget-versions/${data.version_id}/itog/fix`, { month: data.month, cfo_id: cfoId() });
+      toast(`План зафиксирован: записано ячеек ${r.written}, очищено ${r.cleared}`);
+      await load();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+
+  async function showHistory() {
+    if (!data) return;
+    const params = new URLSearchParams({ month: data.month });
+    if (cfoId()) params.set("cfo_id", cfoId());
+    const events = await api.get(`/api/budget-versions/${data.version_id}/itog-events?${params}`);
+    const ACTIONS = { edit: "изменил(а) ИТОГ", reset: "вернул(а) ИТОГ к методу", fix: "зафиксировал(а) план" };
+    const box = el("dialog", { class: "dialog wide" }, el("h2", {}, "История «Сверху ИТОГ»"),
+      events.length ? el("ul", { class: "history" }, ...events.map((e) => el("li", {},
+        `${new Date(e.at).toLocaleString("ru-RU")} — ${e.user_name} ${ACTIONS[e.action] ?? e.action}`
+        + (e.article_name ? `: ${e.article_name}` : "")
+        + (e.action === "edit" ? `, ${e.old_amount === null ? "по методу" : money(e.old_amount)} → ${money(e.new_amount)}` : "")
+        + (e.details ? ` (${e.details})` : "")))) : el("p", { class: "muted" }, "Изменений пока нет."),
+      el("div", { class: "form-actions" }, el("button", { type: "button", onclick: () => box.close() }, "Закрыть")));
+    box.addEventListener("close", () => box.remove());
+    document.body.append(box);
+    box.showModal();
+  }
+
   const cell = (value, cls = "") => el("td", { class: `num ${cls}`.trim() },
     value === null || value === undefined ? "·" : Number(value) === 0 ? "" : money(value));
 
   function render() {
+    fixButton.hidden = !itogEditable();
+    historyButton.hidden = !data.itog_scope;
+    fixInfo.textContent = !data.itog_scope ? "ИТОГ — без фильтра юрлица и ЦФУ"
+      : data.fixed_at ? `План зафиксирован ${new Date(data.fixed_at).toLocaleString("ru-RU")} (${data.fixed_by})`
+        : "План не зафиксирован";
     if (!data.form_loaded) {
       hint.textContent = "Форма отчёта не загружена: загрузите справочник статей из Excel на странице «Статьи ДДС и ОПиУ».";
       tableBox.replaceChildren();
@@ -66,7 +127,8 @@ export function methodPlan({ box, ctx }) {
     }
     const [y, m] = data.month.split("-");
     hint.textContent = `План на ${MONTHS[Number(m) - 1].toLowerCase()} ${y}. У каждой статьи — только колонка её метода `
-      + "(голубая); «Сверху ИТОГ» пока равен ей (фиксация ИТОГ — следующий шаг). «Бюджет» — плановые операции версии "
+      + "(голубая); «Сверху ИТОГ» по умолчанию равен ей, финансовый директор правит его щелчком (✎ — вручную). "
+      + "«Зафиксировать план» записывает суммы методов 1–4 в бюджет по ЦФО и сохраняет ИТОГ. «Бюджет» — плановые операции версии "
       + "по ЦФО, по нему идёт план/факт; «Бюджет − ИТОГ» — расхождение. Щёлкните в колонке «Снизу ЦФО» или «Снизу ЦФУ», "
       + "чтобы ввести план своего ЦФО / ЦФУ. Методы статей — «Статьи ДДС и ОПиУ», "
       + "проценты и суммы — «Бюджеты» → «Нормативы».";
@@ -99,7 +161,17 @@ export function methodPlan({ box, ctx }) {
           }
           return td;
         }),
-        cell(values.itog, "itog"),
+        (() => {
+          const td = cell(values.itog, "itog");
+          if (r.itog_manual) td.append(el("span", { class: "muted small", title: "ИТОГ поставлен вручную" }, " ✎"));
+          if (r.kind === "article" && r.itog_article_id && itogEditable()) {
+            td.classList.add("input-cell");
+            td.title = "Изменить ИТОГ";
+            if (td.textContent === "") td.textContent = "+";
+            td.addEventListener("click", () => editItog(r));
+          }
+          return td;
+        })(),
         cell(values.budget),
         cell(diff, diff === null || diff === undefined ? "" : Number(diff) > 0 ? "good" : Number(diff) < 0 ? "bad" : ""));
     });
@@ -109,6 +181,8 @@ export function methodPlan({ box, ctx }) {
 
   async function load() {
     if (!versionId) {
+      fixButton.hidden = historyButton.hidden = true;
+      fixInfo.textContent = "";
       hint.textContent = "На этот месяц нет бюджета — создайте бюджет на странице «Бюджеты».";
       tableBox.replaceChildren();
       data = null;

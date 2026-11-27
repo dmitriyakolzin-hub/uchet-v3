@@ -995,3 +995,11 @@
   (`executorFirst`; руководителю ЦФУ — только его ЦФУ). ui_smoke: в окне плановых операций пустая таблица — строка
   «Плановых операций нет», ждать нужно её исчезновения; деньги в поле — с неразрывным пробелом. Известная редкая
   гонка ui_smoke в «Свод по ветке» (строка «Аренда» без значка раскрытия) — повторный прогон проходит. Тестов 434.
+- 2026-11-27 — 23.3 влита (PR 100). Шаг 23.4 (ветка `etap-23-4-top-itog`), `docs/TZ.md`, раздел 31 «Детали 23.4».
+  Миграция 0068: `plan_itogs` (версия + ЦФО отчёта NULLS NOT DISTINCT + статья + месяц, сумма, `manual`, `fixed_*`),
+  `plan_itog_events` (edit/reset/fix). `method_plan`: `compute()` (значения методов + `Leaf.by_cfo` — разбивка по ЦФО,
+  `stored` — сохранённый ИТОГ, `method_value`/`itog`), `build()` поверх него, `itog_scope_ok` (без фильтра юрлица и ЦФУ);
+  `_sums` группирует по ЦФО. `app/services/plan_itog.py`: `set_itog`, `fix` (методы 1–4 → `plan.set_cells` по ЦФО
+  с заменой прежних ячеек без ЦФУ в ветке, неизменные не пишутся; ИТОГ → `plan_itogs`). API `app/api/plan_itog.py`
+  (SUPERVISE; guard из `budgets._guard`); `MethodPlanOut`: `itog_scope`, `fixed_at/by`, строки `itog_article_id`,
+  `itog_manual`. Интерфейс: `methodplan.js` — правка ИТОГ, «Зафиксировать план», «История ИТОГ». Тестов 435. Этап 23 готов.

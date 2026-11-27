@@ -7,6 +7,8 @@ from app.models.budget import (
     BudgetVersion,
     InvestmentProject,
     PlanChange,
+    PlanItog,
+    PlanItogEvent,
     PlanTarget,
     PlanVolume,
 )
@@ -107,6 +109,8 @@ __all__ = [
     "PayrollLine",
     "PayrollRun",
     "PlanChange",
+    "PlanItog",
+    "PlanItogEvent",
     "PlanTarget",
     "PlanVolume",
     "Posting",

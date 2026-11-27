@@ -24,6 +24,8 @@ from app.models import (
     Executor,
     InvestmentProject,
     LegalEntity,
+    PlanItogEvent,
+    User,
     Warehouse,
 )
 from app.models.journal import ANALYTIC_COLUMNS
@@ -831,6 +833,8 @@ class MethodRowOut(BaseModel):
     article_id: int | None
     method: str | None
     plan_kind: str | None = None
+    itog_article_id: int | None = None  # ИТОГ строки правится (одна статья без подстатей)
+    itog_manual: bool = False
     note: str
     error: str
     values: dict[str, Decimal | None]
@@ -840,6 +844,10 @@ class MethodPlanOut(BaseModel):
     form_loaded: bool
     month: str
     version_id: int
+    version_status: str = ""
+    itog_scope: bool = True  # без фильтра юрлица и ЦФУ — ИТОГ показывается, правится и фиксируется
+    fixed_at: dt.datetime | None = None  # план месяца зафиксирован (по ЦФО отчёта)
+    fixed_by: str = ""
     columns: list[dict[str, str]]
     rows: list[MethodRowOut]
 
@@ -855,10 +863,22 @@ def _method_plan(db: Session, f: ReportFilter, month: str, version_id: int) -> M
     results = method_plan.build(db, f, version_id, first)
     rows = [MethodRowOut(key=f"row:{r.row.id}", id=r.row.id, code=r.row.code, title=r.row.name, kind=r.row.kind,
                          level=r.level, parent=r.parent, article_id=r.row.article_id, method=r.method,
-                         plan_kind=r.plan_kind, note=r.note,
+                         plan_kind=r.plan_kind, itog_article_id=r.itog_article_id, itog_manual=r.itog_manual,
+                         note=r.note,
                          error=r.error, values=r.values) for r in results]
-    return MethodPlanOut(form_loaded=bool(results), month=month, version_id=version_id,
-                         columns=[{"key": k, "title": t} for k, t in METHOD_COLUMNS], rows=rows)
+    out = MethodPlanOut(form_loaded=bool(results), month=month, version_id=version_id,
+                        version_status=db.get(BudgetVersion, version_id).status,
+                        itog_scope=method_plan.itog_scope_ok(f),
+                        columns=[{"key": k, "title": t} for k, t in METHOD_COLUMNS], rows=rows)
+    if out.itog_scope:
+        last = db.execute(select(PlanItogEvent, User).join(User, User.id == PlanItogEvent.user_id).where(
+            PlanItogEvent.version_id == version_id, PlanItogEvent.month == first.month,
+            PlanItogEvent.action == "fix",
+            PlanItogEvent.cfo_id.is_(None) if f.cfo_id is None else PlanItogEvent.cfo_id == f.cfo_id)
+            .order_by(PlanItogEvent.id.desc()).limit(1)).first()
+        if last:
+            out.fixed_at, out.fixed_by = last[0].at, last[1].full_name or last[1].login
+    return out
 
 
 @router.get("/method-plan", response_model=MethodPlanOut)
