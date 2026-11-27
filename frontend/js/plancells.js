@@ -16,9 +16,10 @@ function select(options, value, label) {
 /**
  * versionId — версия бюджета; kind — pl / cf; articleId — статья строки отчёта (группа — вместе с подстатьями);
  * months — ключи месяцев «YYYY-MM»; scope — фильтры отчёта {legal_entity_id, cfo_id, executor_id};
- * onChanged — после закрытия, если что-то поменяли
+ * onChanged — после закрытия, если что-то поменяли; executorFirst — новая операция по умолчанию с ЦФУ («Снизу ЦФУ», 23.3)
  */
-export async function openPlanCells({ org, ref, versionId, kind, articleId, months, scope = {}, title, onChanged }) {
+export async function openPlanCells({ org, ref, versionId, kind, articleId, months, scope = {}, title, onChanged,
+  executorFirst = false }) {
   const params = new URLSearchParams({ kind, article_id: articleId, ...scope });
   months.forEach((m) => params.append("month", m));
   const url = `/api/budget-versions/${versionId}/cells?${params}`;
@@ -75,8 +76,12 @@ export async function openPlanCells({ org, ref, versionId, kind, articleId, mont
       const cfo = select([...(kind === "cf" ? [["", "— без ЦФО —"]] : []),
         ...ref.cfos.filter((c) => inBranch(c) && !data.locked_cfo_ids.includes(c.id)).map((c) => [c.id, ref.cfoLabel.get(c.id)])],
       scope.cfo_id ?? "", "ЦФО новой операции");
-      const executor = kind === "pl"
-        ? select([["", "— без ЦФУ —"], ...ref.executors.map((e) => [e.id, ref.executorLabel.get(e.id)])], "", "ЦФУ новой операции")
+      // руководитель ЦФУ — только свой ЦФУ (23.3)
+      const ownExecutors = org.executor_scope ? ref.executors.filter((e) => org.executor_scope.includes(e.id)) : ref.executors;
+      const executorDefault = org.executor_scope?.[0] ?? (executorFirst ? scope.executor_id ?? ownExecutors[0]?.id : "");
+      const executor = kind === "pl" || org.executor_scope
+        ? select([...(org.executor_scope ? [] : [["", "— без ЦФУ —"]]),
+          ...ownExecutors.map((e) => [e.id, ref.executorLabel.get(e.id)])], executorDefault ?? "", "ЦФУ новой операции")
         : null;
       const article = select(data.articles.map((a) => [a.id, a.label]), data.articles[0].id, "Статья новой операции");
       const month = select(data.months.map((m) => [m, `${MONTHS[m - 1]} ${data.year}`]), data.months[0], "Месяц новой операции");

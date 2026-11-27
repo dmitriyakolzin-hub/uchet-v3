@@ -12,7 +12,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app.api.access import branch_ids, cfo_scope, get_organization_for, org_permissions
+from app.api.access import (
+    branch_ids,
+    cfo_scope,
+    executor_scope,
+    get_organization_any,
+    get_organization_for,
+    get_organization_viewer,
+    org_permissions,
+)
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
 from app.models import (
@@ -110,10 +118,28 @@ def _get_budget(db: Session, user: User, budget_id: int, perm: Perm) -> Budget:
     return budget
 
 
-def _get_version(db: Session, user: User, version_id: int, perm: Perm) -> BudgetVersion:
+def _executors(db: Session, user: User, organization_id: int) -> set[int] | None:
+    """ЦФУ руководителя ЦФУ (план своего ЦФУ — docs/TZ.md, раздел 31, «Детали 23.3»); None — не руководитель ЦФУ."""
+    try:
+        return executor_scope(db, user, organization_id)
+    except HTTPException:
+        return None
+
+
+def _get_version(db: Session, user: User, version_id: int, perm: Perm, executor_ok: bool = False) -> BudgetVersion:
+    """executor_ok — руководитель ЦФУ допускается (смотрит и вводит план своего ЦФУ)."""
     version = db.get(BudgetVersion, version_id)
     if version is None:
         raise _not_found("Версия бюджета")
+    budget = db.get(Budget, version.budget_id)
+    if executor_ok and budget is not None and _executors(db, user, budget.organization_id) is not None:
+        try:
+            get_organization_any(db, user, budget.organization_id, Perm.REQUEST)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_404_NOT_FOUND:
+                raise _not_found("Версия бюджета") from None
+            raise
+        return version
     try:
         _get_budget(db, user, version.budget_id, perm)
     except HTTPException as exc:
@@ -134,7 +160,7 @@ def _new_version(db: Session, budget: Budget, user: User, name: str, based_on: B
 
 @router.get("/organizations/{organization_id}/budgets", response_model=list[BudgetOut])
 def list_budgets(organization_id: int, user: CurrentUser, db: DbSession, year: int | None = None):
-    get_organization_for(db, user, organization_id, Perm.VIEW)
+    get_organization_viewer(db, user, organization_id)  # руководитель ЦФУ — для ввода плана своего ЦФУ (23.3)
     query = select(Budget).where(Budget.organization_id == organization_id)
     if year is not None:
         query = query.where(Budget.year == year)
@@ -275,8 +301,12 @@ def _check_plan_cfo(db: Session, user: User, organization_id: int, cfo_id: int |
 def _guard(db: Session, user: User, version: BudgetVersion) -> plan_access.Guard:
     """Права на правку плана версии (docs/TZ.md, раздел 22, «Детали 12.5»): после утверждения ЦФО или версии —
     только право проводить (администратор, финансовый директор), с историей."""
-    perms = org_permissions(db, user, db.get(Budget, version.budget_id).organization_id)
-    return plan_access.Guard(db, version, supervisor=Perm.SUPERVISE in perms, can_draft=Perm.DRAFT in perms)
+    organization_id = db.get(Budget, version.budget_id).organization_id
+    perms = org_permissions(db, user, organization_id)
+    # руководитель ЦФУ вводит план своего ЦФУ (23.3): ЦФУ ячеек проверяют put_cells и get_cells
+    executor_head = _executors(db, user, organization_id) is not None
+    return plan_access.Guard(db, version, supervisor=Perm.SUPERVISE in perms,
+                             can_draft=Perm.DRAFT in perms or executor_head)
 
 
 @router.get("/budget-versions/{version_id}/grid", response_model=GridOut)
@@ -329,9 +359,12 @@ def download_branch(version_id: int, cfo_id: int, user: CurrentUser, db: DbSessi
 @router.put("/budget-versions/{version_id}/cells")
 def put_cells(version_id: int, body: CellsIn, user: CurrentUser, db: DbSession) -> dict:
     """Записать ячейки сетки (пусто или 0 — очистить). Только черновик версии."""
-    version = _get_version(db, user, version_id, Perm.DRAFT)
+    version = _get_version(db, user, version_id, Perm.DRAFT, executor_ok=True)
     budget = db.get(Budget, version.budget_id)
     _check_plan_cfo(db, user, budget.organization_id, body.cfo_id)
+    executors = _executors(db, user, budget.organization_id)
+    if executors is not None and (body.executor_id not in executors or body.kind == "inv"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Руководитель ЦФУ вводит план только своего ЦФУ")
     try:
         changed = plan.set_cells(db, version, body.kind, body.cfo_id,
                                  [plan.Cell(c.article_id, c.month, c.amount) for c in body.cells], user,
@@ -373,7 +406,7 @@ def get_cells(version_id: int, user: CurrentUser, db: DbSession, kind: PlanKind,
               cfo_id: int | None = None, executor_id: int | None = None, legal_entity_id: int | None = None):
     """Плановые операции версии по статье (с подстатьями) и месяцам — окно «Плановые операции» из отчётов
     (docs/TZ.md, раздел 22, «Детали 12.1»). Фильтры — как у отчёта, итог совпадает с его цифрой."""
-    version = _get_version(db, user, version_id, Perm.VIEW)
+    version = _get_version(db, user, version_id, Perm.VIEW, executor_ok=True)
     budget = db.get(Budget, version.budget_id)
     org_id = budget.organization_id
     article = db.get(Article, article_id)
@@ -392,6 +425,9 @@ def get_cells(version_id: int, user: CurrentUser, db: DbSession, kind: PlanKind,
     executor_ids = None
     if executor_id is not None:
         executor_ids = {executor_id, *db.scalars(select(Executor.id).where(Executor.parent_id == executor_id))}
+    own_executors = _executors(db, user, org_id)
+    if own_executors is not None:  # руководитель ЦФУ — только план своего ЦФУ
+        executor_ids = own_executors if executor_ids is None else executor_ids & own_executors
     tree = set(subtree_ids(db, article.id))
     articles = [a for a, _ in plan.plan_articles(db, org_id, kind) if a.id in tree]
     cells = plan.cell_list(db, version, kind, [a.id for a in articles] or [article.id], months, cfo_ids=cfo_ids,

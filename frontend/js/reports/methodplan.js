@@ -3,6 +3,7 @@
 import { api } from "../api.js";
 import { PLAN_METHODS } from "../articles.js";
 import { money } from "../format.js";
+import { openPlanCells } from "../plancells.js";
 import { el, toast } from "../ui.js";
 
 const MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь",
@@ -66,7 +67,8 @@ export function methodPlan({ box, ctx }) {
     const [y, m] = data.month.split("-");
     hint.textContent = `План на ${MONTHS[Number(m) - 1].toLowerCase()} ${y}. У каждой статьи — только колонка её метода `
       + "(голубая); «Сверху ИТОГ» пока равен ей (фиксация ИТОГ — следующий шаг). «Бюджет» — плановые операции версии "
-      + "по ЦФО, по нему идёт план/факт; «Бюджет − ИТОГ» — расхождение. Методы статей — «Статьи ДДС и ОПиУ», "
+      + "по ЦФО, по нему идёт план/факт; «Бюджет − ИТОГ» — расхождение. Щёлкните в колонке «Снизу ЦФО» или «Снизу ЦФУ», "
+      + "чтобы ввести план своего ЦФО / ЦФУ. Методы статей — «Статьи ДДС и ОПиУ», "
       + "проценты и суммы — «Бюджеты» → «Нормативы».";
     const methodCols = data.columns.slice(0, 6);
     const head = el("tr", {}, el("th", {}, "Строка"), el("th", {}, "Метод"),
@@ -82,7 +84,21 @@ export function methodPlan({ box, ctx }) {
         title,
         el("td", {}, r.method ? el("span", { class: "tag" }, PLAN_METHODS[r.method]) : "",
           r.note ? el("span", { class: "muted small" }, ` ${r.note}`) : ""),
-        ...methodCols.map((c) => cell(values[c.key], values[c.key] !== null && values[c.key] !== undefined ? "own-method" : "")),
+        ...methodCols.map((c) => {
+          const td = cell(values[c.key], values[c.key] !== null && values[c.key] !== undefined ? "own-method" : "");
+          // «Снизу ЦФО» / «Снизу ЦФУ» — ввод плановых операций прямо отсюда (23.3)
+          if (["cfo", "executor"].includes(c.key) && r.kind === "article" && r.article_id && r.plan_kind) {
+            td.classList.add("input-cell");
+            td.title = c.key === "cfo" ? "Ввести план ЦФО" : "Ввести план ЦФУ";
+            if (!td.textContent || td.textContent === "·") td.textContent = "+";
+            td.addEventListener("click", () => openPlanCells({
+              org: ctx.org(), ref: ctx.ref(), versionId: data.version_id, kind: r.plan_kind, articleId: r.article_id,
+              months: [data.month], scope: ctx.filters.scope(), title: `${r.code ?? ""} ${r.title}`.trim(),
+              executorFirst: c.key === "executor", onChanged: () => load(),
+            }));
+          }
+          return td;
+        }),
         cell(values.itog, "itog"),
         cell(values.budget),
         cell(diff, diff === null || diff === undefined ? "" : Number(diff) > 0 ? "good" : Number(diff) < 0 ? "bad" : ""));
