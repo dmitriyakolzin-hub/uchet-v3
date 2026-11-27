@@ -15,3 +15,7 @@ export function articleIndex(articles) {
   const byKey = new Map(articles.filter((a) => a.system_key).map((a) => [a.system_key, a]));
   return { label, leaves, byKey };
 }
+
+// Методы планирования статьи (docs/TZ.md, раздел 31, «Детали 23.1»)
+export const PLAN_METHODS = { norm: "Нормативный", avg: "Средний", fact: "Фактический", calc: "Расчётный",
+  cfo: "Снизу ЦФО", executor: "Снизу ЦФУ", top: "Сверху ИТОГ" };

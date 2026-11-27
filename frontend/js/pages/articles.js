@@ -1,6 +1,6 @@
 // «Статьи ДДС и ОПиУ»: справочник организации деревом — коды, подстатьи (docs/TZ.md, раздел 19, «Детали 9.1»).
 import { api } from "../api.js";
-import { articleIndex } from "../articles.js";
+import { articleIndex, PLAN_METHODS } from "../articles.js";
 import { el, instruction, makeTable, openForm, toast } from "../ui.js";
 
 const ACTIVITIES = [["operating", "Операционная"], ["investing", "Инвестиционная"], ["financing", "Финансовая"]];
@@ -83,6 +83,8 @@ export async function renderArticles(view) {
   );
 
   const canEdit = () => org.permissions.includes("edit_reference");
+  // метод планирования (23.1) — финансовый директор и администратор
+  const canPlan = () => canEdit() || org.permissions.includes("supervise");
   const table = makeTable(tableBox, {
     dataTree: true, dataTreeStartExpanded: false, dataTreeChildIndent: 18,
     columns: [
@@ -106,6 +108,13 @@ export async function renderArticles(view) {
           const a = c.getRow().getData();
           return a.debit_account_id ? `Дт ${codeOf.get(a.debit_account_id)} — Кт ${codeOf.get(a.credit_account_id)}` : "";
         } },
+      { title: "Метод планирования", field: "plan_method", width: 190, headerSort: false,
+        formatter: (c) => {
+          const a = c.getRow().getData();
+          if (!a.plan_method) return `<span class="muted" title="Метод вышестоящей статьи">${PLAN_METHODS[a.effective_plan_method]} ↑</span>`;
+          return PLAN_METHODS[a.plan_method] + (a.plan_method === "avg" ? ` · ${a.plan_avg_months} мес.` : "");
+        },
+        cellClick: (_e, c) => canPlan() && editMethod(c.getRow().getData()) },
       { title: "", field: "_add", width: 110, hozAlign: "center", headerSort: false,
         formatter: (c) => (canEdit() && !c.getRow().getData().system_key && !c.getRow().getData().is_transfer ? "+ подстатья" : ""),
         cellClick: (_e, c) => {
@@ -138,6 +147,30 @@ export async function renderArticles(view) {
     addButton.hidden = importButton.hidden = !canEdit();
     items = await api.get(`/api/organizations/${org.id}/articles`);
     show();
+  }
+
+  function editMethod(article) {
+    openForm({
+      title: `Метод планирования: ${article.name}`,
+      fields: [
+        { name: "plan_method", label: "Метод", type: "select",
+          options: [["", `Как у вышестоящей (сейчас: ${PLAN_METHODS[article.effective_plan_method]})`],
+            ...Object.entries(PLAN_METHODS).map(([k, t], i) => [k, `${i + 1}. ${t}`])] },
+        { name: "plan_avg_months", label: "Средний — за сколько месяцев", type: "select",
+          options: [["1", "1 месяц"], ["3", "3 месяца"], ["6", "6 месяцев"], ["12", "12 месяцев"]] },
+      ],
+      values: { plan_method: article.plan_method ?? "", plan_avg_months: String(article.plan_avg_months ?? 6) },
+      extra: el("p", { class: "muted small" }, "Нормативный — оклады сотрудников с этой статьёй затрат; средний — среднее "
+        + "факта за период; фактический — регламентные операции и сумма в «Нормативах»; расчётный — процент от базового "
+        + "показателя в «Нормативах» (страница «Бюджеты»); снизу ЦФО / ЦФУ — вводят руководители; сверху ИТОГ — "
+        + "ставит финансовый директор. Подстатьи без своего метода берут метод этой статьи."),
+      submitText: "Сохранить",
+      onSubmit: async (v) => {
+        await api.put(`/api/articles/${article.id}/plan-method`, { plan_method: v.plan_method || null,
+          plan_avg_months: v.plan_method === "avg" ? Number(v.plan_avg_months) : null });
+        await load();
+      },
+    });
   }
 
   function edit(article, parent = null) {

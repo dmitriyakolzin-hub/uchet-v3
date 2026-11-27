@@ -42,6 +42,7 @@ from app.models.reference import (
     Unit,
     Warehouse,
 )
+from app.models.plan_norm import PlanNorm
 from app.models.report_form import ReportFormRow
 from app.models.user import User
 
@@ -49,6 +50,7 @@ __all__ = [
     "Account",
     "AccountAnalytic",
     "Article",
+    "PlanNorm",
     "AssetCategory",
     "AssetDisposal",
     "AssetDisposalItem",

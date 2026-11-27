@@ -1,9 +1,11 @@
 // «Бюджеты»: бюджеты на год / квартал / месяц и их версии (черновик → утверждена → архив).
 import { api } from "../api.js";
 import { openPlanGrid } from "../plangrid.js";
+import { renderNorms } from "./plannorms.js";
 import { el, instruction, openForm, toast } from "../ui.js";
 
 const ORG_KEY = "uchet3_org";
+const TAB_KEY = "uchet3_budgets_tab";
 const STATUS = { draft: "Черновик", approved: "Утверждена", archived: "Архив" };
 const QUARTERS = ["I", "II", "III", "IV"];
 const MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь",
@@ -43,14 +45,29 @@ export async function renderBudgets(view) {
   const yearSelect = el("select", { class: "inline-select", "aria-label": "Год" });
   const addButton = el("button", { type: "button", onclick: () => addBudget() }, "Новый бюджет");
   const list = el("div");
-
-  view.replaceChildren(
-    el("div", { class: "page-head" }, el("h1", {}, "Бюджеты"), el("label", { class: "inline" }, "Организация ", orgSelect)),
+  // вкладки (23.1): «Бюджеты и версии» и «Нормативы»
+  let tab = recall(TAB_KEY) === "norms" ? "norms" : "budgets";
+  const tabBar = el("div", { class: "tabs", role: "tablist" });
+  const budgetsBox = el("div", {},
     instruction("Бюджет — на год, квартал или месяц. Ежемесячный пересмотр — новая версия: копия утверждённой, "
       + "правки, утверждение; прежняя утверждённая уходит в архив и остаётся для сравнения."),
     el("div", { class: "filters" }, el("label", { class: "inline" }, "Год ", yearSelect), addButton),
-    list,
+    list);
+  const normsBox = el("div");
+
+  view.replaceChildren(
+    el("div", { class: "page-head" }, el("h1", {}, "Бюджеты"), el("label", { class: "inline" }, "Организация ", orgSelect)),
+    tabBar, budgetsBox, normsBox,
   );
+
+  function showTab() {
+    tabBar.replaceChildren(...[["budgets", "Бюджеты и версии"], ["norms", "Нормативы"]].map(([key, label]) =>
+      el("button", { type: "button", role: "tab", class: key === tab ? "tab active" : "tab",
+        onclick: () => { tab = key; remember(TAB_KEY, key); showTab(); } }, label)));
+    budgetsBox.hidden = tab !== "budgets";
+    normsBox.hidden = tab !== "norms";
+    if (tab === "norms") renderNorms(normsBox, org);
+  }
 
   const canManage = () => org.permissions.includes("supervise");
 
@@ -182,7 +199,9 @@ export async function renderBudgets(view) {
     org = orgs.find((o) => String(o.id) === orgSelect.value);
     remember(ORG_KEY, org.id);
     load();
+    showTab();
   });
   fillYears();
+  showTab();
   await load();
 }
