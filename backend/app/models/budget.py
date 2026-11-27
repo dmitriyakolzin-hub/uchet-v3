@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -164,6 +165,51 @@ class PlanChange(Base):
     new_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PlanItog(Base):
+    """«Сверху ИТОГ» — утверждённая цифра статьи на месяц (цель), docs/TZ.md, раздел 31, «Детали 23.4».
+    Ключ — версия, ЦФО отчёта (пусто — вся организация), статья без подстатей, месяц. manual — сумму поставил
+    финансовый директор (иначе — по методу на момент фиксации); fixed_* — когда план зафиксирован."""
+
+    __tablename__ = "plan_itogs"
+    __table_args__ = (
+        Index("uq_plan_itogs_cell", "version_id", "cfo_id", "article_id", "month", unique=True,
+              postgresql_nulls_not_distinct=True),
+        CheckConstraint("month BETWEEN 1 AND 12", name="month"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    version_id: Mapped[int] = mapped_column(ForeignKey("budget_versions.id", ondelete="CASCADE"), index=True)
+    cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="CASCADE"))
+    article_id: Mapped[int] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"))
+    month: Mapped[int] = mapped_column(SmallInteger)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    manual: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    fixed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    fixed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),
+                                                 onupdate=func.now())
+
+
+class PlanItogEvent(Base):
+    """История «Сверху ИТОГ»: правка суммы (edit), возврат к методу (reset), фиксация плана (fix)."""
+
+    __tablename__ = "plan_itog_events"
+    __table_args__ = (CheckConstraint("action IN ('edit', 'reset', 'fix')", name="action"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    version_id: Mapped[int] = mapped_column(ForeignKey("budget_versions.id", ondelete="CASCADE"), index=True)
+    cfo_id: Mapped[int | None] = mapped_column(ForeignKey("cfos.id", ondelete="CASCADE"))
+    article_id: Mapped[int | None] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"))
+    month: Mapped[int] = mapped_column(SmallInteger)
+    action: Mapped[str] = mapped_column(String(10))
+    old_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    new_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    details: Mapped[str] = mapped_column(String(500), default="", server_default="")
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 VOLUME_KINDS = {"sale": "Продажа", "discount": "На дисконт", "waste": "Утиль"}

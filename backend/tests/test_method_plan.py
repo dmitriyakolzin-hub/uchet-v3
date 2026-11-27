@@ -167,3 +167,61 @@ def test_executor_head_enters_own_plan(client, env, db, make_user, headers_for, 
     assert resp.status_code == 200, resp.text
     row = next(r for r in resp.json()["rows"] if r["code"] == "2.5")
     assert (row["values"]["executor"], row["plan_kind"]) == ("25000.00", "pl")
+
+
+def test_itog_and_fix(client, env, db):  # noqa: F811
+    """Шаг 23.4: ИТОГ вручную (финансовый директор), фиксация: методы 1–4 — в бюджет по ЦФО, ИТОГ — цель."""
+    setup(client, env, db)
+    version = env["version"]["id"]
+    art = env["art"]
+    url = f"{env['o']}/reports/method-plan"
+    params = {"date_from": "2027-03-01", "date_to": "2027-03-31", "month": "2027-03", "version_id": version}
+
+    def rows():
+        data = client.get(url, headers=env["h"], params=params).json()
+        return data, {r["code"]: r for r in data["rows"]}
+
+    body = {"month": "2027-03", "article_id": art["Связь и IT"], "amount": "15000"}
+    assert client.put(f"/api/budget-versions/{version}/itog", headers=env["ceo"], json=body).status_code == 403
+    assert client.put(f"/api/budget-versions/{version}/itog", headers=env["h"],
+                      json=body | {"article_id": art["Связь и IT"], "month": "2028-01"}).status_code == 422
+    assert client.put(f"/api/budget-versions/{version}/itog", headers=env["h"], json=body).status_code == 200
+    # ИТОГ оплаты труда вручную — расчётные взносы считаются от него
+    assert client.put(f"/api/budget-versions/{version}/itog", headers=env["h"], json={
+        "month": "2027-03", "article_id": art["Оплата труда — управленческий персонал"], "amount": "110000"}).status_code == 200
+    data, by = rows()
+    assert (by["2.6"]["values"]["itog"], by["2.6"]["itog_manual"], by["2.6"]["values"]["diff"]) == \
+        ("15000.00", True, "-15000.00")
+    assert (by["2.1"]["values"]["norm"], by["2.1"]["values"]["itog"]) == ("100000.00", "110000.00")
+    assert by["2.2"]["values"]["calc"] == "33220.00" and by["2.1"]["itog_article_id"] == art[
+        "Оплата труда — управленческий персонал"]
+    assert data["fixed_at"] is None and data["itog_scope"] is True
+
+    # фиксация: методы 1–4 записываются в бюджет на свои ЦФО (взносы — на единственный верхний ЦФО)
+    assert client.post(f"/api/budget-versions/{version}/itog/fix", headers=env["ceo"],
+                       json={"month": "2027-03"}).status_code == 403
+    resp = client.post(f"/api/budget-versions/{version}/itog/fix", headers=env["h"], json={"month": "2027-03"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["written"] >= 3
+    data, by = rows()
+    assert data["fixed_at"] is not None and data["fixed_by"]
+    assert (by["2.1"]["values"]["budget"], by["2.1"]["values"]["diff"]) == ("100000.00", "-10000.00")
+    assert (by["2.2"]["values"]["budget"], by["2.3"]["values"]["budget"]) == ("33220.00", "50000.00")
+    assert by["1.0"]["values"]["budget"] == "500000.00"  # снизу ЦФО — не трогается
+    cells = client.get(f"/api/budget-versions/{version}/cells", headers=env["h"], params={
+        "kind": "pl", "article_id": art["Страховые взносы с оплаты труда"], "month": "2027-03"}).json()["cells"]
+    assert [c["cfo_id"] for c in cells] == [env["company"]["id"]]
+    # повторная фиксация ничего не меняет; история
+    again = client.post(f"/api/budget-versions/{version}/itog/fix", headers=env["h"], json={"month": "2027-03"}).json()
+    assert (again["written"], again["cleared"]) == (0, 0)
+    events = client.get(f"/api/budget-versions/{version}/itog-events", headers=env["ceo"],
+                        params={"month": "2027-03"}).json()
+    assert [e["action"] for e in events][:2] == ["fix", "fix"] and events[-1]["action"] == "edit"
+    # вернуть ИТОГ к методу
+    client.put(f"/api/budget-versions/{version}/itog", headers=env["h"], json={
+        "month": "2027-03", "article_id": art["Связь и IT"], "amount": None})
+    _, by = rows()
+    assert by["2.6"]["values"]["itog"] == "0.00"
+    # с фильтром юрлица ИТОГ не показывается как сохранённый
+    data = client.get(url, headers=env["h"], params=params | {"legal_entity_id": env["le"].id}).json()
+    assert data["itog_scope"] is False
