@@ -116,3 +116,54 @@ def execute(db: Session, organization_id: int, year: int, month: int, user: User
                 error = f"Не проведена, осталась черновиком: {exc}"
         results.append(ExecResult(rule, op, error))
     return results
+
+
+# --- ЦФО и ЦФУ правила (docs/TZ.md, раздел 32, «Детали 24.1») ---
+
+
+def cfo_executor(rule: RoutineRule) -> tuple[set[int], set[int]]:
+    """ЦФО и ЦФУ, которые стоят в проводках образца."""
+    cfos, executors = set(), set()
+    for posting in (rule.template or {}).get("postings", []):
+        for side in ("debit", "credit"):
+            analytics = posting.get(side) or {}
+            if analytics.get("cfo"):
+                cfos.add(analytics["cfo"])
+            if analytics.get("executor"):
+                executors.add(analytics["executor"])
+    return cfos, executors
+
+
+def set_cfo_executor(db: Session, rule: RoutineRule, cfo_id: int | None, executor_id: int | None,
+                     change_cfo: bool, change_executor: bool) -> None:
+    """Поставить ЦФО и (или) ЦФУ во все стороны проводок образца, где на счёте ведётся ЦФО."""
+    from app.models import Account, Cfo, Executor
+
+    if change_cfo and cfo_id is not None:
+        cfo = db.get(Cfo, cfo_id)
+        if cfo is None or cfo.organization_id != rule.organization_id:
+            raise RoutineError("ЦФО не найден в этой организации")
+    if change_executor and executor_id is not None:
+        executor = db.get(Executor, executor_id)
+        if executor is None or executor.organization_id != rule.organization_id:
+            raise RoutineError("ЦФУ не найден в этой организации")
+    template = dict(rule.template or {})
+    postings, touched = [], False
+    for posting in template.get("postings", []):
+        posting = dict(posting)
+        for side in ("debit", "credit"):
+            account = db.get(Account, posting.get(f"{side}_account_id")) if posting.get(f"{side}_account_id") else None
+            if account is None or "cfo" not in [a.kind for a in account.analytics]:
+                continue
+            analytics = dict(posting.get(side) or {})
+            if change_cfo:
+                analytics["cfo"] = cfo_id
+            if change_executor:
+                analytics["executor"] = executor_id
+            posting[side] = analytics
+            touched = True
+        postings.append(posting)
+    if not touched and (change_cfo or change_executor):
+        raise RoutineError("В проводках этого правила ЦФО не ведётся — ЦФО и ЦФУ ставить некуда")
+    template["postings"] = postings
+    rule.template = template
