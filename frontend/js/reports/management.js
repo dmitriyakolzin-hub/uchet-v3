@@ -5,9 +5,10 @@ import { money } from "../format.js";
 import { el, makeTable, openForm, toast } from "../ui.js";
 import { tableNotes } from "../notes.js";
 import { openPlanCells } from "../plancells.js";
+import { methodPlan } from "./methodplan.js";
 import { compareBar, extraHtml, nestRows, openDrill, planArticle, TREE_OPTIONS } from "./common.js";
 
-const MODES = [["fact", "Факт"], ["plan", "План"], ["plan_fact", "План и факт"]];
+const MODES = [["fact", "Факт"], ["plan", "План"], ["methods", "План по методам"], ["plan_fact", "План и факт"]];
 const PARTS = { fact: [["fact", "Факт"]], plan: [["plan", "План"]], plan_fact: [["plan", "План"], ["fact", "Факт"], ["dev", "Откл."]] };
 
 function escape(text) {
@@ -22,7 +23,10 @@ export function managementReport({ box, ctx }) {
   const tableBox = el("div");
   // «Сравнить» и «Косты» — у факта (шаг 17.1); выручка — строка «Выручка со скидками» формы
   const bar = compareBar(() => load());
-  box.replaceChildren(modeTabs, hint, bar.node, tableBox);
+  // «План по методам» (шаг 23.2) — своя таблица на месяц
+  const methodBox = el("div", { hidden: true });
+  const methods = methodPlan({ box: methodBox, ctx });
+  box.replaceChildren(modeTabs, hint, bar.node, tableBox, methodBox);
   const params = () => ctx.filters.params({ mode, ...(mode === "fact" ? bar.params() : {}) });
   const canEdit = () => ctx.org().permissions.includes("edit_reference");
 
@@ -112,6 +116,14 @@ export function managementReport({ box, ctx }) {
   }
 
   async function load() {
+    const byMethods = mode === "methods";
+    methodBox.hidden = !byMethods;
+    hint.hidden = tableBox.hidden = byMethods;
+    if (byMethods) {
+      bar.node.hidden = true;
+      await methods.load();
+      return;
+    }
     bar.node.hidden = mode !== "fact";
     data = await api.get(`/api/organizations/${ctx.org().id}/reports/management?${params()}`);
     if (!data.form_loaded) {
@@ -173,7 +185,7 @@ export function managementReport({ box, ctx }) {
         : part === "dev" ? "plan_fact" : mode;
       renderTabs();
     },
-    excel: () => api.download(`/api/organizations/${ctx.org().id}/reports/management.xlsx?${params()}`,
-      `management_${ctx.filters.dateFrom()}_${ctx.filters.dateTo()}.xlsx`),
+    excel: () => (mode === "methods" ? methods.excel() : api.download(`/api/organizations/${ctx.org().id}/reports/management.xlsx?${params()}`,
+      `management_${ctx.filters.dateFrom()}_${ctx.filters.dateTo()}.xlsx`)),
   };
 }

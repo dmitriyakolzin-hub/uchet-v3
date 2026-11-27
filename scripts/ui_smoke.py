@@ -962,6 +962,16 @@ with sync_playwright() as p:
     d.locator("button", has_text="Закрыть").click()
     rent.locator(".tabulator-cell[tabulator-field='2027-01|fact']").click()  # факт — ноль, расшифровки нет
     expect(page.locator("dialog[open]")).to_have_count(0)
+    # «План по методам» (шаг 23.2): месяц и версия, колонки методов, ИТОГ, бюджет
+    page.click("button.tab:has-text('Управленческий')")
+    page.click("button.tab:has-text('План по методам')")
+    page.fill("input[aria-label='Месяц плана']", "2027-01")
+    page.locator("input[aria-label='Месяц плана']").dispatch_event("change")
+    expect(page.locator("select[aria-label='Версия бюджета'] option:checked")).to_contain_text("Бюджет 2027")
+    plan_table = page.locator("table.method-plan")
+    expect(plan_table.locator("th", has_text="7. Сверху ИТОГ")).to_be_visible()
+    expect(plan_table.locator("tr", has_text="Дератизация")).to_contain_text("Снизу ЦФО")
+    page.screenshot(path=f"{OUT}/29a_method_plan.png", full_page=True)
     page.click("button.tab:has-text('Инвестиции')")
     expect(page.locator(".tabulator-row", has_text="Новый магазин")).to_contain_text("100 000,00")
     page.screenshot(path=f"{OUT}/29b_investments.png", full_page=True)

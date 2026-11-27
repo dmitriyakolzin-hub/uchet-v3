@@ -29,10 +29,11 @@ from app.models import (
 from app.models.journal import ANALYTIC_COLUMNS
 from app.services import report_xlsx as xlsx
 from app.core.money import round_money
-from app.services import management_report, report_compare, reports
+from app.services import management_report, method_plan, report_compare, reports
 from app.services.articles import subtree_ids
 from app.services.excel_import import XLSX_TYPE
 from app.services.reports import ReportFilter
+from app.models.article import PLAN_METHODS as PLAN_METHOD_TITLES
 
 router = APIRouter(prefix="/api/organizations/{organization_id}/reports", tags=["Отчёты"])
 
@@ -810,3 +811,69 @@ def get_management_xlsx(f: Filter, db: DbSession, mode: Literal["fact", "plan", 
     subtitle = _subtitle(db, f) + (f"; сравнение {data.compare_title}" if data.compare else "")
     content = xlsx.build("Управленческий отчёт", subtitle, columns, rows)
     return _xlsx(content, f"management_{f.date_from:%Y-%m-%d}_{f.date_to:%Y-%m-%d}.xlsx")
+
+
+# --- План по методам на месяц (docs/TZ.md, раздел 31, «Детали 23.2») ---
+
+METHOD_COLUMNS = [("norm", "1. Нормативный"), ("avg", "2. Средний"), ("fact", "3. Фактический"),
+                  ("calc", "4. Расчётный"), ("cfo", "5. Снизу ЦФО"), ("executor", "6. Снизу ЦФУ"),
+                  ("itog", "7. Сверху ИТОГ"), ("budget", "Бюджет"), ("diff", "Бюджет − ИТОГ")]
+
+
+class MethodRowOut(BaseModel):
+    key: str
+    id: int
+    code: str | None
+    title: str
+    kind: str
+    level: int
+    parent: str | None
+    article_id: int | None
+    method: str | None
+    note: str
+    error: str
+    values: dict[str, Decimal | None]
+
+
+class MethodPlanOut(BaseModel):
+    form_loaded: bool
+    month: str
+    version_id: int
+    columns: list[dict[str, str]]
+    rows: list[MethodRowOut]
+
+
+def _method_plan(db: Session, f: ReportFilter, month: str, version_id: int) -> MethodPlanOut:
+    try:
+        first = dt.date.fromisoformat(f"{month}-01")
+    except ValueError:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Месяц — в виде ГГГГ-ММ") from None
+    _check_version(db, f.organization_id, version_id)
+    if not reports.version_plan_months(db, version_id, [month]):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Этот месяц не входит в бюджет выбранной версии")
+    results = method_plan.build(db, f, version_id, first)
+    rows = [MethodRowOut(key=f"row:{r.row.id}", id=r.row.id, code=r.row.code, title=r.row.name, kind=r.row.kind,
+                         level=r.level, parent=r.parent, article_id=r.row.article_id, method=r.method, note=r.note,
+                         error=r.error, values=r.values) for r in results]
+    return MethodPlanOut(form_loaded=bool(results), month=month, version_id=version_id,
+                         columns=[{"key": k, "title": t} for k, t in METHOD_COLUMNS], rows=rows)
+
+
+@router.get("/method-plan", response_model=MethodPlanOut)
+def get_method_plan(f: Filter, db: DbSession, month: str, version_id: int):
+    """Строки управленческой формы за месяц: колонки методов, ИТОГ, бюджет версии и отклонение. Период фильтра
+    не используется — месяц задаётся отдельно."""
+    return _method_plan(db, f, month, version_id)
+
+
+@router.get("/method-plan.xlsx")
+def get_method_plan_xlsx(f: Filter, db: DbSession, month: str, version_id: int):
+    data = _method_plan(db, f, month, version_id)
+    columns = [xlsx.XlsxColumn("Код", 12), xlsx.XlsxColumn("Строка", 50), xlsx.XlsxColumn("Метод", 16)]
+    columns += [xlsx.XlsxColumn(c["title"], 15, True) for c in data.columns]
+    rows = []
+    for r in data.rows:
+        rows.append((r.level, [r.code, r.title, PLAN_METHOD_TITLES.get(r.method or "", "")]
+                     + [r.values.get(c["key"]) for c in data.columns], r.kind in ("header", "indicator")))
+    content = xlsx.build(f"План по методам: {month}", _subtitle(db, f), columns, rows)
+    return _xlsx(content, f"method_plan_{month}.xlsx")
