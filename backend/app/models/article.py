@@ -11,6 +11,18 @@ CASH_FLOW_ACTIVITIES = {
     "financing": "Финансовая",
 }
 CASH_FLOW_DIRECTIONS = {"inflow": "Поступление", "outflow": "Выплата"}
+# Метод планирования статьи (docs/TZ.md, раздел 31, «Детали 23.1»); у статьи без метода — метод ближайшей
+# вышестоящей статьи, у верхней без метода — «Снизу ЦФО» (ввод в сетке бюджета, как было)
+PLAN_METHODS = {
+    "norm": "Нормативный",
+    "avg": "Средний",
+    "fact": "Фактический",
+    "calc": "Расчётный",
+    "cfo": "Снизу ЦФО",
+    "executor": "Снизу ЦФУ",
+    "top": "Сверху ИТОГ",
+}
+AVG_MONTHS = (1, 3, 6, 12)
 PL_SECTIONS = {
     "revenue": "Выручка",
     "internal": "Внутренние обороты",  # бюджет ЦФО: передачи между направлениями (docs/TZ.md, раздел 29)
@@ -45,6 +57,9 @@ class Article(Base):
             "'other_expense', 'income_tax')",
             name="pl_section",
         ),
+        CheckConstraint("plan_method IN ('norm', 'avg', 'fact', 'calc', 'cfo', 'executor', 'top')",
+                        name="plan_method"),
+        CheckConstraint("plan_avg_months IN (1, 3, 6, 12)", name="plan_avg_months"),
         Index("uq_articles_sibling_name", "organization_id", "parent_id", "name", unique=True,
               postgresql_nulls_not_distinct=True),
         Index("uq_articles_organization_code", "organization_id", "code", unique=True,
@@ -72,6 +87,8 @@ class Article(Base):
     # Перевод между своими счетами: в отчёте ДДС поступление и выплата по ней взаимно гасятся
     is_transfer: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    plan_method: Mapped[str | None] = mapped_column(String(10))  # PLAN_METHODS; None — как у вышестоящей
+    plan_avg_months: Mapped[int | None] = mapped_column(Integer)  # для «Среднего»: 1, 3, 6 или 12 месяцев
 
 
 def seed_articles(connection, organization_id: int) -> None:

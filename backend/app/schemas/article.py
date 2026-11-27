@@ -6,6 +6,7 @@ Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max
 Code = Annotated[str, StringConstraints(strip_whitespace=True, max_length=30)]
 Activity = Literal["operating", "investing", "financing"]
 Direction = Literal["inflow", "outflow"]
+PlanMethod = Literal["norm", "avg", "fact", "calc", "cfo", "executor", "top"]
 Section = Literal["revenue", "internal", "cost", "selling", "admin", "other_income", "other_expense", "income_tax"]
 
 
@@ -25,10 +26,17 @@ class ArticleIn(BaseModel):
     credit_account_id: int | None = None
     is_transfer: bool = False
     is_active: bool = True
+    # метод планирования (23.1): меняется, только если поле передано
+    plan_method: PlanMethod | None = None
+    plan_avg_months: Literal[1, 3, 6, 12] | None = None
 
     @model_validator(mode="after")
     def _consistent(self):
         self.code = self.code or None
+        if self.plan_method != "avg":
+            self.plan_avg_months = None
+        elif self.plan_avg_months is None:
+            self.plan_avg_months = 6
         if self.parent_id is not None:
             return self  # признаки подстатьи берутся от родителя
         if not (self.is_cash_flow or self.is_pl):
@@ -65,3 +73,5 @@ class ArticleOut(BaseModel):
     credit_account_id: int | None
     is_transfer: bool
     is_active: bool
+    plan_method: PlanMethod | None
+    plan_avg_months: int | None

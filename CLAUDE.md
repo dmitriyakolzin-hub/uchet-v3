@@ -970,3 +970,12 @@
   приёмок — 422; в `status-options` маршрут считается и откатывается). Событие `status` с «было → стало» и причиной.
   Интерфейс: `js/manualstatus.js: openManualStatus` (поля по выбранному статусу, подсказки), пункт «Сменить статус
   вручную…» в заявках на оплату и на имущество, кнопка в карточке заявки календаря. Тестов 428, ui_smoke дополнен.
+- 2026-11-27 — 22.7 влита (PR 97). Этап 23 «Методы планирования» согласован по макету — `docs/TZ.md`, раздел 31
+  (23.1 метод и нормативы, 23.2 «План по методам» в «Управленческом», 23.3 ввод снизу ЦФО/ЦФУ, 23.4 «Сверху ИТОГ»).
+  Шаг 23.1 (ветка `etap-23-1-plan-methods`), «Детали 23.1». Миграция 0067: `articles.plan_method`, `plan_avg_months`,
+  `plan_norms` (calc: база — статья или код строки формы + процент; fact: сумма; ЦФО, `valid_from` — 1-е число).
+  `app/services/plan_norms.py`: `effective_methods` (наследование, по умолчанию «cfo»), `validate`, `norms_on` (действующие
+  на месяц). API: `PUT /articles/{id}/plan-method` (EDIT_REFERENCE или SUPERVISE; PUT статьи меняет метод, только если поле
+  передано), `ArticleTreeOut.effective_plan_method`, `app/api/plan_norms.py` (SUPERVISE), `GET .../report-form-rows`.
+  Интерфейс: колонка «Метод планирования» в статьях, `js/articles.js: PLAN_METHODS`, вкладка «Нормативы» в «Бюджетах»
+  (`js/pages/plannorms.js`). Тестов 431, ui_smoke дополнен.
