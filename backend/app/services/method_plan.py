@@ -340,7 +340,10 @@ def compute(db: Session, f: ReportFilter, version_id: int, month: dt.date, today
             title = norm.base_form_code
         leaf.value = _round(base * norm.percent / 100)
         leaf.by_cfo = {None: leaf.value}
-        leaf.note = f"{format(norm.percent.normalize(), 'f').replace('.', ',')} % от {title}"
+        base_text = f"{base:,.2f}".replace(",", " ").replace(".", ",")
+        leaf.note = f"{format(norm.percent.normalize(), 'f').replace('.', ',')} % от {title} (база {base_text})"
+        if not base:
+            leaf.note += " — база пустая: нет плана по базовому показателю в этом месяце и версии"
         return leaf.itog
 
     for article_id, leaf in leaves.items():

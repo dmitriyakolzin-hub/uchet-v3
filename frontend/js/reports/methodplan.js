@@ -113,8 +113,9 @@ export function methodPlan({ box, ctx }) {
     box.showModal();
   }
 
+  // своя колонка метода показывает и ноль (видно, что посчитано и вышло 0), остальные — пусто (шаг 24.3)
   const cell = (value, cls = "") => el("td", { class: `num ${cls}`.trim() },
-    value === null || value === undefined ? "·" : Number(value) === 0 ? "" : money(value));
+    value === null || value === undefined ? "·" : Number(value) === 0 && !cls.includes("own-method") ? "" : money(value));
 
   function render() {
     fixButton.hidden = !itogEditable();
