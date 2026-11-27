@@ -2,7 +2,8 @@
 страницы «Бюджеты».
 
 - «Расчётный» (kind calc): процент от базового показателя — статьи или строки управленческой формы (по коду);
-- «Фактический» (kind fact): сумма в месяц вручную — прибавляется к регламентным операциям.
+- «Фактический» (kind fact): сумма в месяц вручную — прибавляется к регламентным операциям;
+- «Нормативный» (kind norm): сумма в месяц — прибавляется к окладам сотрудников (docs/TZ.md, раздел 32, «Детали 24.2»).
 Норматив действует с месяца `valid_from` до следующего норматива той же статьи, вида и ЦФО; ЦФО пусто — для всех.
 """
 
@@ -14,16 +15,16 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
-NORM_KINDS = {"calc": "Расчётный", "fact": "Фактический"}
+NORM_KINDS = {"calc": "Расчётный", "fact": "Фактический", "norm": "Нормативный"}
 
 
 class PlanNorm(Base):
     __tablename__ = "plan_norms"
     __table_args__ = (
-        CheckConstraint("kind IN ('calc', 'fact')", name="kind"),
+        CheckConstraint("kind IN ('calc', 'fact', 'norm')", name="kind"),
         CheckConstraint("kind <> 'calc' OR (percent IS NOT NULL AND "
                         "(base_article_id IS NOT NULL OR base_form_code IS NOT NULL))", name="calc_fields"),
-        CheckConstraint("kind <> 'fact' OR amount IS NOT NULL", name="fact_fields"),
+        CheckConstraint("kind NOT IN ('fact', 'norm') OR amount IS NOT NULL", name="fact_fields"),
         CheckConstraint("EXTRACT(DAY FROM valid_from) = 1", name="valid_from_month"),
         Index("uq_plan_norms_article_kind_cfo_month", "article_id", "kind", "cfo_id", "valid_from", unique=True,
               postgresql_nulls_not_distinct=True),

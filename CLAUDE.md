@@ -1010,3 +1010,8 @@
   (ширина колонок обычных таблиц, localStorage `colwidths:*`); «Управленческий» — `maxHeight` у Tabulator (шапка на месте),
   пояснения в `instruction()`, предупреждения отдельно; «План по методам» — `.method-plan-scroll` (sticky шапка и первая
   колонка). Тестов 436, ui_smoke дополнен.
+- 2026-11-27 — 24.1 влита (PR 102). Шаг 24.2 (ветка `etap-24-2-norm-breakdown`), `docs/TZ.md`, раздел 32 «Детали 24.2».
+  Миграция 0069: `plan_norms.kind` — и `norm` (сумма в месяц к окладам). `method_plan._norm_values` прибавляет `norms_on(norm)`
+  по ЦФО; `RowResult.breakdown` ((метод, ЦФО) → сумма) → `MethodRowOut.breakdown` ({метод: [{cfo, amount}]}). Интерфейс:
+  подсказка «ЦФО: сумма» на ячейках методов (`.has-breakdown`), раздел «Нормативный» и предупреждение о несовпадении
+  метода в `plannorms.js`. Тестов 437.

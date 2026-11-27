@@ -77,6 +77,7 @@ class RowResult:
     plan_kind: str | None = None  # pl / cf — для окна плановых операций (ввод «снизу», 23.3)
     itog_article_id: int | None = None  # ИТОГ строки можно править (строка — одна статья без подстатей)
     itog_manual: bool = False  # ИТОГ поставлен вручную
+    breakdown: dict = field(default_factory=dict)  # значение метода по ЦФО (подсказка при наведении, 24.2)
 
 
 def _month_bounds(month: dt.date) -> tuple[dt.date, dt.date]:
@@ -145,16 +146,28 @@ def _norm_values(db: Session, f: ReportFilter, leaves: dict[int, Leaf], branch: 
     if branch is not None:
         employees = [e for e in employees if e.cfo_id in branch]
     salaries = {e.id: salary_on(db, e.id, end) or ZERO for e in employees}
+    # суммы «Нормативный» из «Нормативов» — к окладам (24.2); с фильтром ЦФО — только ЦФО ветки
+    manual: dict[int, dict] = {}
+    if f.executor_ids is None:
+        for norm in norms_on(db, f.organization_id, "norm", start):
+            if branch is None or norm.cfo_id in branch:
+                bucket = manual.setdefault(norm.article_id, {})
+                bucket[norm.cfo_id] = bucket.get(norm.cfo_id, ZERO) + norm.amount
     for leaf in targets:
         if leaf.article.is_pl:
             chosen = [e for e in employees if e.pl_item_id == leaf.article.id]
-            leaf.note = f"оклады: {len(chosen)} сотр."
+            parts = [f"оклады: {len(chosen)} сотр."]
         else:
             chosen = employees
-            leaf.note = f"оклады всех сотрудников: {len(chosen)}"
+            parts = [f"оклады всех сотрудников: {len(chosen)}"]
         for e in chosen:
             leaf.by_cfo[e.cfo_id] = leaf.by_cfo.get(e.cfo_id, ZERO) + salaries[e.id]
-        leaf.value = sum((salaries[e.id] for e in chosen), ZERO)
+        for cfo, amount in manual.get(leaf.article.id, {}).items():
+            leaf.by_cfo[cfo] = leaf.by_cfo.get(cfo, ZERO) + amount
+        if manual.get(leaf.article.id):
+            parts.append("норматив")
+        leaf.note = " + ".join(parts)
+        leaf.value = sum(leaf.by_cfo.values(), ZERO)
 
 
 def _avg_values(db: Session, f: ReportFilter, leaves: dict[int, Leaf], month: dt.date, today: dt.date) -> None:
@@ -380,6 +393,11 @@ def build(db: Session, f: ReportFilter, version_id: int, month: dt.date, today: 
                     if group[0].article.id == row.article_id:
                         result.itog_article_id = row.article_id
                 result.itog_manual = any(x.stored is not None and x.stored.manual for x in group)
+                for leaf in group:
+                    if leaf.method in ("norm", "avg", "fact", "calc"):
+                        for cfo, amount in leaf.by_cfo.items():
+                            key = (leaf.method, cfo)
+                            result.breakdown[key] = result.breakdown.get(key, ZERO) + sign * amount
                 by_article[row.article_id] = result
         results.append(result)
         if row.code:

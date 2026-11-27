@@ -6,7 +6,7 @@ import { articleIndex, PLAN_METHODS } from "../articles.js";
 import { money, parseNumber } from "../format.js";
 import { el, instruction, openForm, toast } from "../ui.js";
 
-const KINDS = { calc: "Расчётный", fact: "Фактический" };
+const KINDS = { calc: "Расчётный", fact: "Фактический", norm: "Нормативный" };
 const MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь",
   "ноябрь", "декабрь"];
 const monthTitle = (iso) => `${MONTHS[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}`;
@@ -68,7 +68,9 @@ export async function renderNorms(box, org) {
       },
       extra: el("p", { class: "muted small" }, k === "calc"
         ? "План статьи = процент × итог базового показателя в плане этого же месяца."
-        : "Сумма прибавляется к регламентным операциям по этой статье. ЦФО не выбран — сумма на всю организацию."),
+        : k === "norm"
+          ? "Сумма прибавляется к окладам сотрудников, у которых эта статья — статья затрат. Метод статьи должен быть «Нормативный»."
+          : "Сумма прибавляется к регламентным операциям по этой статье. ЦФО не выбран — сумма на всю организацию."),
       submitText: "Сохранить",
       onSubmit: async (v) => {
         const body = { article_id: Number(v.article_id), kind: k, cfo_id: v.cfo_id ? Number(v.cfo_id) : null,
@@ -109,7 +111,9 @@ export async function renderNorms(box, org) {
         el("thead", {}, el("tr", {}, ...head.map((t) => el("th", {}, t)))),
         el("tbody", {}, ...rows.map((n) => el("tr", {},
           el("td", {}, n.article_name),
-          el("td", {}, methodOf(n.article_id)),
+          el("td", {}, methodOf(n.article_id),
+            byId.get(n.article_id)?.effective_plan_method !== n.kind
+              ? el("div", { class: "over-budget small" }, `⚠ норматив не используется: метод статьи не «${KINDS[n.kind]}»`) : ""),
           el("td", {}, n.base_title),
           el("td", { class: "num" }, n.percent !== null ? `${String(Number(n.percent)).replace(".", ",")} %` : ""),
           el("td", { class: "num" }, n.amount !== null ? money(n.amount) : ""),
@@ -125,9 +129,10 @@ export async function renderNorms(box, org) {
   box.replaceChildren(
     instruction("Нормативы задаёт финансовый директор. «Расчётный»: план статьи = процент от базового показателя "
       + "(статьи или строки управленческой формы) в плане того же месяца. «Фактический»: регламентные операции по статье "
-      + "плюс сумма в месяц отсюда. Норматив действует с выбранного месяца до следующего норматива этой статьи и ЦФО. "
+      + "плюс сумма в месяц отсюда. «Нормативный»: оклады сотрудников со статьёй затрат плюс сумма в месяц отсюда. Норматив действует с выбранного месяца до следующего норматива этой статьи и ЦФО. "
       + "Метод статьи выбирается в справочнике «Статьи ДДС и ОПиУ»."),
     section("calc", "Расчётный: процент от базового показателя"),
     section("fact", "Фактический: сумма вручную"),
+    section("norm", "Нормативный: сумма в месяц (к окладам)"),
   );
 }

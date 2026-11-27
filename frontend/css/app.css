@@ -454,3 +454,4 @@ table.asset-requests tbody tr { cursor: pointer; }
 .col-resize { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; user-select: none; }
 .col-resize:hover { background: var(--accent-soft, #e8eef8); }
 .method-plan td { overflow: hidden; text-overflow: ellipsis; }
+.method-plan td.has-breakdown { text-decoration: underline dotted; cursor: help; }
