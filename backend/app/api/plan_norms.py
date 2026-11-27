@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api", tags=["Бюджет"])
 
 class NormIn(BaseModel):
     article_id: int
-    kind: Literal["calc", "fact"]
+    kind: Literal["calc", "fact", "norm"]
     cfo_id: int | None = None
     valid_from: dt.date
     base_article_id: int | None = None

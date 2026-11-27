@@ -153,6 +153,12 @@ export function methodPlan({ box, ctx }) {
           r.note ? el("span", { class: "muted small" }, ` ${r.note}`) : ""),
         ...methodCols.map((c) => {
           const td = cell(values[c.key], values[c.key] !== null && values[c.key] !== undefined ? "own-method" : "");
+          // по каким ЦФО сложилась сумма (нормативный, средний, фактический, расчётный) — при наведении (24.2)
+          const parts = r.breakdown?.[c.key];
+          if (parts?.length) {
+            td.classList.add("has-breakdown");
+            td.title = parts.map((p) => `${p.cfo}: ${money(p.amount)}`).join("\n");
+          }
           // «Снизу ЦФО» / «Снизу ЦФУ» — ввод плановых операций прямо отсюда (23.3)
           if (["cfo", "executor"].includes(c.key) && r.kind === "article" && r.article_id && r.plan_kind) {
             td.classList.add("input-cell");

@@ -225,3 +225,24 @@ def test_itog_and_fix(client, env, db):  # noqa: F811
     # с фильтром юрлица ИТОГ не показывается как сохранённый
     data = client.get(url, headers=env["h"], params=params | {"legal_entity_id": env["le"].id}).json()
     assert data["itog_scope"] is False
+
+
+def test_norm_amount_and_breakdown(client, env, db):  # noqa: F811
+    """Шаг 24.2: сумма «Нормативный» из «Нормативов» прибавляется к окладам; у значений методов — расшифровка по ЦФО."""
+    setup(client, env, db)
+    wages = env["art"]["Оплата труда — управленческий персонал"]
+    resp = client.post(f"{env['o']}/plan-norms", headers=env["h"], json={
+        "article_id": wages, "kind": "norm", "valid_from": "2027-01-01", "amount": "20000",
+        "cfo_id": env["logistics"]["id"]})
+    assert resp.status_code == 201, resp.text
+    assert client.post(f"{env['o']}/plan-norms", headers=env["h"], json={
+        "article_id": wages, "kind": "norm", "valid_from": "2027-02-01"}).status_code == 422  # без суммы
+    data = client.get(f"{env['o']}/reports/method-plan", headers=env["h"], params={
+        "date_from": "2027-03-01", "date_to": "2027-03-31", "month": "2027-03",
+        "version_id": env["version"]["id"]}).json()
+    by = {r["code"]: r for r in data["rows"]}
+    assert by["2.1"]["values"]["norm"] == "120000.00" and "норматив" in by["2.1"]["note"]
+    assert by["2.1"]["breakdown"]["norm"] == [{"cfo": "Магазин 1", "amount": "100000.00"},
+                                              {"cfo": "Логистика", "amount": "20000.00"}]
+    assert [x["cfo"] for x in by["2.3"]["breakdown"]["fact"]] == ["Магазин 1"]
+    assert by["2.2"]["breakdown"]["calc"] == [{"cfo": "без ЦФО", "amount": "36240.00"}]  # 30,2 % от 120 000

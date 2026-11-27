@@ -835,6 +835,8 @@ class MethodRowOut(BaseModel):
     plan_kind: str | None = None
     itog_article_id: int | None = None  # ИТОГ строки правится (одна статья без подстатей)
     itog_manual: bool = False
+    # значение метода по ЦФО: {метод: [{cfo, amount}]} — подсказка при наведении (24.2)
+    breakdown: dict[str, list[dict]] = {}
     note: str
     error: str
     values: dict[str, Decimal | None]
@@ -861,9 +863,20 @@ def _method_plan(db: Session, f: ReportFilter, month: str, version_id: int) -> M
     if not reports.version_plan_months(db, version_id, [month]):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Этот месяц не входит в бюджет выбранной версии")
     results = method_plan.build(db, f, version_id, first)
+    cfo_names = dict(db.execute(select(Cfo.id, Cfo.name).where(Cfo.organization_id == f.organization_id)).all())
+
+    def breakdown(r) -> dict[str, list[dict]]:
+        out: dict[str, list[dict]] = {}
+        for (method, cfo), amount in sorted(r.breakdown.items(), key=lambda x: -abs(x[1])):
+            if amount:
+                out.setdefault(method, []).append({"cfo": cfo_names.get(cfo, "без ЦФО") if cfo else "без ЦФО",
+                                                   "amount": amount})
+        return out
+
     rows = [MethodRowOut(key=f"row:{r.row.id}", id=r.row.id, code=r.row.code, title=r.row.name, kind=r.row.kind,
                          level=r.level, parent=r.parent, article_id=r.row.article_id, method=r.method,
                          plan_kind=r.plan_kind, itog_article_id=r.itog_article_id, itog_manual=r.itog_manual,
+                         breakdown=breakdown(r),
                          note=r.note,
                          error=r.error, values=r.values) for r in results]
     out = MethodPlanOut(form_loaded=bool(results), month=month, version_id=version_id,
