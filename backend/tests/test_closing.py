@@ -238,3 +238,35 @@ def test_access(client, env):
     assert client.get(f"{env['o']}/closing", headers=env["other"],
                       params={"year": 2026, "month": 1}).status_code == 404
     assert client.get(f"{env['o']}/routines", headers=env["other"]).status_code == 404
+
+
+def test_routine_cfo_executor(client, env, db):
+    """Шаг 24.1: ЦФО и ЦФУ правила регламентной операции — видны в списке и меняются во всех проводках образца."""
+    from app.models import RoutineRule
+
+    source = operation(client, env, "2026-01-10")
+    rule = client.post(f"/api/operations/{source['id']}/routine", headers=env["h"],
+                       json={"name": "Аренда", "day": 10, "valid_from": "2026-02-01"}).json()
+    assert (rule["cfo_id"], rule["cfo_name"], rule["executor_id"]) == (env["office"]["id"], "Офис", None)
+    shop = env["post"]("cfos", {"name": "Склад"})
+    executor = env["post"]("executors", {"name": "Хозотдел"})
+    resp = client.patch(f"/api/routines/{rule['id']}", headers=env["h"],
+                        json={"cfo_id": shop["id"], "executor_id": executor["id"]})
+    assert resp.status_code == 200, resp.text
+    assert (resp.json()["cfo_name"], resp.json()["executor_name"], resp.json()["name"]) == ("Склад", "Хозотдел", "Аренда")
+    posting = db.get(RoutineRule, rule["id"]).template["postings"][0]
+    assert (posting["debit"]["cfo"], posting["debit"]["executor"]) == (shop["id"], executor["id"])
+    assert not (posting["credit"] or {}).get("cfo")  # на 60.01 ЦФО не ведётся
+    # изменили только название — ЦФО остался
+    assert client.patch(f"/api/routines/{rule['id']}", headers=env["h"], json={"name": "Аренда склада"}) \
+        .json()["cfo_name"] == "Склад"
+    # убрать ЦФУ
+    assert client.patch(f"/api/routines/{rule['id']}", headers=env["h"], json={"executor_id": None}) \
+        .json()["executor_id"] is None
+    other = client.post(f"/api/organizations/{env['org'].id}/cfos", headers=env["h"], json={"name": "X"}).json()
+    assert client.patch(f"/api/routines/{rule['id']}", headers=env["other"], json={"cfo_id": other["id"]}) \
+        .status_code == 404
+    # выполненная операция берёт новый ЦФО
+    [row] = client.post(f"{env['o']}/routine-runs", headers=env["h"], json={"year": 2026, "month": 2}).json()
+    op = client.get(f"/api/operations/{row['operation_id']}", headers=env["h"]).json()
+    assert op["postings"][0]["debit"]["cfo"] == shop["id"]

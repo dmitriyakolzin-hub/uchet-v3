@@ -166,7 +166,11 @@ export async function renderClosing(view) {
     );
   }
 
+  let cfos = [];
+  let executors = [];
   function editRule(rule) {
+    const byName = (a, b) => a.name.localeCompare(b.name, "ru");
+    const several = rule.cfo_name === "несколько";
     openForm({
       title: `Регламентная операция: ${rule.name}`,
       fields: [
@@ -174,14 +178,24 @@ export async function renderClosing(view) {
         { name: "day", label: "Число месяца", type: "number", required: true },
         { name: "valid_from", label: "Первый месяц", type: "month", required: true },
         { name: "valid_to", label: "Последний месяц (пусто — бессрочно)", type: "month" },
+        { name: "cfo_id", label: "ЦФО", type: "select", options: [
+          ...(several ? [["keep", "— как в образце (несколько) —"]] : []), ["", "— без ЦФО —"],
+          ...cfos.filter((c) => c.is_active || c.id === rule.cfo_id).sort(byName).map((c) => [String(c.id), c.name])] },
+        { name: "executor_id", label: "ЦФУ", type: "select", options: [["", "— без ЦФУ —"],
+          ...executors.filter((e) => e.is_active || e.id === rule.executor_id).sort(byName).map((e) => [String(e.id), e.name])] },
         { name: "post", label: "Проводить сразу", type: "checkbox" },
         { name: "is_active", label: "Действует", type: "checkbox" },
       ],
-      values: { ...rule, valid_from: rule.valid_from.slice(0, 7), valid_to: rule.valid_to ? rule.valid_to.slice(0, 7) : "" },
+      values: { ...rule, valid_from: rule.valid_from.slice(0, 7), valid_to: rule.valid_to ? rule.valid_to.slice(0, 7) : "",
+        cfo_id: several ? "keep" : String(rule.cfo_id ?? ""), executor_id: String(rule.executor_id ?? "") },
+      extra: el("p", { class: "muted small" }, "ЦФО и ЦФУ ставятся во все проводки образца, где на счёте ведётся ЦФО."),
       onSubmit: async (v) => {
-        await api.patch(`/api/routines/${rule.id}`, {
+        const body = {
           name: v.name, day: Number(v.day), valid_from: `${v.valid_from}-01`,
-          valid_to: v.valid_to ? `${v.valid_to}-01` : null, post: v.post, is_active: v.is_active });
+          valid_to: v.valid_to ? `${v.valid_to}-01` : null, post: v.post, is_active: v.is_active };
+        if (v.cfo_id !== "keep" && v.cfo_id !== String(rule.cfo_id ?? "")) body.cfo_id = v.cfo_id ? Number(v.cfo_id) : null;
+        if (v.executor_id !== String(rule.executor_id ?? "")) body.executor_id = v.executor_id ? Number(v.executor_id) : null;
+        await api.patch(`/api/routines/${rule.id}`, body);
         toast("Сохранено");
         await load();
       },
@@ -196,9 +210,10 @@ export async function renderClosing(view) {
         + "«Сделать регламентной». Чтобы изменить суммы или проводки — сделайте правило из исправленной операции, а старое снимите с «действует»."),
       rules.length
         ? el("table", { class: "recon versions assets" },
-          el("thead", {}, el("tr", {}, ...["Название", "Юрлицо", "Число", "Действует", "Сумма", "Проводить", ""].map((t) => el("th", {}, t)))),
+          el("thead", {}, el("tr", {}, ...["Название", "Юрлицо", "ЦФО", "ЦФУ", "Число", "Действует", "Сумма", "Проводить", ""].map((t) => el("th", {}, t)))),
           el("tbody", {}, ...rules.map((r) => el("tr", { class: r.is_active ? "" : "muted" },
-            el("td", {}, r.name), el("td", {}, r.legal_entity_name), el("td", { class: "num" }, String(r.day)),
+            el("td", {}, r.name), el("td", {}, r.legal_entity_name), el("td", {}, r.cfo_name),
+            el("td", {}, r.executor_name), el("td", { class: "num" }, String(r.day)),
             el("td", {}, r.is_active ? `с ${mmYyyy(r.valid_from)}${r.valid_to ? ` по ${mmYyyy(r.valid_to)}` : ""}` : "нет (архив)"),
             el("td", { class: "num" }, money(r.total)), el("td", {}, r.post ? "сразу" : "черновиком"),
             el("td", { class: "actions" }, link("Изменить", () => editRule(r)),
@@ -226,11 +241,15 @@ export async function renderClosing(view) {
   async function load() {
     renderMonth();
     const q = `year=${period.year}&month=${period.month}`;
-    const [data, runs, rules] = await Promise.all([
+    const [data, runs, rules, cfoList, executorList] = await Promise.all([
       api.get(`/api/organizations/${org.id}/closing?${q}`),
       api.get(`/api/organizations/${org.id}/routine-runs?${q}`),
       api.get(`/api/organizations/${org.id}/routines`),
+      api.get(`/api/organizations/${org.id}/cfos`).catch(() => []),
+      api.get(`/api/organizations/${org.id}/executors`).catch(() => []),
     ]);
+    cfos = cfoList;
+    executors = executorList;
     org.closed_through = data.closed_through;
     status.replaceChildren(data.closed_through
       ? el("strong", {}, `Период закрыт по ${ruDate(data.closed_through)}`)

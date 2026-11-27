@@ -4,7 +4,7 @@ import { api } from "../api.js";
 import { PLAN_METHODS } from "../articles.js";
 import { money, parseNumber } from "../format.js";
 import { openPlanCells } from "../plancells.js";
-import { el, openForm, toast } from "../ui.js";
+import { el, instruction, openForm, resizableColumns, toast } from "../ui.js";
 
 const MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь",
   "Ноябрь", "Декабрь"];
@@ -23,7 +23,9 @@ export function methodPlan({ box, ctx }) {
   let data = null;
   const monthInput = el("input", { type: "month", value: month, "aria-label": "Месяц плана" });
   const versionSelect = el("select", { "aria-label": "Версия бюджета" });
-  const hint = el("p", { class: "muted" });
+  const hintText = el("p");
+  const hint = instruction(hintText);
+  const warning = el("p", { class: "muted" });
   // «Сверху ИТОГ» (шаг 23.4): фиксация плана, история
   const fixInfo = el("span", { class: "muted" });
   const fixButton = el("button", { type: "button", onclick: () => fixPlan() }, "Зафиксировать план");
@@ -34,7 +36,7 @@ export function methodPlan({ box, ctx }) {
       el("label", { class: "inline" }, "Месяц ", monthInput),
       el("label", { class: "inline" }, "Версия бюджета ", versionSelect),
       fixInfo, fixButton, historyButton),
-    hint, tableBox);
+    hint, warning, tableBox);
 
   monthInput.addEventListener("change", async () => {
     if (!monthInput.value) return;
@@ -121,12 +123,15 @@ export function methodPlan({ box, ctx }) {
       : data.fixed_at ? `План зафиксирован ${new Date(data.fixed_at).toLocaleString("ru-RU")} (${data.fixed_by})`
         : "План не зафиксирован";
     if (!data.form_loaded) {
-      hint.textContent = "Форма отчёта не загружена: загрузите справочник статей из Excel на странице «Статьи ДДС и ОПиУ».";
+      hint.hidden = true;
+      warning.textContent = "Форма отчёта не загружена: загрузите справочник статей из Excel на странице «Статьи ДДС и ОПиУ».";
       tableBox.replaceChildren();
       return;
     }
     const [y, m] = data.month.split("-");
-    hint.textContent = `План на ${MONTHS[Number(m) - 1].toLowerCase()} ${y}. У каждой статьи — только колонка её метода `
+    hint.hidden = false;
+    warning.textContent = "";
+    hintText.textContent = `План на ${MONTHS[Number(m) - 1].toLowerCase()} ${y}. У каждой статьи — только колонка её метода `
       + "(голубая); «Сверху ИТОГ» по умолчанию равен ей, финансовый директор правит его щелчком (✎ — вручную). "
       + "«Зафиксировать план» записывает суммы методов 1–4 в бюджет по ЦФО и сохраняет ИТОГ. «Бюджет» — плановые операции версии "
       + "по ЦФО, по нему идёт план/факт; «Бюджет − ИТОГ» — расхождение. Щёлкните в колонке «Снизу ЦФО» или «Снизу ЦФУ», "
@@ -175,15 +180,17 @@ export function methodPlan({ box, ctx }) {
         cell(values.budget),
         cell(diff, diff === null || diff === undefined ? "" : Number(diff) > 0 ? "good" : Number(diff) < 0 ? "bad" : ""));
     });
-    tableBox.replaceChildren(el("div", { class: "table-scroll" },
-      el("table", { class: "recon method-plan" }, el("thead", {}, head), el("tbody", {}, ...body))));
+    const table = el("table", { class: "recon method-plan" }, el("thead", {}, head), el("tbody", {}, ...body));
+    tableBox.replaceChildren(el("div", { class: "table-scroll method-plan-scroll" }, table));
+    resizableColumns(table, "method-plan");
   }
 
   async function load() {
     if (!versionId) {
       fixButton.hidden = historyButton.hidden = true;
       fixInfo.textContent = "";
-      hint.textContent = "На этот месяц нет бюджета — создайте бюджет на странице «Бюджеты».";
+      hint.hidden = true;
+      warning.textContent = "На этот месяц нет бюджета — создайте бюджет на странице «Бюджеты».";
       tableBox.replaceChildren();
       data = null;
       return;

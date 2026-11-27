@@ -1003,3 +1003,10 @@
   с заменой прежних ячеек без ЦФУ в ветке, неизменные не пишутся; ИТОГ → `plan_itogs`). API `app/api/plan_itog.py`
   (SUPERVISE; guard из `budgets._guard`); `MethodPlanOut`: `itog_scope`, `fixed_at/by`, строки `itog_article_id`,
   `itog_manual`. Интерфейс: `methodplan.js` — правка ИТОГ, «Зафиксировать план», «История ИТОГ». Тестов 435. Этап 23 готов.
+- 2026-11-27 — 23.4 влита (PR 101), этап 23 на сервере (миграция 0068). Доработки — `docs/TZ.md`, раздел 32, шаг 24.1
+  (ветка `etap-24-1-small-fixes`). Миграций нет. `routines.cfo_executor` / `set_cfo_executor` (ЦФО и ЦФУ во все стороны
+  проводок образца, где на счёте ведётся ЦФО), `RuleOut.cfo_*/executor_*`, `RuleUpdate.cfo_id/executor_id` (меняются,
+  только если переданы). Интерфейс: колонки и выбор ЦФО/ЦФУ у правил в `closing.js`; `ui.resizableColumns(table, key)`
+  (ширина колонок обычных таблиц, localStorage `colwidths:*`); «Управленческий» — `maxHeight` у Tabulator (шапка на месте),
+  пояснения в `instruction()`, предупреждения отдельно; «План по методам» — `.method-plan-scroll` (sticky шапка и первая
+  колонка). Тестов 436, ui_smoke дополнен.

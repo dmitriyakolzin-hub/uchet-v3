@@ -2,7 +2,7 @@
 // (docs/TZ.md, раздел 19, «Детали 9.4»); факт, план или план и факт по месяцам.
 import { api } from "../api.js";
 import { money } from "../format.js";
-import { el, makeTable, openForm, toast } from "../ui.js";
+import { el, instruction, makeTable, openForm, toast } from "../ui.js";
 import { tableNotes } from "../notes.js";
 import { openPlanCells } from "../plancells.js";
 import { methodPlan } from "./methodplan.js";
@@ -19,14 +19,17 @@ export function managementReport({ box, ctx }) {
   let mode = "fact";
   let data = null;
   const modeTabs = el("div", { class: "tabs" });
-  const hint = el("p", { class: "muted" });
+  // пояснение — в свёрнутой «Инструкции», предупреждения — отдельной строкой (шаг 24.1)
+  const hintText = el("p");
+  const hint = instruction(hintText);
+  const warning = el("p", { class: "muted" });
   const tableBox = el("div");
   // «Сравнить» и «Косты» — у факта (шаг 17.1); выручка — строка «Выручка со скидками» формы
   const bar = compareBar(() => load());
   // «План по методам» (шаг 23.2) — своя таблица на месяц
   const methodBox = el("div", { hidden: true });
   const methods = methodPlan({ box: methodBox, ctx });
-  box.replaceChildren(modeTabs, hint, bar.node, tableBox, methodBox);
+  box.replaceChildren(modeTabs, hint, warning, bar.node, tableBox, methodBox);
   const params = () => ctx.filters.params({ mode, ...(mode === "fact" ? bar.params() : {}) });
   const canEdit = () => ctx.org().permissions.includes("edit_reference");
 
@@ -35,7 +38,8 @@ export function managementReport({ box, ctx }) {
     ...TREE_OPTIONS,
     dataTreeStartExpanded: true,
     columns: [{ title: "Строка", field: "title" }],
-    columnDefaults: { headerWordWrap: true },
+    columnDefaults: { headerWordWrap: true, resizable: true },
+    maxHeight: "calc(100vh - 240px)",  // шапка остаётся на месте при прокрутке строк (шаг 24.1)
     rowFormatter: (row) => {
       const r = row.getData();
       row.getElement().classList.toggle("row-total", r.kind === "header");
@@ -118,7 +122,7 @@ export function managementReport({ box, ctx }) {
   async function load() {
     const byMethods = mode === "methods";
     methodBox.hidden = !byMethods;
-    hint.hidden = tableBox.hidden = byMethods;
+    hint.hidden = warning.hidden = tableBox.hidden = byMethods;
     if (byMethods) {
       bar.node.hidden = true;
       await methods.load();
@@ -127,12 +131,15 @@ export function managementReport({ box, ctx }) {
     bar.node.hidden = mode !== "fact";
     data = await api.get(`/api/organizations/${ctx.org().id}/reports/management?${params()}`);
     if (!data.form_loaded) {
-      hint.textContent = "Форма отчёта не загружена: загрузите справочник статей из Excel на странице «Статьи ДДС и ОПиУ» "
+      hint.hidden = true;
+      warning.textContent = "Форма отчёта не загружена: загрузите справочник статей из Excel на странице «Статьи ДДС и ОПиУ» "
         + "(загрузка сохраняет и строки показателей).";
       await table.setData([]);
       return;
     }
-    hint.textContent = "Строки — в порядке загруженного справочника. Статьи: ОПиУ — по начислению, статьи только ДДС — по деньгам; "
+    hint.hidden = false;
+    warning.textContent = "";
+    hintText.textContent = "Строки — в порядке загруженного справочника. Статьи: ОПиУ — по начислению, статьи только ДДС — по деньгам; "
       + "доходы, расходы, поступления и выплаты — положительными числами. Показатели считаются по формулам"
       + (canEdit() ? " (щёлкните по названию строки, чтобы поправить формулу или знак)" : "")
       + ". Щёлкните по сумме факта статьи — откроются проводки, по плану (или «·») — плановые операции."

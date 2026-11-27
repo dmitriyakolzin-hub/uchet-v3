@@ -146,3 +146,35 @@ export function instruction(...children) {
   return el("details", { class: "instruction" }, el("summary", {}, "Инструкция"),
     el("div", { class: "instruction-body" }, ...children));
 }
+
+// Ширину колонок обычной таблицы можно менять, потянув за правый край заголовка (docs/TZ.md, раздел 32, «Детали 24.1»);
+// ширины запоминаются в браузере по ключу таблицы.
+export function resizableColumns(table, key) {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(`colwidths:${key}`) || "{}"); } catch { saved = {}; }
+  const heads = [...table.querySelectorAll("thead th")];
+  heads.forEach((th, index) => {
+    if (saved[index]) th.style.width = th.style.minWidth = `${saved[index]}px`;
+    const grip = el("span", { class: "col-resize", title: "Потяните, чтобы изменить ширину" });
+    th.append(grip);
+    grip.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = th.getBoundingClientRect().width;
+      grip.setPointerCapture(event.pointerId);
+      const move = (e) => {
+        const width = Math.max(40, Math.round(startWidth + e.clientX - startX));
+        th.style.width = th.style.minWidth = th.style.maxWidth = `${width}px`;
+      };
+      const up = () => {
+        grip.removeEventListener("pointermove", move);
+        grip.removeEventListener("pointerup", up);
+        saved[index] = Math.round(th.getBoundingClientRect().width);
+        try { localStorage.setItem(`colwidths:${key}`, JSON.stringify(saved)); } catch { /* не страшно */ }
+      };
+      grip.addEventListener("pointermove", move);
+      grip.addEventListener("pointerup", up);
+    });
+  });
+}
+

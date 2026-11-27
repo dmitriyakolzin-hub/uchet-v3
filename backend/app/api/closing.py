@@ -16,7 +16,18 @@ from sqlalchemy.orm import Session
 from app.api.access import forbid_scoped, get_organization_for
 from app.api.deps import CurrentUser, DbSession
 from app.core.permissions import Perm
-from app.models import LegalEntity, Operation, Organization, PeriodClosing, Posting, RoutineRule, RoutineRun, User
+from app.models import (
+    Cfo,
+    Executor,
+    LegalEntity,
+    Operation,
+    Organization,
+    PeriodClosing,
+    Posting,
+    RoutineRule,
+    RoutineRun,
+    User,
+)
 from app.services import period, result, routines
 
 router = APIRouter(prefix="/api", tags=["Закрытие периода"])
@@ -157,11 +168,28 @@ class RuleOut(BaseModel):
     description: str
     total: Decimal  # сумма проводок образца (в валюте проводок)
     postings: int
+    cfo_id: int | None = None  # ЦФО и ЦФУ проводок образца (24.1); несколько разных — None и «несколько»
+    cfo_name: str = ""
+    executor_id: int | None = None
+    executor_name: str = ""
 
 
 def _rule_out(db: Session, rule: RoutineRule) -> RuleOut:
     postings = rule.template.get("postings", [])
-    return RuleOut(id=rule.id, name=rule.name, legal_entity_id=rule.legal_entity_id,
+    cfos, executors = routines.cfo_executor(rule)
+
+    def one(model, ids):
+        if not ids:
+            return None, ""
+        if len(ids) > 1:
+            return None, "несколько"
+        obj = db.get(model, next(iter(ids)))
+        return (obj.id, obj.name) if obj else (None, "")
+
+    cfo_id, cfo_name = one(Cfo, cfos)
+    executor_id, executor_name = one(Executor, executors)
+    return RuleOut(cfo_id=cfo_id, cfo_name=cfo_name, executor_id=executor_id, executor_name=executor_name,
+                   id=rule.id, name=rule.name, legal_entity_id=rule.legal_entity_id,
                    legal_entity_name=db.get(LegalEntity, rule.legal_entity_id).short_name, day=rule.day,
                    valid_from=rule.valid_from, valid_to=rule.valid_to, post=rule.post, is_active=rule.is_active,
                    description=rule.template.get("description", ""),
@@ -228,12 +256,22 @@ class RuleUpdate(BaseModel):
     valid_to: dt.date | None = None
     post: bool | None = None
     is_active: bool | None = None
+    cfo_id: int | None = None  # ЦФО во всех проводках образца, где он ведётся (передан — меняется)
+    executor_id: int | None = None  # ЦФУ там же
 
 
 @router.patch("/routines/{rule_id}", response_model=RuleOut)
 def update_rule(rule_id: int, body: RuleUpdate, user: CurrentUser, db: DbSession):
     rule = _rule(db, user, rule_id)
     data = body.model_dump(exclude_unset=True)
+    change_cfo, change_executor = "cfo_id" in data, "executor_id" in data
+    cfo_id, executor_id = data.pop("cfo_id", None), data.pop("executor_id", None)
+    if change_cfo or change_executor:
+        try:
+            routines.set_cfo_executor(db, rule, cfo_id, executor_id, change_cfo, change_executor)
+        except routines.RoutineError as exc:
+            db.rollback()
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
     for name, value in data.items():
         if name in ("valid_from", "valid_to") and value is not None:
             value = value.replace(day=1)

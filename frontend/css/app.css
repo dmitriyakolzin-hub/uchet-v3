@@ -444,3 +444,13 @@ table.asset-requests tbody tr { cursor: pointer; }
 .table-scroll { overflow-x: auto; }
 .method-plan td.input-cell { cursor: pointer; color: var(--accent); }
 .method-plan td.input-cell:hover { text-decoration: underline; }
+/* шаг 24.1: «План по методам» — шапка и первая колонка на месте при прокрутке, ширина колонок меняется */
+.method-plan-scroll { max-height: calc(100vh - 220px); overflow: auto; }
+.method-plan { border-collapse: separate; border-spacing: 0; }
+.method-plan thead th { position: sticky; top: 0; z-index: 2; background: #f9fafb; }
+.method-plan th:first-child, .method-plan td:first-child { position: sticky; left: 0; z-index: 1; background: var(--surface, #fff); }
+.method-plan thead th:first-child { z-index: 3; background: #f9fafb; }
+.method-plan th { position: relative; }
+.col-resize { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; user-select: none; }
+.col-resize:hover { background: var(--accent-soft, #e8eef8); }
+.method-plan td { overflow: hidden; text-overflow: ellipsis; }
