@@ -125,3 +125,45 @@ def test_method_plan_api(client, env, db):  # noqa: F811
     assert client.get(f"{url}.xlsx", headers=env["h"], params=params).status_code == 200
     # руководитель ЦФО (ветка «Торговля») — видит свою ветку
     assert client.get(url, headers=env["head"], params=params).status_code == 200
+
+
+def test_executor_head_enters_own_plan(client, env, db, make_user, headers_for, admin):  # noqa: F811
+    """Шаг 23.3: руководитель ЦФУ видит бюджеты, смотрит и вводит план только своего ЦФУ."""
+    executor = setup(client, env, db)
+    other = client.post(f"{env['o']}/executors", headers=env["h"], json={"name": "Склад"}).json()
+    boss = make_user(login="marketing")
+    resp = client.put(f"/api/users/{boss.id}/memberships", headers=headers_for(admin), json={"memberships": [
+        {"organization_id": env["org"].id, "role": "executor_head", "executor_id": executor["id"]}]})
+    assert resp.status_code == 200, resp.text
+    h = headers_for(boss)
+    version = env["version"]["id"]
+    advert = env["art"]["Реклама и маркетинг"]
+    assert [b["id"] for b in client.get(f"{env['o']}/budgets", headers=h, params={"year": 2027}).json()] == \
+        [env["budget"]["id"]]
+
+    def cells(executor_id, amount="7000"):
+        return client.put(f"/api/budget-versions/{version}/cells", headers=h, json={
+            "kind": "pl", "cfo_id": env["shop"]["id"], "executor_id": executor_id,
+            "cells": [{"article_id": advert, "month": 3, "amount": amount}]})
+
+    assert cells(None).status_code == 403
+    assert cells(other["id"]).status_code == 403
+    assert cells(executor["id"], "25000").status_code == 200
+    data = client.get(f"/api/budget-versions/{version}/cells", headers=h,
+                      params={"kind": "pl", "article_id": advert, "month": "2027-03"}).json()
+    assert data["editable"] is True and [c["amount"] for c in data["cells"]] == ["25000.00"]
+    # чужой ЦФУ в окне не виден; сетка бюджета и инструменты плана — нет
+    client.put(f"/api/budget-versions/{version}/cells", headers=env["h"], json={
+        "kind": "pl", "cfo_id": env["shop"]["id"], "executor_id": other["id"],
+        "cells": [{"article_id": advert, "month": 3, "amount": "1000"}]})
+    data = client.get(f"/api/budget-versions/{version}/cells", headers=h,
+                      params={"kind": "pl", "article_id": advert, "month": "2027-03"}).json()
+    assert [c["executor_id"] for c in data["cells"]] == [executor["id"]]
+    assert client.get(f"/api/budget-versions/{version}/grid", headers=h,
+                      params={"kind": "pl", "cfo_id": env["shop"]["id"]}).status_code in (403, 404)
+    # «План по методам» руководителю ЦФУ — по его ЦФУ
+    resp = client.get(f"{env['o']}/reports/method-plan", headers=h, params={
+        "date_from": "2027-03-01", "date_to": "2027-03-31", "month": "2027-03", "version_id": version})
+    assert resp.status_code == 200, resp.text
+    row = next(r for r in resp.json()["rows"] if r["code"] == "2.5")
+    assert (row["values"]["executor"], row["plan_kind"]) == ("25000.00", "pl")

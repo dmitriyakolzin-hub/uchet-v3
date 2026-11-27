@@ -67,6 +67,7 @@ class RowResult:
     method: str | None = None  # метод строки-статьи (если у всех её статей один)
     note: str = ""
     error: str = ""
+    plan_kind: str | None = None  # pl / cf — для окна плановых операций (ввод «снизу», 23.3)
 
 
 def _month_bounds(month: dt.date) -> tuple[dt.date, dt.date]:
@@ -319,6 +320,7 @@ def build(db: Session, f: ReportFilter, version_id: int, month: dt.date, today: 
                 values["itog"] = sign * sum((x.itog for x in group), ZERO)
                 values["budget"] = sign * sum((x.budget for x in group), ZERO)
                 result.values = values
+                result.plan_kind = "pl" if articles[row.article_id].is_pl else "cf"
                 kinds = {x.method for x in group}
                 result.method = kinds.pop() if len(kinds) == 1 else None
                 if len(group) == 1:

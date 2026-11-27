@@ -830,6 +830,7 @@ class MethodRowOut(BaseModel):
     parent: str | None
     article_id: int | None
     method: str | None
+    plan_kind: str | None = None
     note: str
     error: str
     values: dict[str, Decimal | None]
@@ -853,7 +854,8 @@ def _method_plan(db: Session, f: ReportFilter, month: str, version_id: int) -> M
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Этот месяц не входит в бюджет выбранной версии")
     results = method_plan.build(db, f, version_id, first)
     rows = [MethodRowOut(key=f"row:{r.row.id}", id=r.row.id, code=r.row.code, title=r.row.name, kind=r.row.kind,
-                         level=r.level, parent=r.parent, article_id=r.row.article_id, method=r.method, note=r.note,
+                         level=r.level, parent=r.parent, article_id=r.row.article_id, method=r.method,
+                         plan_kind=r.plan_kind, note=r.note,
                          error=r.error, values=r.values) for r in results]
     return MethodPlanOut(form_loaded=bool(results), month=month, version_id=version_id,
                          columns=[{"key": k, "title": t} for k, t in METHOD_COLUMNS], rows=rows)

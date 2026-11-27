@@ -442,3 +442,5 @@ table.asset-requests tbody tr { cursor: pointer; }
 .method-plan td.bad { color: #b42318; }
 .method-plan .tag { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: #e7ecf5; color: #33415c; }
 .table-scroll { overflow-x: auto; }
+.method-plan td.input-cell { cursor: pointer; color: var(--accent); }
+.method-plan td.input-cell:hover { text-decoration: underline; }
