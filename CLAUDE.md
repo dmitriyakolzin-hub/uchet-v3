@@ -1043,3 +1043,9 @@
   Миграций нет. `method_plan.Leaf.has_cfo/has_executor`, `itog_source` «bottom» — ИТОГ не выбран, обе «снизу» заполнены →
   большая из них; `plan_itog.own_methods` считает «bottom» невыбранным. `methodplan.js`: «= большее из 5 и 6».
   ui_smoke: «План зафиксирован» ищется в `.toast` (совпадал с подписью). Тестов 441.
+- 2026-11-28 — 24.7 влита (PR 108). Этап 25 «Сворачивание статей и планирование ФОТ» — `docs/TZ.md`, раздел 33 (ответы
+  «1 б, 2 а, 3 а, 4 б, 5 а»). Шаг 25.1 (ветка `etap-25-1-collapse`), только интерфейс. `methodplan.js`: ▸/▾ (`tree-toggle`),
+  `applyTree`, «уровень 1/2/3/всё» (`showLevel`), свёрнутое — localStorage `methodplan.collapsed:{org}`. `plangrid.js`:
+  статьи (`/articles`) деревом — `articleTree` (строки `_group`, ключ `g:{id}`, суммы подстатей, короткое имя подстатьи,
+  `full_name` в подсказке), `dataTree` во всех режимах, `refreshParents` после ввода, `showLevel` (localStorage
+  `plangrid.level`), «+ ЦФУ» — `addTreeChild` у подстатьи. ui_smoke дополнен. Тестов 441.

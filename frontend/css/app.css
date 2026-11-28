@@ -459,3 +459,7 @@ table.asset-requests tbody tr { cursor: pointer; }
 .method-plan button.itog-pick { border: 0; background: none; padding: 0 0 0 4px; margin: 0; color: #b07d00; cursor: pointer; font-size: 12px; }
 .method-plan button.itog-pick:hover { color: #7a5600; }
 .method-plan .itog-src { display: block; font-size: 11px; font-weight: 400; color: #6b7280; }
+/* сворачивание статей (25.1) */
+.tree-toggle-space { display: inline-block; width: 16px; }
+.tree-levels { display: flex; gap: 10px; align-items: center; margin: 4px 0 6px; font-size: 13px; }
+.plan-group-row { font-weight: 600; background: #f7f8fa; }

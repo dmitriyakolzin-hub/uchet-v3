@@ -26,8 +26,12 @@ function moneyOrEmpty(cell) {
 }
 
 export async function openPlanGrid(view, { org, budget, version, onBack }) {
-  const [cfos, executors] = await Promise.all([
-    api.get(`/api/organizations/${org.id}/cfos`), api.get(`/api/organizations/${org.id}/executors`)]);
+  const [cfos, executors, articleList] = await Promise.all([
+    api.get(`/api/organizations/${org.id}/cfos`), api.get(`/api/organizations/${org.id}/executors`),
+    api.get(`/api/organizations/${org.id}/articles`).catch(() => [])]);
+  const articleById = new Map(articleList.map((a) => [a.id, a]));
+  // сворачивание статей деревом (25.1): уровень показа запоминается в браузере (0 — всё)
+  let treeLevel = (() => { try { return Number(localStorage.getItem("plangrid.level") ?? 0) || 0; } catch { return 0; } })();
   const executorName = new Map(executors.map((e) => [e.id, e.parent_id
     ? `${executors.find((x) => x.id === e.parent_id)?.name ?? ""} / ${e.name}` : e.name]));
   const executorChoices = executors.filter((e) => e.is_active)
@@ -270,13 +274,18 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   function newTable() {
     table?.destroy();
     const box = el("div");
-    tableBox.replaceChildren(box);
+    const levels = el("div", { class: "tree-levels" }, el("span", { class: "muted" }, "Статьи: "),
+      ...[1, 2, 3].map((n) => el("button", { type: "button", class: "link", onclick: () => showLevel(n) }, `уровень ${n}`)),
+      el("button", { type: "button", class: "link", onclick: () => showLevel(0) }, "всё"));
+    tableBox.replaceChildren(levels, box);
     table = makeTable(box, {
       index: "key",
       groupBy: "group",
       groupHeader: (value) => value,
       columnCalcs: "group",
-      ...(mode !== "own" ? { dataTree: true, dataTreeStartExpanded: false, dataTreeChildIndent: 18 } : {}),
+      dataTree: true, dataTreeChildIndent: 18,
+      dataTreeStartExpanded: (row, level) => Boolean(row.getData()._group) && (treeLevel === 0 || level < treeLevel - 1),
+      rowFormatter: (row) => row.getElement().classList.toggle("plan-group-row", Boolean(row.getData()._group)),
       columns: [{ title: "Статья", field: "name" }],
     });
     table.on("cellEdited", onEdited);
@@ -309,6 +318,61 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
   }
 
   const sumCalc = (values) => sumMoney(values);
+
+  function showLevel(n) {
+    treeLevel = n;
+    try { localStorage.setItem("plangrid.level", String(n)); } catch { /* без сохранения */ }
+    const walk = (rows, depth) => {
+      for (const row of rows) {
+        if (!row.getData()._group) continue;
+        if (n === 0 || depth < n - 1) row.treeExpand(); else row.treeCollapse();
+        walk(row.getTreeChildren(), depth + 1);
+      }
+    };
+    walk(table?.getRows() ?? [], 0);
+  }
+
+  // строки сетки — деревом статей: подстатьи под строкой группы с суммами (25.1); план инвестиций — как раньше
+  function articleTree(rows) {
+    if (kind === "inv") return rows;
+    const nodes = new Map();
+    const top = [];
+    const groupNode = (articleId, group) => {
+      if (nodes.has(articleId)) return nodes.get(articleId);
+      const a = articleById.get(articleId);
+      const node = { key: `g:${articleId}`, _group: true, article_id: null, name: `${a.code ? `${a.code} ` : ""}${a.name}`,
+        group, _children: [] };
+      nodes.set(articleId, node);
+      if (a.parent_id && articleById.has(a.parent_id)) groupNode(a.parent_id, group)._children.push(node);
+      else top.push(node);
+      return node;
+    };
+    for (const r of rows) {
+      const parentId = articleById.get(r.article_id)?.parent_id;
+      if (parentId && articleById.has(parentId)) {
+        const own = articleById.get(r.article_id);
+        groupNode(parentId, r.group)._children.push({ ...r, full_name: r.name,
+          name: `${own.code ? `${own.code} ` : ""}${own.name}` });
+      }
+      else top.push(r);
+    }
+    const fill = (node) => {
+      for (const child of node._children) if (child._group) fill(child);
+      for (const m of data.months) node[m.key] = sumMoney(node._children.map((c) => c[m.key]));
+      node.total = sumMoney(node._children.map((c) => c.total));
+    };
+    for (const node of top) if (node._group) fill(node);
+    return top;
+  }
+
+  async function refreshParents(row) {
+    for (let parent = row.getTreeParent(); parent; parent = parent.getTreeParent()) {
+      const kids = parent.getTreeChildren().map((c) => c.getData());
+      const update = { total: sumMoney(kids.map((c) => c.total)) };
+      for (const m of data.months) update[m.key] = sumMoney(kids.map((c) => c[m.key]));
+      await parent.update(update);
+    }
+  }
 
   async function load() {
     // план объёмов — своя вкладка (docs/TZ.md, раздел 29, «Детали 20.6»)
@@ -366,18 +430,22 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
     const addExecutor = data.editable && kind === "pl" && executorChoices.length;
     table.setColumns([
       { title: "Статья", field: "name", minWidth: 240, widthGrow: 3, frozen: true, headerSort: false,
-        tooltip: (_e, c) => { const r = c.getRow().getData(); return r.executor_id ? `${r.name}: ${r.executor_name}` : r.name; },
+        tooltip: (_e, c) => { const r = c.getRow().getData(); const name = r.full_name ?? r.name;
+          return r.executor_id ? `${name}: ${r.executor_name}` : name; },
         formatter: (c) => {
           const r = c.getRow().getData();
           if (r.auto) return `<span class="muted" title="Посчитано из плана объёмов — меняйте объёмы">${escapeHtml(c.getValue())}</span>`;
           return r.executor_id ? `<span class="muted">↳ ${escapeHtml(r.executor_name)}</span>` : escapeHtml(c.getValue());
         } },
       ...(addExecutor ? [{ title: "", field: "_executor", width: 80, headerSort: false, frozen: true,
-        formatter: (c) => (c.getRow().getData().executor_id || c.getRow().getData().auto ? "" : '<span class="link-like">+ ЦФУ</span>'),
-        cellClick: (_e, c) => { const r = c.getRow().getData(); if (!r.executor_id && !r.auto) addExecutorRow(c.getRow()); } }] : []),
+        formatter: (c) => { const r = c.getRow().getData();
+          return r.executor_id || r.auto || r._group || r.article_id == null ? "" : '<span class="link-like">+ ЦФУ</span>'; },
+        cellClick: (_e, c) => { const r = c.getRow().getData();
+          if (!r.executor_id && !r.auto && !r._group && r.article_id != null) addExecutorRow(c.getRow()); } }] : []),
       ...data.months.map((m) => ({
         title: m.title, field: m.key, hozAlign: "right", minWidth: 105, headerSort: false,
-        editor: data.editable ? "input" : false, editable: (c) => !c.getRow().getData().auto,
+        editor: data.editable ? "input" : false,
+        editable: (c) => { const r = c.getRow().getData(); return !r.auto && !r._group && r.article_id != null; },
         editorParams: { selectContents: true }, mutatorEdit: normalizeInput, formatter: moneyOrEmpty,
         bottomCalc: sumCalc, bottomCalcFormatter: moneyOrEmpty,
       })),
@@ -392,7 +460,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       ...(r.parts?.length ? { _children: r.parts.map((p) => ({ key: `${r.article_id}:${p.cfo_id}`, name: p.name,
         group: r.group, ...p.values, total: sumMoney(Object.values(p.values)) })) } : {}),
     }));
-    await table.setData(rows);
+    await table.setData(articleTree(rows));
     await gridNotes.refresh();
     await renderSubmit();
   }
@@ -412,8 +480,11 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       submitText: "Добавить строку",
       onSubmit: async (v) => {
         const id = Number(v.executor_id);
-        await table.addRow({ key: `${base.article_id}:${id}`, article_id: base.article_id, executor_id: id,
-          executor_name: executorName.get(id), name: base.name, group: base.group, total: null }, false, row);
+        const added = { key: `${base.article_id}:${id}`, article_id: base.article_id, executor_id: id,
+          executor_name: executorName.get(id), name: base.name, group: base.group, total: null };
+        const parent = row.getTreeParent();
+        if (parent) parent.addTreeChild(added, false, row);
+        else await table.addRow(added, false, row);
       },
     });
   }
@@ -431,6 +502,7 @@ export async function openPlanGrid(view, { org, budget, version, onBack }) {
       });
       const values = data.months.map((m) => (m.key === month.key ? raw : row.getData()[m.key]));
       await row.update({ [month.key]: raw, total: sumMoney(values) });
+      await refreshParents(row);
       table.recalc();
     } catch (err) {
       toast(err.message, "error");
