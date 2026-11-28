@@ -86,3 +86,33 @@ def norms_on(db: Session, organization_id: int, kind: str, month: dt.date) -> li
     for norm in rows:
         latest[(norm.article_id, norm.cfo_id)] = norm
     return list(latest.values())
+
+
+def trade_points(db: Session, organization_id: int) -> dict[int, list[int]]:
+    """Точки торговли (24.6): действующие ЦФО со звеном «Торговля» (своим или родителя) без действующих подчинённых.
+    Точка → путь (id от корня до точки)."""
+    cfos = list(db.scalars(select(Cfo).where(Cfo.organization_id == organization_id)))
+    by_id = {c.id: c for c in cfos}
+    parents = {c.parent_id for c in cfos if c.is_active and c.parent_id is not None}
+    result: dict[int, list[int]] = {}
+    for c in cfos:
+        if not c.is_active or c.id in parents:
+            continue
+        path = [int(i) for i in str(c.path).split(".")]
+        link = next((by_id[i].chain_link for i in reversed(path) if i in by_id and by_id[i].chain_link), None)
+        if link == "trade":
+            result[c.id] = path
+    return result
+
+
+def point_norm(norms: list[PlanNorm], point_path: list[int]) -> PlanNorm | None:
+    """Норматив точки (24.6): свой норматив точки, иначе ближайший вверх «на каждую точку» (ЦФО ветки или все)."""
+    by_cfo = {n.cfo_id: n for n in norms}
+    point = point_path[-1]
+    if point in by_cfo:
+        return by_cfo[point]
+    for cfo_id in [*reversed(point_path[:-1]), None]:
+        norm = by_cfo.get(cfo_id)
+        if norm is not None and norm.per_point:
+            return norm
+    return None

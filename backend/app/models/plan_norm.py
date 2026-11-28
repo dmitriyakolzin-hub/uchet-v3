@@ -5,12 +5,14 @@
 - «Фактический» (kind fact): сумма в месяц вручную — прибавляется к регламентным операциям;
 - «Нормативный» (kind norm): сумма в месяц — прибавляется к окладам сотрудников (docs/TZ.md, раздел 32, «Детали 24.2»).
 Норматив действует с месяца `valid_from` до следующего норматива той же статьи, вида и ЦФО; ЦФО пусто — для всех.
+`per_point` (docs/TZ.md, раздел 32, «Детали 24.6») — норматив ветки действует на каждую точку торговли в ней:
+процент — от базы точки, сумма — каждой точке; свой норматив точки заменяет общий.
 """
 
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, CheckConstraint, Date, DateTime, ForeignKey, Identity, Index, Numeric, String, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Identity, Index, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -40,6 +42,7 @@ class PlanNorm(Base):
     base_form_code: Mapped[str | None] = mapped_column(String(30))  # код строки управленческой формы
     percent: Mapped[Decimal | None] = mapped_column(Numeric(9, 4))
     amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    per_point: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     comment: Mapped[str] = mapped_column(String(500), default="", server_default="")
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),

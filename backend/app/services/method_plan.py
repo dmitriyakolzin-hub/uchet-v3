@@ -26,7 +26,7 @@ from app.services import reports
 from app.services.management_report import FormulaError, _sign, evaluate, parse_formula
 from app.services.payroll import salary_on
 from app.services.plan_methods import base_window
-from app.services.plan_norms import effective_methods, norms_on
+from app.services.plan_norms import effective_methods, norms_on, point_norm, trade_points
 from app.services.reports import ReportFilter
 
 ZERO = Decimal("0.00")
@@ -177,6 +177,27 @@ def _add(bucket: dict, key, amount: Decimal) -> None:
     bucket[key] = bucket.get(key, ZERO) + amount
 
 
+def _point_amounts(db: Session, f: ReportFilter, kind: str, branch: set[int] | None, start: dt.date) -> dict:
+    """Суммы нормативов «на каждую точку» (24.6): статья → {точка: сумма}. Свой норматив точки (без отметки) —
+    в обычном порядке, здесь не считается."""
+    if f.executor_ids is not None:
+        return {}
+    norms = [n for n in norms_on(db, f.organization_id, kind, start)]
+    by_article: dict[int, list] = {}
+    for n in norms:
+        by_article.setdefault(n.article_id, []).append(n)
+    points = {p: path for p, path in trade_points(db, f.organization_id).items() if branch is None or p in branch}
+    result: dict[int, dict] = {}
+    for article_id, items in by_article.items():
+        if not any(n.per_point for n in items):
+            continue
+        for point, path in points.items():
+            norm = point_norm(items, path)
+            if norm is not None and norm.per_point:
+                _add(result.setdefault(article_id, {}), point, norm.amount)
+    return result
+
+
 def _norm_values(db: Session, f: ReportFilter, leaves: dict[int, Leaf], branch: set[int] | None,
                  start: dt.date, end: dt.date) -> None:
     query = select(Employee).where(Employee.organization_id == f.organization_id, Employee.is_active,
@@ -196,8 +217,11 @@ def _norm_values(db: Session, f: ReportFilter, leaves: dict[int, Leaf], branch: 
     manual: dict[int, dict] = {}
     if f.executor_ids is None:
         for norm in norms_on(db, f.organization_id, "norm", start):
-            if branch is None or norm.cfo_id in branch:
+            if not norm.per_point and (branch is None or norm.cfo_id in branch):
                 _add(manual.setdefault(norm.article_id, {}), norm.cfo_id, norm.amount)
+    for article_id, bucket in _point_amounts(db, f, "norm", branch, start).items():  # на каждую точку (24.6)
+        for point, amount in bucket.items():
+            _add(manual.setdefault(article_id, {}), point, amount)
     for leaf in leaves.values():
         own = leaf.method == "norm"
         if leaf.article.is_pl:
@@ -268,9 +292,14 @@ def _fact_values(db: Session, f: ReportFilter, leaves: dict[int, Leaf], branch: 
     if f.executor_ids is None:
         for norm in norms_on(db, f.organization_id, "fact", start):
             # без фильтра ЦФО — все суммы; с фильтром — суммы ЦФО ветки (сумма «на все ЦФО» не делится)
-            if norm.article_id in leaves and (branch is None or norm.cfo_id in branch):
+            if not norm.per_point and norm.article_id in leaves and (branch is None or norm.cfo_id in branch):
                 manual[norm.article_id] = manual.get(norm.article_id, ZERO) + norm.amount
                 _add(by_cfo.setdefault(norm.article_id, {}), norm.cfo_id, norm.amount)
+    for article_id, bucket in _point_amounts(db, f, "fact", branch, start).items():  # на каждую точку (24.6)
+        if article_id in leaves:
+            for point, amount in bucket.items():
+                manual[article_id] = manual.get(article_id, ZERO) + amount
+                _add(by_cfo.setdefault(article_id, {}), point, amount)
     for article_id, leaf in leaves.items():
         if article_id not in by_cfo and leaf.method != "fact":
             continue
@@ -352,10 +381,80 @@ def compute(db: Session, f: ReportFilter, version_id: int, month: dt.date, today
 
     # расчётный — от ИТОГ базового показателя этого же плана (зависимости — рекурсией, с проверкой цикла)
     calc_norms: dict[int, object] = {}
-    for norm in norms_on(db, f.organization_id, "calc", start):
+    all_calc = norms_on(db, f.organization_id, "calc", start)
+    for norm in all_calc:
+        if norm.per_point:
+            continue
         current = calc_norms.get(norm.article_id)
         if norm.cfo_id == f.cfo_id or (current is None and norm.cfo_id is None):
             calc_norms[norm.article_id] = norm
+    # «на каждую точку» (24.6): процент от базы каждой точки торговли ветки отчёта; свой норматив точки — вместо общего
+    point_calc: dict[int, dict[int, object]] = {}  # статья → {точка: норматив}
+    if f.executor_ids is None:
+        calc_by_article: dict[int, list] = {}
+        for norm in all_calc:
+            calc_by_article.setdefault(norm.article_id, []).append(norm)
+        points = {p: path for p, path in trade_points(db, f.organization_id).items() if branch is None or p in branch}
+        for article_id, items in calc_by_article.items():
+            if article_id not in leaves or not any(n.per_point for n in items):
+                continue
+            chosen = {p: n for p, path in points.items() if (n := point_norm(items, path)) is not None}
+            if any(n.per_point for n in chosen.values()):
+                point_calc[article_id] = chosen
+                calc_norms.setdefault(article_id, next(iter(chosen.values())))
+    plan_pl = plan_cf = None  # план версии по ЦФО — база точки
+
+    def point_budget(article_id: int, point: int) -> Decimal:
+        nonlocal plan_pl, plan_cf
+        if plan_pl is None:
+            plan_pl, plan_cf = _sums(db, replace(f, with_drafts=False, plan_versions=((f"{start:%Y-%m}", version_id),)),
+                                     start, end)
+        article = articles[article_id]
+        source = plan_pl if article.is_pl else plan_cf
+        return _sign(article) * source.get(article_id, {}).get(point, ZERO)
+
+    point_done: dict[tuple[int, int], Decimal] = {}
+
+    def point_article(article_id: int, point: int, trail: tuple) -> Decimal:
+        return sum((point_leaf(x, point, trail) for x in subtree(article_id)), ZERO)
+
+    def point_leaf(article_id: int, point: int, trail: tuple) -> Decimal:
+        """База точки: расчётная по точкам статья — её значение у точки, иначе — бюджет точки."""
+        if article_id in point_calc:
+            return point_value(article_id, point, trail)
+        return point_budget(article_id, point)
+
+    def point_row(code: str, point: int, trail: tuple) -> Decimal:
+        row = by_code.get(code)
+        if row is None:
+            raise MethodPlanError(f"нет строки с кодом {code}")
+        if ("row", code, point) in trail:
+            raise MethodPlanError("база ссылается сама на себя")
+        trail = (*trail, ("row", code, point))
+        sign = -1 if row.invert else 1
+        if row.kind == "article" and row.article_id:
+            return sign * point_article(row.article_id, point, trail)
+        if row.kind == "indicator" and row.formula:
+            return sign * evaluate(parse_formula(row.formula), lambda c: point_row(c, point, trail))
+        return ZERO
+
+    def point_value(article_id: int, point: int, trail: tuple) -> Decimal:
+        key = (article_id, point)
+        if key in point_done:
+            return point_done[key]
+        if ("art", article_id, point) in trail:
+            raise MethodPlanError("база ссылается сама на себя")
+        norm = point_calc[article_id].get(point)
+        if norm is None:
+            point_done[key] = ZERO
+            return ZERO
+        trail = (*trail, ("art", article_id, point))
+        if norm.base_article_id is not None:
+            base = point_article(norm.base_article_id, point, trail) if norm.base_article_id in articles else ZERO
+        else:
+            base = point_row(norm.base_form_code, point, trail)
+        point_done[key] = _round(base * norm.percent / 100)
+        return point_done[key]
     by_code = {r.code: r for r in form if r.code}
     done: set[int] = set()
 
@@ -395,6 +494,15 @@ def compute(db: Session, f: ReportFilter, version_id: int, month: dt.date, today
         leaf = leaves[article_id]
         if ("art", article_id) in trail:
             raise MethodPlanError("база ссылается сама на себя")
+        if article_id in point_calc:  # по точкам торговли (24.6)
+            values = {p: point_value(article_id, p, trail) for p in point_calc[article_id]}
+            done.add(article_id)
+            total = sum(values.values(), ZERO)
+            leaf.values["calc"], leaf.by_cfo["calc"] = total, {p: v for p, v in values.items() if v}
+            percents = {format(n.percent.normalize(), "f").replace(".", ",") for n in point_calc[article_id].values()}
+            leaf.notes["calc"] = (f"{' / '.join(sorted(percents))} % по точкам торговли: {len(values)}"
+                                  + ("" if total else " — база точек пустая: нет плана по базе у точек"))
+            return
         norm = calc_norms.get(article_id)
         if norm is None:
             done.add(article_id)

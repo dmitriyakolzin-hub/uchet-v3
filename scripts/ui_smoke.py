@@ -788,6 +788,7 @@ with sync_playwright() as p:
     d = page.locator("dialog[open]")
     d.locator("[name=article_id]").select_option(label="Аренда · Фактический")
     d.locator("[name=amount]").fill("50 000")
+    expect(d.locator("[name=per_point]")).not_to_be_checked()  # «на каждую точку торговли» (шаг 24.6)
     d.locator("button[type=submit]").click()
     expect(page.locator(".norms-section", has_text="Фактический").locator("tbody tr")).to_contain_text("50 000,00")
     page.screenshot(path=f"{OUT}/27a_norms.png", full_page=True)

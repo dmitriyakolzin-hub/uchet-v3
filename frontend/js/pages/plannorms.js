@@ -55,6 +55,7 @@ export async function renderNorms(box, org) {
     } else {
       fields.push({ name: "amount", label: "Сумма в месяц, ₽", required: true, placeholder: "0,00" });
     }
+    fields.push({ name: "per_point", label: "На каждую точку торговли ветки ЦФО", type: "checkbox" });
     fields.push({ name: "comment", label: "Комментарий", type: "textarea" });
     const base = norm?.base_article_id ? `art:${norm.base_article_id}` : norm?.base_form_code ? `row:${norm.base_form_code}` : "";
     openForm({
@@ -64,17 +65,20 @@ export async function renderNorms(box, org) {
         article_id: norm ? String(norm.article_id) : "", cfo_id: norm?.cfo_id ? String(norm.cfo_id) : "",
         valid_from: (norm?.valid_from ?? `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-01`).slice(0, 7),
         base, percent: norm?.percent ? String(Number(norm.percent)).replace(".", ",") : "",
-        amount: norm?.amount ? money(norm.amount) : "", comment: norm?.comment ?? "",
+        amount: norm?.amount ? money(norm.amount) : "", comment: norm?.comment ?? "", per_point: norm?.per_point ?? false,
       },
-      extra: el("p", { class: "muted small" }, k === "calc"
+      extra: el("div", {}, el("p", { class: "muted small" }, k === "calc"
         ? "План статьи = процент × итог базового показателя в плане этого же месяца."
         : k === "norm"
           ? "Сумма прибавляется к окладам сотрудников, у которых эта статья — статья затрат. Метод статьи должен быть «Нормативный»."
           : "Сумма прибавляется к регламентным операциям по этой статье. ЦФО не выбран — сумма на всю организацию."),
+        el("p", { class: "muted small" }, "«На каждую точку торговли»: норматив действует на каждую точку ветки выбранного ЦФО "
+          + "(ЦФО со звеном «Торговля» без подчинённых; ЦФО не выбран — все точки). Процент считается от базы самой точки, "
+          + "сумма — у каждой точки. Свой норматив точки заменяет общий.")),
       submitText: "Сохранить",
       onSubmit: async (v) => {
         const body = { article_id: Number(v.article_id), kind: k, cfo_id: v.cfo_id ? Number(v.cfo_id) : null,
-          valid_from: `${v.valid_from}-01`, comment: v.comment ?? "" };
+          valid_from: `${v.valid_from}-01`, comment: v.comment ?? "", per_point: Boolean(v.per_point) };
         if (k === "calc") {
           body.base_article_id = v.base.startsWith("art:") ? Number(v.base.slice(4)) : null;
           body.base_form_code = v.base.startsWith("row:") ? v.base.slice(4) : null;
@@ -117,7 +121,7 @@ export async function renderNorms(box, org) {
           el("td", {}, n.base_title),
           el("td", { class: "num" }, n.percent !== null ? `${String(Number(n.percent)).replace(".", ",")} %` : ""),
           el("td", { class: "num" }, n.amount !== null ? money(n.amount) : ""),
-          el("td", {}, n.cfo_name || "все"),
+          el("td", {}, (n.cfo_name || "все") + (n.per_point ? " — на каждую точку" : "")),
           el("td", {}, monthTitle(n.valid_from)),
           el("td", { class: "muted" }, `${n.updated_by_name}, ${new Date(n.updated_at).toLocaleDateString("ru-RU")}`),
           el("td", {}, canEdit ? el("span", { class: "quick-actions" },
@@ -130,6 +134,8 @@ export async function renderNorms(box, org) {
     instruction("Нормативы задаёт финансовый директор. «Расчётный»: план статьи = процент от базового показателя "
       + "(статьи или строки управленческой формы) в плане того же месяца. «Фактический»: регламентные операции по статье "
       + "плюс сумма в месяц отсюда. «Нормативный»: оклады сотрудников со статьёй затрат плюс сумма в месяц отсюда. Норматив действует с выбранного месяца до следующего норматива этой статьи и ЦФО. "
+      + "Отметка «на каждую точку торговли» — один норматив на все точки ветки (процент — от базы точки, сумма — каждой точке), "
+      + "свой норматив точки заменяет общий. "
       + "Метод статьи выбирается в справочнике «Статьи ДДС и ОПиУ»."),
     section("calc", "Расчётный: процент от базового показателя"),
     section("fact", "Фактический: сумма вручную"),

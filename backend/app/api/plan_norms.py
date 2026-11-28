@@ -30,6 +30,7 @@ class NormIn(BaseModel):
     base_form_code: Annotated[str, StringConstraints(strip_whitespace=True, max_length=30)] | None = None
     percent: Annotated[Decimal, Field(ge=0, le=100000, max_digits=9, decimal_places=4)] | None = None
     amount: Annotated[Decimal, Field(max_digits=18, decimal_places=2)] | None = None
+    per_point: bool = False  # на каждую точку торговли ветки (24.6)
     comment: Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)] = ""
 
 
@@ -46,6 +47,7 @@ class NormOut(BaseModel):
     base_title: str
     percent: Decimal | None
     amount: Decimal | None
+    per_point: bool
     comment: str
     updated_by_name: str
     updated_at: dt.datetime
@@ -70,7 +72,7 @@ def _out(db: Session, organization_id: int, norms: list[PlanNorm]) -> list[NormO
             id=n.id, article_id=n.article_id, article_name=names.get(n.article_id, ""), kind=n.kind, cfo_id=n.cfo_id,
             cfo_name=cfos.get(n.cfo_id, "") if n.cfo_id else "", valid_from=n.valid_from,
             base_article_id=n.base_article_id, base_form_code=n.base_form_code, base_title=base, percent=n.percent,
-            amount=n.amount, comment=n.comment, updated_by_name=users.get(n.updated_by, ""), updated_at=n.updated_at))
+            amount=n.amount, per_point=n.per_point, comment=n.comment, updated_by_name=users.get(n.updated_by, ""), updated_at=n.updated_at))
     return result
 
 
