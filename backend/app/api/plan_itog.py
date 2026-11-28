@@ -3,7 +3,7 @@
 
 import datetime as dt
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field, StringConstraints
@@ -30,7 +30,9 @@ class ItogIn(BaseModel):
     month: Month
     cfo_id: int | None = None  # ЦФО отчёта (пусто — вся организация)
     article_id: int
-    amount: Annotated[Decimal, Field(max_digits=18, decimal_places=2)] | None = None  # пусто — по методу
+    amount: Annotated[Decimal, Field(max_digits=18, decimal_places=2)] | None = None  # своя сумма
+    # откуда ИТОГ: колонка norm/avg/fact/calc/cfo/executor (сумма — из неё) или manual; пусто и без суммы — сбросить
+    source: Literal["norm", "avg", "fact", "calc", "cfo", "executor", "manual"] | None = None
 
 
 class FixIn(BaseModel):
@@ -75,10 +77,11 @@ def _version(db: Session, user: User, version_id: int, perm: Perm, month: str,
 
 @router.put("/budget-versions/{version_id}/itog")
 def put_itog(version_id: int, body: ItogIn, user: CurrentUser, db: DbSession) -> dict:
-    """«Сверху ИТОГ» статьи на месяц вручную; пусто — снова по методу."""
+    """«Сверху ИТОГ» статьи на месяц: из колонки метода или своя сумма; пусто — снова равен бюджету."""
     version, budget, first = _version(db, user, version_id, Perm.SUPERVISE, body.month, body.cfo_id)
     try:
-        plan_itog.set_itog(db, version, budget.organization_id, body.cfo_id, body.article_id, first, body.amount, user)
+        plan_itog.set_itog(db, version, budget.organization_id, body.cfo_id, body.article_id, first, body.amount, user,
+                           source=body.source)
     except PlanError as exc:
         db.rollback()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
@@ -86,9 +89,24 @@ def put_itog(version_id: int, body: ItogIn, user: CurrentUser, db: DbSession) ->
     return {"ok": True}
 
 
+@router.post("/budget-versions/{version_id}/itog/own-methods")
+def itog_own_methods(version_id: int, body: FixIn, user: CurrentUser, db: DbSession) -> dict:
+    """ИТОГ = основная колонка статьи у всех статей, где ИТОГ ещё не выбран."""
+    version, budget, first = _version(db, user, version_id, Perm.SUPERVISE, body.month, body.cfo_id)
+    last = (first + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)
+    f = ReportFilter(organization_id=budget.organization_id, date_from=first, date_to=last, cfo_id=body.cfo_id)
+    try:
+        count = plan_itog.own_methods(db, version, f, first, user)
+    except PlanError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from None
+    db.commit()
+    return {"count": count}
+
+
 @router.post("/budget-versions/{version_id}/itog/fix")
 def fix_plan(version_id: int, body: FixIn, user: CurrentUser, db: DbSession) -> dict:
-    """«Зафиксировать план»: методы 1–4 — в бюджет по ЦФО, ИТОГ статей — утверждённые цифры."""
+    """«Зафиксировать план»: бюджет — по выбранному ИТОГ (24.4), ИТОГ статей — утверждённые цифры."""
     version, budget, first = _version(db, user, version_id, Perm.SUPERVISE, body.month, body.cfo_id)
     last = (first + dt.timedelta(days=32)).replace(day=1) - dt.timedelta(days=1)
     f = ReportFilter(organization_id=budget.organization_id, date_from=first, date_to=last, cfo_id=body.cfo_id)

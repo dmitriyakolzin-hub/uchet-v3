@@ -186,6 +186,8 @@ class PlanItog(Base):
     month: Mapped[int] = mapped_column(SmallInteger)
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
     manual: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # откуда ИТОГ (24.4): колонка norm/avg/fact/calc/cfo/executor, manual — своя сумма; None — прежняя запись
+    source: Mapped[str | None] = mapped_column(String(10))
     fixed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     fixed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

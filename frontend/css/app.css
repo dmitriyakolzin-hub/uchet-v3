@@ -455,3 +455,7 @@ table.asset-requests tbody tr { cursor: pointer; }
 .col-resize:hover { background: var(--accent-soft, #e8eef8); }
 .method-plan td { overflow: hidden; text-overflow: ellipsis; }
 .method-plan td.has-breakdown { text-decoration: underline dotted; cursor: help; }
+.method-plan td.itog-from { box-shadow: inset 0 0 0 2px #e0a800; }
+.method-plan button.itog-pick { border: 0; background: none; padding: 0 0 0 4px; margin: 0; color: #b07d00; cursor: pointer; font-size: 12px; }
+.method-plan button.itog-pick:hover { color: #7a5600; }
+.method-plan .itog-src { display: block; font-size: 11px; font-weight: 400; color: #6b7280; }

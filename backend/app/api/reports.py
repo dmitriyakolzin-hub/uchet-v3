@@ -835,9 +835,12 @@ class MethodRowOut(BaseModel):
     plan_kind: str | None = None
     itog_article_id: int | None = None  # ИТОГ строки правится (одна статья без подстатей)
     itog_manual: bool = False
+    itog_source: str | None = None  # budget / norm…executor / manual / fixed (строка — одна статья)
+    itog_fixed: bool = False
     # значение метода по ЦФО: {метод: [{cfo, amount}]} — подсказка при наведении (24.2)
     breakdown: dict[str, list[dict]] = {}
     note: str
+    notes: dict[str, str] = {}  # пояснения по колонкам методов
     error: str
     values: dict[str, Decimal | None]
 
@@ -876,8 +879,8 @@ def _method_plan(db: Session, f: ReportFilter, month: str, version_id: int) -> M
     rows = [MethodRowOut(key=f"row:{r.row.id}", id=r.row.id, code=r.row.code, title=r.row.name, kind=r.row.kind,
                          level=r.level, parent=r.parent, article_id=r.row.article_id, method=r.method,
                          plan_kind=r.plan_kind, itog_article_id=r.itog_article_id, itog_manual=r.itog_manual,
-                         breakdown=breakdown(r),
-                         note=r.note,
+                         itog_source=r.itog_source, itog_fixed=r.itog_fixed, breakdown=breakdown(r),
+                         note=r.note, notes=r.notes,
                          error=r.error, values=r.values) for r in results]
     out = MethodPlanOut(form_loaded=bool(results), month=month, version_id=version_id,
                         version_status=db.get(BudgetVersion, version_id).status,
