@@ -36,11 +36,11 @@ def test_fund_from_revenue_indicator(client, env, db):  # noqa: F811
     rows = {r.row.code: r for r in method_plan.build(db, f, env["version"]["id"], MONTH, today=dt.date(2027, 4, 1))}
     assert rows["1.0"].values["itog"] == Decimal("400000.00")
     assert rows["2.9"].values["calc"] == Decimal("20000.00") and rows["2.9"].method == "calc"
-    assert rows["2.9"].note == "5 % от 1.0 (база — ИТОГ 400 000,00)"
+    assert rows["2.9"].note == "5 % от 1.0 (база 400 000,00)"
 
     # без плана выручки — база пустая, это видно в пояснении
     other = dt.date(2027, 4, 1)
     rows = {r.row.code: r for r in method_plan.build(db, f, env["version"]["id"], other, today=dt.date(2027, 4, 1))}
     assert rows["2.9"].values["calc"] == Decimal("0.00")
-    assert rows["2.9"].note.startswith("5 % от 1.0 (база — ИТОГ 0,00) — база пустая")
+    assert rows["2.9"].note.startswith("5 % от 1.0 (база 0,00) — база пустая")
 
