@@ -837,6 +837,7 @@ class MethodRowOut(BaseModel):
     itog_manual: bool = False
     itog_source: str | None = None  # budget / norm…executor / manual / fixed (строка — одна статья)
     itog_fixed: bool = False
+    itog_auto: bool = False  # ИТОГ сразу по колонке метода (расчётный, нормативный)
     # значение метода по ЦФО: {метод: [{cfo, amount}]} — подсказка при наведении (24.2)
     breakdown: dict[str, list[dict]] = {}
     note: str
@@ -879,7 +880,7 @@ def _method_plan(db: Session, f: ReportFilter, month: str, version_id: int) -> M
     rows = [MethodRowOut(key=f"row:{r.row.id}", id=r.row.id, code=r.row.code, title=r.row.name, kind=r.row.kind,
                          level=r.level, parent=r.parent, article_id=r.row.article_id, method=r.method,
                          plan_kind=r.plan_kind, itog_article_id=r.itog_article_id, itog_manual=r.itog_manual,
-                         itog_source=r.itog_source, itog_fixed=r.itog_fixed, breakdown=breakdown(r),
+                         itog_source=r.itog_source, itog_fixed=r.itog_fixed, itog_auto=r.itog_auto, breakdown=breakdown(r),
                          note=r.note, notes=r.notes,
                          error=r.error, values=r.values) for r in results]
     out = MethodPlanOut(form_loaded=bool(results), month=month, version_id=version_id,

@@ -31,6 +31,7 @@ from app.services.reports import ReportFilter
 
 ZERO = Decimal("0.00")
 METHOD_KEYS = ("norm", "avg", "fact", "calc", "cfo", "executor")
+AUTO_ITOG_METHODS = ("calc", "norm")  # ИТОГ сразу по своей колонке, пока не выбран другой (24.5)
 COLUMNS = (*METHOD_KEYS, "itog", "budget", "diff")
 
 
@@ -71,24 +72,31 @@ class Leaf:
         return self.value if self.value is not None else ZERO
 
     @property
+    def itog_auto(self) -> bool:
+        """ИТОГ не выбран, а метод статьи «Расчётный» или «Нормативный» — ИТОГ сразу по своей колонке (24.5)."""
+        return self.stored is None and self.method in AUTO_ITOG_METHODS
+
+    @property
     def itog_source(self) -> str:
-        """budget — не выбран (равен бюджету; после фиксации — зафиксированный бюджет), norm…executor — колонка,
-        manual — своя сумма, fixed — запись до 24.4."""
+        """budget — не выбран (равен бюджету; после фиксации — зафиксированный бюджет), norm…executor — колонка
+        (у расчётных и нормативных — сразу, `itog_auto`), manual — своя сумма, fixed — запись до 24.4."""
         if self.stored is None:
-            return "budget"
+            return self.method if self.itog_auto else "budget"
         return self.stored.source or ("manual" if self.stored.manual else "fixed")
 
     @property
     def itog_live(self) -> bool:
-        """ИТОГ следует за колонкой метода (выбран и ещё не зафиксирован)."""
-        return self.stored is not None and self.stored.source in METHOD_KEYS and self.stored.fixed_at is None
+        """ИТОГ следует за колонкой метода (выбран или автоматический и ещё не зафиксирован)."""
+        if self.stored is None:
+            return self.itog_auto
+        return self.stored.source in METHOD_KEYS and self.stored.fixed_at is None
 
     @property
     def itog(self) -> Decimal:
+        if self.itog_live:
+            return self.values.get(self.itog_source) or ZERO
         if self.stored is None:
             return self.budget
-        if self.itog_live:
-            return self.values.get(self.stored.source) or ZERO
         return self.stored.amount
 
 
@@ -107,6 +115,7 @@ class RowResult:
     itog_manual: bool = False  # ИТОГ поставлен вручную
     itog_source: str | None = None  # откуда ИТОГ (строка — одна статья): budget / колонка / manual / fixed
     itog_fixed: bool = False  # ИТОГ зафиксирован
+    itog_auto: bool = False  # ИТОГ не выбран, взят по методу статьи (расчётный, нормативный)
     breakdown: dict = field(default_factory=dict)  # значение метода по ЦФО (подсказка при наведении, 24.2)
 
 
@@ -351,7 +360,14 @@ def compute(db: Session, f: ReportFilter, version_id: int, month: dt.date, today
     done: set[int] = set()
 
     def article_itog(article_id: int, trail: tuple) -> Decimal:
-        return sum((leaf_itog(x, trail) for x in subtree(article_id)), ZERO)
+        """База расчётного: у расчётной статьи — её колонка 4, иначе — ИТОГ (колонка 7) (24.5)."""
+        return sum((base_of(x, trail) for x in subtree(article_id)), ZERO)
+
+    def base_of(article_id: int, trail: tuple) -> Decimal:
+        if article_id in calc_norms:
+            calc_value(article_id, trail)
+            return leaves[article_id].values.get("calc") or ZERO
+        return leaf_itog(article_id, trail)
 
     def row_itog(code: str, trail: tuple) -> Decimal:
         row = by_code.get(code)
@@ -369,7 +385,7 @@ def compute(db: Session, f: ReportFilter, version_id: int, month: dt.date, today
 
     def leaf_itog(article_id: int, trail: tuple) -> Decimal:
         leaf = leaves[article_id]
-        if leaf.itog_live and leaf.stored.source == "calc":
+        if leaf.itog_live and leaf.itog_source == "calc":
             calc_value(article_id, trail)
         return leaf.itog
 
@@ -397,7 +413,7 @@ def compute(db: Session, f: ReportFilter, version_id: int, month: dt.date, today
         value = _round(base * norm.percent / 100)
         leaf.values["calc"], leaf.by_cfo["calc"] = value, {None: value}
         base_text = f"{base:,.2f}".replace(",", " ").replace(".", ",")
-        note = f"{format(norm.percent.normalize(), 'f').replace('.', ',')} % от {title} (база — ИТОГ {base_text})"
+        note = f"{format(norm.percent.normalize(), 'f').replace('.', ',')} % от {title} (база {base_text})"
         if not base:
             note += " — база пустая: нет плана по базовому показателю в этом месяце и версии"
         leaf.notes["calc"] = note
@@ -451,7 +467,7 @@ def build(db: Session, f: ReportFilter, version_id: int, month: dt.date, today: 
                 result.method = kinds.pop() if len(kinds) == 1 else None
                 if len(group) == 1:
                     result.note, result.notes = group[0].note, dict(group[0].notes)
-                    result.itog_source = group[0].itog_source
+                    result.itog_source, result.itog_auto = group[0].itog_source, group[0].itog_auto
                     result.itog_fixed = group[0].stored is not None and group[0].stored.fixed_at is not None
                     if group[0].article.id == row.article_id:
                         result.itog_article_id = row.article_id

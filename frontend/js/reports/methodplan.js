@@ -85,12 +85,15 @@ export function methodPlan({ box, ctx }) {
   function editItog(r) {
     const choices = data.columns.slice(0, 6).filter((c) => r.values[c.key] !== null && r.values[c.key] !== undefined)
       .map((c) => [c.key, `${c.title}: ${money(r.values[c.key])}`]);
-    const current = ["budget", "fixed"].includes(r.itog_source) ? "budget" : r.itog_source;
+    // у расчётных и нормативных статей «не выбран» — ИТОГ по своей колонке (24.5)
+    const auto = ["calc", "norm"].includes(r.method);
+    const current = r.itog_auto || ["budget", "fixed"].includes(r.itog_source) ? "budget" : r.itog_source;
     openForm({
       title: `Сверху ИТОГ: ${`${r.code ?? ""} ${r.title}`.trim()}`,
       fields: [
         { name: "source", label: "Откуда ИТОГ", type: "select", options: [
-          ["budget", `= бюджет: ${money(r.values.budget ?? 0)} (не выбран)`], ...choices, ["manual", "Своя сумма"]] },
+          ["budget", auto ? `по методу статьи: ${money(r.values[r.method] ?? 0)} (не выбран)`
+            : `= бюджет: ${money(r.values.budget ?? 0)} (не выбран)`], ...choices, ["manual", "Своя сумма"]] },
         { name: "amount", label: "Своя сумма, ₽", placeholder: "для «Своя сумма»" },
       ],
       values: { source: current, amount: r.itog_source === "manual" ? money(r.values.itog) : "" },
@@ -176,8 +179,9 @@ export function methodPlan({ box, ctx }) {
       + "это независимые оценки, между собой они не складываются (пусто — у метода нет данных); голубая — основной метод "
       + "статьи. «Сверху ИТОГ» выбирает финансовый директор: значок ⇢ в ячейке метода берёт её значение в ИТОГ "
       + "(выбранная ячейка обведена), щелчок по ИТОГ — выбрать колонку или ввести свою сумму; пока не выбран, ИТОГ равен "
-      + "бюджету. «ИТОГ = основной метод» — взять основную колонку у всех статей, где ИТОГ не выбран. Расчётный метод "
-      + "считается от ИТОГ базового показателя. «Зафиксировать план»: ИТОГ из «Снизу ЦФО/ЦФУ» — в бюджете остаётся только "
+      + "бюджету, а у расчётных и нормативных статей — сразу своей колонке («авто»). «ИТОГ = основной метод» — взять "
+      + "основную колонку у всех статей, где ИТОГ не выбран. Расчётный метод считается от колонки 4 базы, если база "
+      + "расчётная, иначе — от её ИТОГ. «Зафиксировать план»: ИТОГ из «Снизу ЦФО/ЦФУ» — в бюджете остаётся только "
       + "эта колонка; при обеих заполненных — большая; при пустых «снизу» в бюджет по ЦФО пишется колонка 1–4, выбранная "
       + "в ИТОГ; ИТОГ сохраняется как утверждённая цифра. «Бюджет» — плановые операции версии по ЦФО (по нему идёт "
       + "план/факт). Щёлкните в «Снизу ЦФО» или «Снизу ЦФУ», чтобы ввести план своего ЦФО / ЦФУ. Методы статей — "
@@ -232,7 +236,8 @@ export function methodPlan({ box, ctx }) {
         (() => {
           const td = cell(values.itog, "itog");
           if (r.itog_source && r.kind === "article") {
-            td.append(el("span", { class: "itog-src" }, SOURCE_SHORT[r.itog_source] + (r.itog_fixed ? " · зафикс." : "")));
+            td.append(el("span", { class: "itog-src" }, SOURCE_SHORT[r.itog_source] + (r.itog_auto ? " (авто)" : "")
+              + (r.itog_fixed ? " · зафикс." : "")));
           } else if (r.itog_manual) {
             td.append(el("span", { class: "itog-src" }, "есть своя сумма"));
           }

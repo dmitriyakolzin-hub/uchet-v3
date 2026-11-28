@@ -102,8 +102,8 @@ def test_method_plan(client, env, db):  # noqa: F811
     # все колонки 1–6 считаются сразу (24.4); пусто — у метода нет данных
     columns("1.0", cfo="500000")
     columns("2.1", norm="100000")
-    columns("2.2", calc="0")  # 30,2 % от ИТОГ 2.1, а ИТОГ 2.1 пока равен бюджету (0)
-    assert rows["2.2"].note.startswith("30,2 % от 2.1 (база — ИТОГ 0,00) — база пустая")
+    columns("2.2", calc="30200")  # 30,2 % от ИТОГ 2.1; ИТОГ нормативной статьи — сразу её колонка (24.5)
+    assert rows["2.2"].note == "30,2 % от 2.1 (база 100 000,00)"
     columns("2.3", fact="50000", avg="10000", cfo="45000")
     assert rows["2.3"].method == "fact" and rows["2.3"].notes["avg"].startswith("6 мес.")
     columns("2.4", avg="4000")  # (9 000 + 0 + 3 000) / 3; окно — декабрь–февраль
@@ -111,9 +111,11 @@ def test_method_plan(client, env, db):  # noqa: F811
     columns("2.6")
     assert rows["2.6"].values["itog"] == 0 and rows["2.6"].method == "top"
     # ИТОГ не выбран — равен бюджету (решение владельца 1 в)
-    assert {c: (rows[c].values["itog"], rows[c].itog_source) for c in ("1.0", "2.1", "2.3")} == \
-        {"1.0": (500000, "budget"), "2.1": (0, "budget"), "2.3": (45000, "budget")}
-    assert (rows["2.1"].values["diff"], rows["3.0"].values["budget"]) == (0, 500000 - 45000 - 20000)
+    # у расчётных и нормативных — сразу своя колонка (24.5)
+    assert {c: (rows[c].values["itog"], rows[c].itog_source, rows[c].itog_auto) for c in ("1.0", "2.1", "2.2", "2.3")} \
+        == {"1.0": (500000, "budget", False), "2.1": (100000, "norm", True), "2.2": (30200, "calc", True),
+            "2.3": (45000, "budget", False)}
+    assert (rows["2.1"].values["diff"], rows["3.0"].values["budget"]) == (-100000, 500000 - 45000 - 20000)
     assert rows["3.0"].values["fact"] == -50000 and rows["3.0"].values["cfo"] == 500000 - 45000
 
     # фильтр ЦФО: другая ветка — у магазина ничего нет
@@ -134,8 +136,8 @@ def test_method_plan_api(client, env, db):  # noqa: F811
     data = resp.json()
     assert [c["key"] for c in data["columns"]][-3:] == ["itog", "budget", "diff"]
     row = next(r for r in data["rows"] if r["code"] == "2.2")
-    assert (row["method"], row["values"]["calc"], row["values"]["itog"], row["itog_source"]) == \
-        ("calc", "0.00", "0.00", "budget")
+    assert (row["method"], row["values"]["calc"], row["values"]["itog"], row["itog_source"], row["itog_auto"]) == \
+        ("calc", "30200.00", "30200.00", "calc", True)
     assert "notes" in row and row["notes"]["calc"].startswith("30,2 %")
     assert client.get(url, headers=env["h"], params=params | {"month": "2028-01"}).status_code == 422
     assert client.get(url, headers=env["h"], params=params | {"month": "март"}).status_code == 422
@@ -291,11 +293,32 @@ def test_norm_amount_and_breakdown(client, env, db):  # noqa: F811
     assert by["2.1"]["breakdown"]["norm"] == [{"cfo": "Магазин 1", "amount": "100000.00"},
                                               {"cfo": "Логистика", "amount": "20000.00"}]
     assert [x["cfo"] for x in by["2.3"]["breakdown"]["fact"]] == ["Магазин 1"]
-    assert "calc" not in by["2.2"]["breakdown"]  # 30,2 % от ИТОГ 2.1 — пока бюджет 0
-    client.put(f"/api/budget-versions/{env['version']['id']}/itog", headers=env["h"], json={
-        "month": "2027-03", "article_id": wages, "source": "norm"})
-    data = client.get(f"{env['o']}/reports/method-plan", headers=env["h"], params={
-        "date_from": "2027-03-01", "date_to": "2027-03-31", "month": "2027-03",
-        "version_id": env["version"]["id"]}).json()
-    by = {r["code"]: r for r in data["rows"]}
     assert by["2.2"]["breakdown"]["calc"] == [{"cfo": "без ЦФО", "amount": "36240.00"}]  # 30,2 % от 120 000
+
+
+def test_calc_base_from_column_4(client, env, db):  # noqa: F811
+    """24.5: база расчётного — колонка 4 расчётной базовой статьи (даже если её ИТОГ другой), иначе — ИТОГ."""
+    setup(client, env, db)
+    version = env["version"]["id"]
+    it, tax = env["art"]["Связь и IT"], env["art"]["Страховые взносы с оплаты труда"]
+    assert client.post(f"{env['o']}/plan-norms", headers=env["h"], json={
+        "article_id": it, "kind": "calc", "valid_from": "2027-01-01", "base_article_id": tax,
+        "percent": "10"}).status_code == 201
+    # ИТОГ взносов — своя сумма; база «Связи» всё равно колонка 4 взносов (30 200)
+    assert client.put(f"/api/budget-versions/{version}/itog", headers=env["h"], json={
+        "month": "2027-03", "article_id": tax, "source": "manual", "amount": "50000"}).status_code == 200
+    data = client.get(f"{env['o']}/reports/method-plan", headers=env["h"], params={
+        "date_from": "2027-03-01", "date_to": "2027-03-31", "month": "2027-03", "version_id": version}).json()
+    by = {r["code"]: r for r in data["rows"]}
+    assert (by["2.2"]["values"]["itog"], by["2.2"]["values"]["calc"]) == ("50000.00", "30200.00")
+    assert by["2.6"]["values"]["calc"] == "3020.00"
+    assert (by["2.6"]["values"]["itog"], by["2.6"]["itog_auto"]) == ("0.00", False)  # метод «Сверху ИТОГ» — не авто
+    # фиксация: нормативная и расчётная статьи без «снизу» пишутся в бюджет сами
+    resp = client.post(f"/api/budget-versions/{version}/itog/fix", headers=env["h"], json={"month": "2027-03"})
+    assert resp.status_code == 200, resp.text
+    data = client.get(f"{env['o']}/reports/method-plan", headers=env["h"], params={
+        "date_from": "2027-03-01", "date_to": "2027-03-31", "month": "2027-03", "version_id": version}).json()
+    by = {r["code"]: r for r in data["rows"]}
+    assert (by["2.1"]["values"]["budget"], by["2.1"]["itog_source"], by["2.1"]["itog_fixed"]) == \
+        ("100000.00", "norm", True)
+    assert by["2.2"]["values"]["budget"] == "0.00"  # ИТОГ — своя сумма: только цель

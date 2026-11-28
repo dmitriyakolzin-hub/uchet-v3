@@ -1,7 +1,8 @@
 """«Сверху ИТОГ» и фиксация плана месяца (docs/TZ.md, раздел 31, «Детали 23.4»; раздел 32, «Детали 24.4»).
 
 - ИТОГ выбирает финансовый директор: значение одной из колонок 1–6 (до фиксации ИТОГ следует за колонкой) или своя
-  сумма; пока не выбран — ИТОГ равен «Бюджету» (решение владельца 1 в);
+  сумма; пока не выбран — ИТОГ равен «Бюджету» (решение владельца 1 в), у расчётных и нормативных статей — своей
+  колонке (24.5);
 - «Зафиксировать план» по каждой статье (решения 2 а и 3):
   - ИТОГ из «Снизу ЦФО» или «Снизу ЦФУ» — в бюджете остаётся только эта колонка, плановые операции другой «снизу»
     колонки по статье за месяц удаляются;
@@ -194,7 +195,7 @@ def fix(db: Session, version: BudgetVersion, f: ReportFilter, month: dt.date, us
             continue
         if stored is None:
             stored = PlanItog(version_id=version.id, cfo_id=f.cfo_id, article_id=leaf.article.id, month=start.month,
-                              source="budget", manual=False, updated_by=user.id)
+                              source=leaf.itog_source, manual=False, updated_by=user.id)
             db.add(stored)
         stored.amount = amount
         stored.fixed_by, stored.fixed_at = user.id, now
