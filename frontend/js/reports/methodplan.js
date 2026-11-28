@@ -68,6 +68,16 @@ export function methodPlan({ box, ctx }) {
       : [el("option", { value: "" }, "— нет бюджета на этот месяц —")]));
   }
 
+  // свёрнутые строки «Плана по методам» (25.1) — в браузере, по организации
+  const collapsedKey = () => `methodplan.collapsed:${ctx.org().id}`;
+  const collapsed = new Set((() => {
+    try { return JSON.parse(localStorage.getItem(collapsedKey()) ?? "[]"); } catch { return []; }
+  })());
+  const saveCollapsed = () => {
+    try { localStorage.setItem(collapsedKey(), JSON.stringify([...collapsed])); } catch { /* без сохранения */ }
+  };
+  let applyTree = () => {};
+
   const canSupervise = () => ctx.org().permissions.includes("supervise");
   const cfoId = () => (ctx.filters.scope().cfo_id ? Number(ctx.filters.scope().cfo_id) : null);
   const itogEditable = () => canSupervise() && data?.itog_scope && data.version_status !== "archived";
@@ -190,8 +200,16 @@ export function methodPlan({ box, ctx }) {
     const methodCols = data.columns.slice(0, 6);
     const head = el("tr", {}, el("th", {}, "Строка"), el("th", {}, "Метод"),
       ...data.columns.map((c) => el("th", { class: c.key === "itog" ? "num itog" : "num" }, c.title)));
+    // сворачивание статей (25.1): ▸/▾ у строки с подстатьями, «Уровень 1/2/3/Всё», выбор запоминается
+    const children = new Map();
+    for (const r of data.rows) if (r.parent) children.set(r.parent, [...(children.get(r.parent) ?? []), r.key]);
+    const toggle = (r) => (children.has(r.key)
+      ? el("button", { type: "button", class: "tree-toggle", "aria-label": `Свернуть или развернуть: ${r.title}`,
+        onclick: () => { collapsed.has(r.key) ? collapsed.delete(r.key) : collapsed.add(r.key); saveCollapsed(); applyTree(); } },
+        collapsed.has(r.key) ? "▸" : "▾")
+      : el("span", { class: "tree-toggle-space" }));
     const body = data.rows.map((r) => {
-      const title = el("td", { style: `padding-left:${8 + r.level * 16}px` },
+      const title = el("td", { style: `padding-left:${8 + r.level * 16}px` }, toggle(r),
         r.code ? el("span", { class: "muted" }, `${r.code} `) : "", r.title,
         r.error ? el("span", { class: "over-budget", title: r.error }, ` ⚠ ${r.error}`) : "");
       if (r.kind === "header") return el("tr", { class: "row-total" }, title, el("td", { colspan: data.columns.length + 1 }));
@@ -252,8 +270,31 @@ export function methodPlan({ box, ctx }) {
         cell(values.budget),
         cell(diff, diff === null || diff === undefined ? "" : Number(diff) > 0 ? "good" : Number(diff) < 0 ? "bad" : ""));
     });
+    data.rows.forEach((r, i) => { body[i].dataset.key = r.key; });
+    const byKey = new Map(data.rows.map((r) => [r.key, r]));
+    const hiddenRow = (r) => {
+      for (let p = r.parent; p; p = byKey.get(p)?.parent) if (collapsed.has(p)) return true;
+      return false;
+    };
+    applyTree = () => {
+      data.rows.forEach((r, i) => {
+        body[i].hidden = hiddenRow(r);
+        const button = body[i].querySelector(".tree-toggle");
+        if (button) button.textContent = collapsed.has(r.key) ? "▸" : "▾";
+      });
+    };
+    applyTree();
+    const levels = el("div", { class: "tree-levels" }, el("span", { class: "muted" }, "Показать: "),
+      ...[1, 2, 3].map((n) => el("button", { type: "button", class: "link", onclick: () => showLevel(n) }, `уровень ${n}`)),
+      el("button", { type: "button", class: "link", onclick: () => showLevel(0) }, "всё"));
+    const showLevel = (n) => {
+      collapsed.clear();
+      if (n) for (const r of data.rows) if (children.has(r.key) && r.level >= n - 1) collapsed.add(r.key);
+      saveCollapsed();
+      applyTree();
+    };
     const table = el("table", { class: "recon method-plan" }, el("thead", {}, head), el("tbody", {}, ...body));
-    tableBox.replaceChildren(el("div", { class: "table-scroll method-plan-scroll" }, table));
+    tableBox.replaceChildren(levels, el("div", { class: "table-scroll method-plan-scroll" }, table));
     resizableColumns(table, "method-plan");
   }
 

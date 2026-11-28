@@ -825,9 +825,13 @@ with sync_playwright() as p:
     # у ЦФО с подчинёнными сначала свод по ветке (только просмотр); ввод — в «Свой план»
     expect(page.locator("button.tab.active", has_text="Свод по ветке")).to_be_visible()
     page.click("button.tab:has-text('Свой план')")
-    # подстатья — с кодом и путём, группы в сетке нет
-    expect(page.locator(".tabulator-row", has_text="2.6.20.1. Связь и IT / Электричество")).to_have_count(1)
-    expect(page.locator(".tabulator-row .tabulator-cell[tabulator-field=name]", has_text="Связь и IT")).to_have_count(1)
+    # подстатья — с кодом и путём, под строкой группы «Связь и IT» с суммами; группы сворачиваются (шаг 25.1)
+    expect(page.locator(".tabulator-row", has_text="2.6.20.1. Электричество")).to_have_count(1)
+    expect(page.locator(".tabulator-row.plan-group-row", has_text="Связь и IT")).to_have_count(1)
+    page.locator(".tree-levels button", has_text="уровень 1").click()
+    expect(page.locator(".tabulator-row", has_text="2.6.20.1. Электричество")).to_have_count(0)
+    page.locator(".tree-levels button", has_text="всё").click()
+    expect(page.locator(".tabulator-row", has_text="2.6.20.1. Электричество")).to_have_count(1)
     rent = page.locator(".tabulator-row", has_text="Аренда")
     rent.locator(".tabulator-cell[tabulator-field='2027-01']").click()
     page.keyboard.type("1 500,50")
@@ -999,6 +1003,11 @@ with sync_playwright() as p:
     page.click("button:has-text('История ИТОГ')")
     expect(page.locator("dialog[open]", has_text="История «Сверху ИТОГ»")).to_contain_text("зафиксировал(а) план")
     page.locator("dialog[open] button", has_text="Закрыть").click()
+    # сворачивание статей (шаг 25.1): 2.6 сворачивается вместе с подстатьями
+    plan_table.locator("tr", has_text="Прочие операционные расходы").locator("button.tree-toggle").click()
+    expect(plan_table.locator("tr", has_text="Дератизация")).to_be_hidden()
+    page.locator(".tree-levels button", has_text="всё").click()
+    expect(plan_table.locator("tr", has_text="Дератизация")).to_be_visible()
     page.screenshot(path=f"{OUT}/29a_method_plan.png", full_page=True)
     page.click("button.tab:has-text('Инвестиции')")
     expect(page.locator(".tabulator-row", has_text="Новый магазин")).to_contain_text("100 000,00")
