@@ -227,6 +227,9 @@ def test_itog_and_fix(client, env, db):  # noqa: F811
     assert (by["2.1"]["values"]["itog"], by["2.1"]["itog_source"]) == ("100000.00", "norm")
     assert (by["2.2"]["values"]["calc"], by["2.2"]["values"]["itog"]) == ("30200.00", "30200.00")
     assert (by["1.0"]["values"]["itog"], by["1.0"]["values"]["budget"]) == ("500000.00", "600000.00")
+    # ИТОГ не выбран, заполнены обе «снизу» — большая из них (24.7)
+    assert (by["2.5"]["values"]["itog"], by["2.5"]["itog_source"], by["2.5"]["values"]["budget"]) == \
+        ("20000.00", "bottom", "28000.00")
     assert data["fixed_at"] is None and data["itog_scope"] is True
 
     assert client.post(f"{itog}/fix", headers=env["ceo"], json={"month": "2027-03"}).status_code == 403

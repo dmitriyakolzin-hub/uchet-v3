@@ -1,8 +1,8 @@
 """«Сверху ИТОГ» и фиксация плана месяца (docs/TZ.md, раздел 31, «Детали 23.4»; раздел 32, «Детали 24.4»).
 
 - ИТОГ выбирает финансовый директор: значение одной из колонок 1–6 (до фиксации ИТОГ следует за колонкой) или своя
-  сумма; пока не выбран — ИТОГ равен «Бюджету» (решение владельца 1 в), у расчётных и нормативных статей — своей
-  колонке (24.5);
+  сумма; пока не выбран — ИТОГ равен «Бюджету» (решение владельца 1 в), при обеих заполненных «снизу» — большей
+  из них (24.7), у расчётных и нормативных статей — своей колонке (24.5);
 - «Зафиксировать план» по каждой статье (решения 2 а и 3):
   - ИТОГ из «Снизу ЦФО» или «Снизу ЦФУ» — в бюджете остаётся только эта колонка, плановые операции другой «снизу»
     колонки по статье за месяц удаляются;
@@ -96,7 +96,7 @@ def own_methods(db: Session, version: BudgetVersion, f: ReportFilter, month: dt.
     for _ in range(10):  # расчётные зависят от ИТОГ базы — повторяем, пока что-то добавляется
         added = 0
         for leaf in compute(db, f, version.id, month).leaves.values():
-            if leaf.itog_source != "budget" or not leaf.article.is_active or leaf.method not in METHOD_KEYS:
+            if leaf.itog_source not in ("budget", "bottom") or not leaf.article.is_active or leaf.method not in METHOD_KEYS:
                 continue
             if leaf.value is None or (not leaf.value and not leaf.budget):
                 continue
