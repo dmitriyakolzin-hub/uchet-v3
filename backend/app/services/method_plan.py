@@ -53,6 +53,8 @@ class Leaf:
     by_cfo: dict = field(default_factory=dict)
     cfo: Decimal = ZERO  # плановые операции без ЦФУ
     executor: Decimal = ZERO  # плановые операции с ЦФУ
+    has_cfo: bool = False  # есть плановые операции без ЦФУ («снизу ЦФО»)
+    has_executor: bool = False  # есть плановые операции с ЦФУ («снизу ЦФУ»)
     stored: object = None  # PlanItog — сохранённый «Сверху ИТОГ»
 
     @property
@@ -78,10 +80,13 @@ class Leaf:
 
     @property
     def itog_source(self) -> str:
-        """budget — не выбран (равен бюджету; после фиксации — зафиксированный бюджет), norm…executor — колонка
-        (у расчётных и нормативных — сразу, `itog_auto`), manual — своя сумма, fixed — запись до 24.4."""
+        """budget — не выбран (равен бюджету; после фиксации — зафиксированный бюджет), bottom — не выбран, заполнены
+        обе «снизу» колонки — большая из них (24.7), norm…executor — колонка (у расчётных и нормативных — сразу,
+        `itog_auto`), manual — своя сумма, fixed — запись до 24.4."""
         if self.stored is None:
-            return self.method if self.itog_auto else "budget"
+            if self.itog_auto:
+                return self.method
+            return "bottom" if self.has_cfo and self.has_executor else "budget"
         return self.stored.source or ("manual" if self.stored.manual else "fixed")
 
     @property
@@ -96,7 +101,7 @@ class Leaf:
         if self.itog_live:
             return self.values.get(self.itog_source) or ZERO
         if self.stored is None:
-            return self.budget
+            return max(self.cfo, self.executor) if self.itog_source == "bottom" else self.budget
         return self.stored.amount
 
 
@@ -365,6 +370,7 @@ def compute(db: Session, f: ReportFilter, version_id: int, month: dt.date, today
             sign = _sign(leaf.article)
             leaf.cfo, leaf.executor = sign * cells[0][0], sign * cells[1][0]
             has_cells[leaf.article.id] = (cells[0][1], cells[1][1])
+            leaf.has_cfo, leaf.has_executor = cells[0][1], cells[1][1]
         present = has_cells.get(leaf.article.id, (False, False))
         for key, amount, exists in (("cfo", leaf.cfo, present[0]), ("executor", leaf.executor, present[1])):
             if exists or leaf.method == key:

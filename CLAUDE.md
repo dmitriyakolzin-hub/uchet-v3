@@ -1039,3 +1039,7 @@
   у точки через `_sums` по плану версии или расчётное по точкам, формулы — `point_row`), `by_cfo["calc"]` по точкам —
   фиксация пишет в каждую точку. API `NormIn/NormOut.per_point`; `plannorms.js` — отметка и «— на каждую точку».
   Тестов 441 (`test_point_norms.py`), ui_smoke дополнен.
+- 2026-11-28 — 24.6 влита (PR 107). Шаг 24.7 (ветка `etap-24-7-bottom-max`), `docs/TZ.md`, раздел 32 «Детали 24.7».
+  Миграций нет. `method_plan.Leaf.has_cfo/has_executor`, `itog_source` «bottom» — ИТОГ не выбран, обе «снизу» заполнены →
+  большая из них; `plan_itog.own_methods` считает «bottom» невыбранным. `methodplan.js`: «= большее из 5 и 6».
+  ui_smoke: «План зафиксирован» ищется в `.toast` (совпадал с подписью). Тестов 441.

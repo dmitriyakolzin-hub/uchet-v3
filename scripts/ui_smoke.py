@@ -995,7 +995,7 @@ with sync_playwright() as p:
     expect(plan_table.locator("tr", has_text="Охрана").locator("td.itog")).to_contain_text("✎ своя сумма")
     page.once("dialog", lambda dlg: dlg.accept())
     page.click("button:has-text('Зафиксировать план')")
-    expect(page.locator("text=План зафиксирован")).to_be_visible()
+    expect(page.locator(".toast", has_text="План зафиксирован")).to_be_visible()
     page.click("button:has-text('История ИТОГ')")
     expect(page.locator("dialog[open]", has_text="История «Сверху ИТОГ»")).to_contain_text("зафиксировал(а) план")
     page.locator("dialog[open] button", has_text="Закрыть").click()
